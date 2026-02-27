@@ -1,0 +1,58 @@
+[
+  { "type": "user_message", "run_id": "run-2", "text": "Write hello.js" },
+  { "type": "run_state", "run_id": "run-2", "state": "spawning", "error": null, "exit_code": null },
+  {
+    "type": "session_init",
+    "run_id": "run-2",
+    "session_id": "sess-2",
+    "model": "claude-opus-4-6",
+    "tools": ["Bash", "Read", "Write"],
+    "cwd": "/"
+  },
+  { "type": "run_state", "run_id": "run-2", "state": "running", "error": null, "exit_code": null },
+  {
+    "type": "tool_start",
+    "run_id": "run-2",
+    "tool_use_id": "tool-1",
+    "tool_name": "Write",
+    "input": { "file_path": "/hello.js", "content": "console.log('hello');" }
+  },
+  {
+    "type": "tool_end",
+    "run_id": "run-2",
+    "tool_use_id": "tool-1",
+    "tool_name": "Write",
+    "output": { "success": true },
+    "status": "success",
+    "duration_ms": 50
+  },
+  {
+    "type": "tool_start",
+    "run_id": "run-2",
+    "tool_use_id": "tool-2",
+    "tool_name": "Bash",
+    "input": { "command": "node hello.js" }
+  },
+  {
+    "type": "tool_end",
+    "run_id": "run-2",
+    "tool_use_id": "tool-2",
+    "tool_name": "Bash",
+    "output": { "error": "Permission denied" },
+    "status": "error"
+  },
+  {
+    "type": "message_complete",
+    "run_id": "run-2",
+    "message_id": "msg-2",
+    "text": "I wrote hello.js but the Bash command was denied."
+  },
+  {
+    "type": "usage_update",
+    "run_id": "run-2",
+    "input_tokens": 200,
+    "output_tokens": 50,
+    "total_cost_usd": 0.012
+  },
+  { "type": "run_state", "run_id": "run-2", "state": "idle", "error": null, "exit_code": null }
+]

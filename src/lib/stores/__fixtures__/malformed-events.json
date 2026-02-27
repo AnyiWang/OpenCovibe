@@ -1,0 +1,46 @@
+[
+  { "type": "user_message", "run_id": "run-m1", "text": "Test malformed events" },
+  {
+    "type": "run_state",
+    "run_id": "run-m1",
+    "state": "spawning",
+    "error": null,
+    "exit_code": null
+  },
+  {
+    "type": "session_init",
+    "run_id": "run-m1",
+    "session_id": "sess-m1",
+    "model": "claude-sonnet-4-6",
+    "tools": ["Bash"],
+    "cwd": "/"
+  },
+  { "type": "run_state", "run_id": "run-m1", "state": "running", "error": null, "exit_code": null },
+
+  {
+    "type": "tool_start",
+    "run_id": "run-m1",
+    "tool_use_id": "",
+    "tool_name": "Bash",
+    "input": { "cmd": "ls" }
+  },
+
+  { "type": "raw", "run_id": "run-m1", "source": "claude_future_feature", "data": { "x": 1 } },
+
+  { "type": "brand_new_event_type", "run_id": "run-m1", "payload": "something" },
+
+  {
+    "type": "message_complete",
+    "run_id": "run-m1",
+    "message_id": "msg-m1",
+    "text": "Here is the result."
+  },
+  {
+    "type": "usage_update",
+    "run_id": "run-m1",
+    "input_tokens": 50,
+    "output_tokens": 10,
+    "total_cost_usd": 0.002
+  },
+  { "type": "run_state", "run_id": "run-m1", "state": "idle", "error": null, "exit_code": null }
+]

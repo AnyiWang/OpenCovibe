@@ -1,0 +1,38 @@
+[
+  { "type": "user_message", "run_id": "run-err-1", "text": "Build everything" },
+  {
+    "type": "session_init",
+    "run_id": "run-err-1",
+    "session_id": "sess-err-1",
+    "model": "claude-sonnet-4-5-20250929",
+    "tools": ["Bash", "Read", "Write"],
+    "cwd": "/"
+  },
+  {
+    "type": "run_state",
+    "run_id": "run-err-1",
+    "state": "running",
+    "error": null,
+    "exit_code": null
+  },
+  {
+    "type": "message_complete",
+    "run_id": "run-err-1",
+    "message_id": "msg-err-1",
+    "text": "Working on it..."
+  },
+  {
+    "type": "usage_update",
+    "run_id": "run-err-1",
+    "input_tokens": 50000,
+    "output_tokens": 8000,
+    "total_cost_usd": 0.25
+  },
+  {
+    "type": "run_state",
+    "run_id": "run-err-1",
+    "state": "failed",
+    "error": "Max turns reached",
+    "exit_code": null
+  }
+]

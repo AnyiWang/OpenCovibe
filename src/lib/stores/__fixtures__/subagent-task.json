@@ -1,0 +1,99 @@
+[
+  { "type": "user_message", "run_id": "run-sub", "text": "Run echo hello using Task" },
+  {
+    "type": "run_state",
+    "run_id": "run-sub",
+    "state": "spawning",
+    "error": null,
+    "exit_code": null
+  },
+  {
+    "type": "session_init",
+    "run_id": "run-sub",
+    "session_id": "sess-sub",
+    "model": "claude-opus-4-6",
+    "tools": ["Task", "Bash", "Read"],
+    "cwd": "/"
+  },
+  {
+    "type": "run_state",
+    "run_id": "run-sub",
+    "state": "running",
+    "error": null,
+    "exit_code": null
+  },
+  {
+    "type": "tool_start",
+    "run_id": "run-sub",
+    "tool_use_id": "toolu_task_1",
+    "tool_name": "Task",
+    "input": { "prompt": "Run echo hello", "subagent_type": "Bash" }
+  },
+  {
+    "type": "tool_start",
+    "run_id": "run-sub",
+    "tool_use_id": "toolu_bash_1",
+    "tool_name": "Bash",
+    "input": { "command": "echo hello" },
+    "parent_tool_use_id": "toolu_task_1"
+  },
+  {
+    "type": "message_delta",
+    "run_id": "run-sub",
+    "text": "subagent streaming text",
+    "parent_tool_use_id": "toolu_task_1"
+  },
+  {
+    "type": "thinking_delta",
+    "run_id": "run-sub",
+    "text": "subagent thinking",
+    "parent_tool_use_id": "toolu_task_1"
+  },
+  {
+    "type": "tool_input_delta",
+    "run_id": "run-sub",
+    "tool_use_id": "toolu_bash_1",
+    "partial_json": "{\"cmd\":",
+    "parent_tool_use_id": "toolu_task_1"
+  },
+  {
+    "type": "tool_end",
+    "run_id": "run-sub",
+    "tool_use_id": "toolu_bash_1",
+    "tool_name": "Bash",
+    "output": { "content": "hello" },
+    "status": "success",
+    "duration_ms": 100,
+    "parent_tool_use_id": "toolu_task_1"
+  },
+  {
+    "type": "message_complete",
+    "run_id": "run-sub",
+    "message_id": "msg-sub-1",
+    "text": "The command ran successfully.",
+    "parent_tool_use_id": "toolu_task_1"
+  },
+  {
+    "type": "tool_end",
+    "run_id": "run-sub",
+    "tool_use_id": "toolu_task_1",
+    "tool_name": "Task",
+    "output": { "content": "The command ran successfully." },
+    "status": "success",
+    "duration_ms": 5000
+  },
+  {
+    "type": "message_complete",
+    "run_id": "run-sub",
+    "message_id": "msg-main-1",
+    "text": "The subagent ran successfully and printed hello."
+  },
+  {
+    "type": "usage_update",
+    "run_id": "run-sub",
+    "input_tokens": 500,
+    "output_tokens": 100,
+    "total_cost_usd": 0.05
+  },
+  { "type": "run_state", "run_id": "run-sub", "state": "idle", "error": null, "exit_code": null }
+]

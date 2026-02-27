@@ -1,0 +1,50 @@
+name: Feature Request
+description: Suggest a new feature or improvement
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or Motivation
+      description: What problem does this feature solve? Why is it needed?
+      placeholder: I'm always frustrated when ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed Solution
+      description: Describe how you'd like this to work.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: Any other approaches you've thought about?
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Which part of the app does this relate to?
+      options:
+        - Chat / Sessions
+        - Run Management
+        - Settings / Configuration
+        - Plugins / Skills
+        - MCP
+        - Teams
+        - Hook Integration
+        - Keyboard Shortcuts
+        - i18n / Localization
+        - UI / Theme
+        - Other
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional Context
+      description: Screenshots, mockups, or links to related issues.

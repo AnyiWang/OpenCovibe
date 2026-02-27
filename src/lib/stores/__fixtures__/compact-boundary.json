@@ -1,0 +1,46 @@
+[
+  { "type": "user_message", "run_id": "run-cb-1", "text": "Hello" },
+  {
+    "type": "session_init",
+    "run_id": "run-cb-1",
+    "session_id": "sess-cb-1",
+    "model": "claude-opus-4-6",
+    "tools": ["Bash", "Read"],
+    "cwd": "/"
+  },
+  {
+    "type": "run_state",
+    "run_id": "run-cb-1",
+    "state": "running",
+    "error": null,
+    "exit_code": null
+  },
+  {
+    "type": "message_complete",
+    "run_id": "run-cb-1",
+    "message_id": "msg-cb-1",
+    "text": "Hello! Working on your request."
+  },
+  {
+    "type": "usage_update",
+    "run_id": "run-cb-1",
+    "input_tokens": 200,
+    "output_tokens": 30,
+    "total_cost_usd": 0.01
+  },
+  { "type": "compact_boundary", "run_id": "run-cb-1", "trigger": "auto", "pre_tokens": 180000 },
+  {
+    "type": "message_complete",
+    "run_id": "run-cb-1",
+    "message_id": "msg-cb-2",
+    "text": "Continuing after compaction."
+  },
+  {
+    "type": "usage_update",
+    "run_id": "run-cb-1",
+    "input_tokens": 100,
+    "output_tokens": 15,
+    "total_cost_usd": 0.005
+  },
+  { "type": "run_state", "run_id": "run-cb-1", "state": "idle", "error": null, "exit_code": null }
+]
