@@ -1,0 +1,86 @@
+{
+  "name": "opencovibe",
+  "version": "0.1.0",
+  "description": "Local-first desktop app for AI-assisted vibe coding",
+  "type": "module",
+  "license": "Apache-2.0",
+  "homepage": "https://github.com/AnyiWang/OpenCovibe",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AnyiWang/OpenCovibe.git"
+  },
+  "bugs": {
+    "url": "https://github.com/AnyiWang/OpenCovibe/issues"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "vite dev",
+    "build": "vite build",
+    "preview": "vite preview",
+    "tauri": "tauri",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint src/",
+    "lint:fix": "eslint src/ --fix",
+    "format": "prettier --write src/",
+    "format:check": "prettier --check src/",
+    "check": "svelte-check --tsconfig ./tsconfig.json",
+    "rust:fmt": "cargo fmt --manifest-path src-tauri/Cargo.toml --check",
+    "rust:clippy": "cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings",
+    "rust:check": "npm run rust:fmt && npm run rust:clippy",
+    "i18n:check": "node scripts/i18n-check.mjs",
+    "doc:check": "node scripts/doc-check.mjs",
+    "fix": "npm run lint:fix && npm run format && cargo fmt --manifest-path src-tauri/Cargo.toml",
+    "verify": "npm run lint && npm run format:check && npm run i18n:check && npm run test && npm run build && npm run rust:check"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.2",
+    "@sveltejs/adapter-static": "^3.0.8",
+    "@sveltejs/kit": "^2.16.0",
+    "@sveltejs/vite-plugin-svelte": "^5.1.1",
+    "@tailwindcss/typography": "^0.5.19",
+    "@tauri-apps/cli": "^2.5.0",
+    "@types/diff": "^7.0.2",
+    "@types/turndown": "^5.0.6",
+    "autoprefixer": "^10.4.20",
+    "eslint": "^9.39.2",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-svelte": "^3.15.0",
+    "globals": "^17.3.0",
+    "postcss": "^8.5.1",
+    "prettier": "^3.8.1",
+    "prettier-plugin-svelte": "^3.4.1",
+    "svelte": "^5.53.3",
+    "svelte-check": "^4.3.6",
+    "tailwindcss": "^3.4.17",
+    "typescript": "^5.7.0",
+    "typescript-eslint": "^8.55.0",
+    "vite": "^6.1.0",
+    "vitest": "^4.0.18"
+  },
+  "dependencies": {
+    "@codemirror/language-data": "^6.5.2",
+    "@codemirror/theme-one-dark": "^6.1.3",
+    "@tauri-apps/api": "^2.5.0",
+    "@tauri-apps/plugin-dialog": "^2.2.0",
+    "@tauri-apps/plugin-shell": "^2.2.0",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/addon-web-links": "^0.12.0",
+    "@xterm/xterm": "^6.0.0",
+    "codemirror": "^6.0.1",
+    "diff": "^8.0.3",
+    "dompurify": "^3.2.4",
+    "exceljs": "^4.4.0",
+    "highlight.js": "^11.11.0",
+    "mammoth": "^1.11.0",
+    "marked": "^15.0.0",
+    "turndown": "^7.2.2"
+  },
+  "browserslist": [
+    "safari >= 16.1",
+    "chrome >= 105",
+    "edge >= 105"
+  ]
+}

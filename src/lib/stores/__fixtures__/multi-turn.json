@@ -1,0 +1,69 @@
+[
+  { "type": "user_message", "run_id": "run-3", "text": "Hi" },
+  { "type": "run_state", "run_id": "run-3", "state": "spawning", "error": null, "exit_code": null },
+  {
+    "type": "session_init",
+    "run_id": "run-3",
+    "session_id": "sess-3",
+    "model": "claude-opus-4-6",
+    "tools": ["Bash"],
+    "cwd": "/"
+  },
+  { "type": "run_state", "run_id": "run-3", "state": "running", "error": null, "exit_code": null },
+  {
+    "type": "message_complete",
+    "run_id": "run-3",
+    "message_id": "msg-1",
+    "text": "Hello! How can I help?"
+  },
+  {
+    "type": "usage_update",
+    "run_id": "run-3",
+    "input_tokens": 50,
+    "output_tokens": 10,
+    "total_cost_usd": 0.002
+  },
+  { "type": "run_state", "run_id": "run-3", "state": "idle", "error": null, "exit_code": null },
+
+  { "type": "user_message", "run_id": "run-3", "text": "Tell me more" },
+  { "type": "run_state", "run_id": "run-3", "state": "running", "error": null, "exit_code": null },
+  {
+    "type": "session_init",
+    "run_id": "run-3",
+    "session_id": "sess-3",
+    "model": "claude-opus-4-6",
+    "tools": ["Bash"],
+    "cwd": "/"
+  },
+  { "type": "run_state", "run_id": "run-3", "state": "running", "error": null, "exit_code": null },
+  {
+    "type": "tool_start",
+    "run_id": "run-3",
+    "tool_use_id": "tool-3",
+    "tool_name": "Bash",
+    "input": { "command": "echo hello" }
+  },
+  {
+    "type": "tool_end",
+    "run_id": "run-3",
+    "tool_use_id": "tool-3",
+    "tool_name": "Bash",
+    "output": { "stdout": "hello\n" },
+    "status": "success",
+    "duration_ms": 100
+  },
+  {
+    "type": "message_complete",
+    "run_id": "run-3",
+    "message_id": "msg-2",
+    "text": "Here is more info."
+  },
+  {
+    "type": "usage_update",
+    "run_id": "run-3",
+    "input_tokens": 150,
+    "output_tokens": 30,
+    "total_cost_usd": 0.008
+  },
+  { "type": "run_state", "run_id": "run-3", "state": "idle", "error": null, "exit_code": null }
+]

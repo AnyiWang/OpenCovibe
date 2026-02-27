@@ -1,0 +1,125 @@
+[
+  { "type": "user_message", "run_id": "run-1", "text": "Test protocol events" },
+  { "type": "run_state", "run_id": "run-1", "state": "spawning", "error": null, "exit_code": null },
+  {
+    "type": "session_init",
+    "run_id": "run-1",
+    "session_id": "sess-1",
+    "model": "claude-opus-4-6",
+    "tools": ["Bash", "Read"],
+    "cwd": "/",
+    "permissionMode": "default",
+    "apiKeySource": "anthropic",
+    "claude_code_version": "2.1.41",
+    "output_style": "default",
+    "agents": ["Bash", "general-purpose", "Explore", "Plan"],
+    "skills": ["find-bugs", "review"],
+    "plugins": [],
+    "fast_mode_state": "off"
+  },
+  { "type": "run_state", "run_id": "run-1", "state": "running", "error": null, "exit_code": null },
+  {
+    "type": "system_status",
+    "run_id": "run-1",
+    "status": "compacting",
+    "data": { "status": "compacting" }
+  },
+  {
+    "type": "auth_status",
+    "run_id": "run-1",
+    "is_authenticating": true,
+    "output": ["Authenticating..."],
+    "data": {}
+  },
+  {
+    "type": "hook_started",
+    "run_id": "run-1",
+    "hook_event": "PreToolUse",
+    "hook_id": "hook-1",
+    "hook_name": "PreToolUse:check",
+    "data": { "tool_name": "Bash" }
+  },
+  { "type": "hook_progress", "run_id": "run-1", "hook_id": "hook-1", "data": { "progress": 50 } },
+  {
+    "type": "hook_response",
+    "run_id": "run-1",
+    "hook_id": "hook-1",
+    "hook_event": "PreToolUse",
+    "outcome": "allow",
+    "hook_name": "PreToolUse:check",
+    "stdout": "",
+    "stderr": "",
+    "exit_code": 0,
+    "data": { "exit_code": 0 }
+  },
+  {
+    "type": "task_notification",
+    "run_id": "run-1",
+    "task_id": "task-1",
+    "status": "started",
+    "data": { "description": "indexing" }
+  },
+  {
+    "type": "files_persisted",
+    "run_id": "run-1",
+    "files": [{ "filename": "test.ts", "file_id": "f-1" }],
+    "data": {}
+  },
+  {
+    "type": "tool_start",
+    "run_id": "run-1",
+    "tool_use_id": "tool-1",
+    "tool_name": "Bash",
+    "input": { "command": "ls" }
+  },
+  {
+    "type": "tool_progress",
+    "run_id": "run-1",
+    "tool_use_id": "tool-1",
+    "elapsed_time_seconds": 2.5,
+    "data": {}
+  },
+  {
+    "type": "tool_end",
+    "run_id": "run-1",
+    "tool_use_id": "tool-1",
+    "tool_name": "Bash",
+    "output": { "content": "file.txt" },
+    "status": "success",
+    "duration_ms": 3000
+  },
+  {
+    "type": "tool_use_summary",
+    "run_id": "run-1",
+    "tool_use_id": "tool-1",
+    "summary": "Listed files in current directory",
+    "preceding_tool_use_ids": [],
+    "data": {}
+  },
+  {
+    "type": "hook_callback",
+    "run_id": "run-1",
+    "request_id": "req-hc-1",
+    "hook_event": "PostToolUse",
+    "hook_id": "hook-2",
+    "data": {}
+  },
+  {
+    "type": "message_complete",
+    "run_id": "run-1",
+    "message_id": "msg-1",
+    "text": "Done listing files."
+  },
+  {
+    "type": "usage_update",
+    "run_id": "run-1",
+    "input_tokens": 200,
+    "output_tokens": 50,
+    "total_cost_usd": 0.01,
+    "duration_ms": 4277,
+    "num_turns": 1,
+    "cache_creation_5m": 21448,
+    "cache_creation_1h": 0
+  },
+  { "type": "run_state", "run_id": "run-1", "state": "idle", "error": null, "exit_code": null }
+]

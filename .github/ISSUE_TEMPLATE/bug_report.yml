@@ -1,0 +1,75 @@
+name: Bug Report
+description: Report a bug or unexpected behavior
+labels: ["bug"]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: Describe the bug
+      description: A clear description of what happened and what you expected.
+      placeholder: |
+        What happened:
+        ...
+
+        What I expected:
+        ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Minimal steps to reproduce the issue.
+      placeholder: |
+        1. Open the app
+        2. Go to ...
+        3. Click on ...
+        4. See error
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating System
+      options:
+        - macOS
+        - Windows
+        - Linux (Debian/Ubuntu)
+        - Linux (Other)
+    validations:
+      required: true
+
+  - type: input
+    id: os-version
+    attributes:
+      label: OS Version
+      placeholder: e.g. macOS 15.3, Windows 11, Ubuntu 24.04
+
+  - type: input
+    id: app-version
+    attributes:
+      label: App Version
+      description: Shown in the sidebar footer or About dialog.
+      placeholder: e.g. v0.1.0
+
+  - type: input
+    id: cli-version
+    attributes:
+      label: Claude Code CLI Version
+      description: Run `claude --version` in your terminal.
+      placeholder: e.g. 1.0.33
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / Error Output
+      description: Paste any relevant error messages or logs. Run the app with `RUST_LOG=debug cargo tauri dev` for detailed backend logs.
+      render: text
+
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: Screenshots
+      description: If applicable, add screenshots to help explain the issue.

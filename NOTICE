@@ -1,0 +1,20 @@
+OpenCovibe
+Copyright 2025-2026 OpenCovibe Contributors
+
+Licensed under the Apache License, Version 2.0.
+
+This product includes software developed by third parties under
+different licenses. The following components are licensed under the
+Mozilla Public License 2.0 (MPL-2.0):
+
+  cssparser v0.29.6       — https://crates.io/crates/cssparser
+  cssparser-macros v0.6.1 — https://crates.io/crates/cssparser-macros
+  dtoa-short v0.3.5       — https://crates.io/crates/dtoa-short
+  selectors v0.24.0       — https://crates.io/crates/selectors
+  option-ext v0.2.0       — https://crates.io/crates/option-ext
+
+The MPL-2.0 license text is available at:
+https://www.mozilla.org/en-US/MPL/2.0/
+
+All other third-party dependencies are licensed under MIT, Apache-2.0,
+BSD, ISC, or other permissive licenses compatible with Apache-2.0.

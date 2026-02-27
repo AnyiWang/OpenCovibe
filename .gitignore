@@ -1,0 +1,52 @@
+# Dependencies
+node_modules/
+
+# Environment variables
+.env
+.env.*
+
+# Frontend build output
+build/
+.svelte-kit/
+
+# Rust / Tauri
+src-tauri/target/
+src-tauri/gen/
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
+npm-debug.log*
+
+# Test coverage
+coverage/
+
+# npm pack artifacts
+*.tgz
+package/
+packages/
+
+# Duplicate Rust build dirs (Finder copy artifacts)
+src-tauri/target */
+
+# Turborepo cache (monorepo remnant)
+.turbo/
+
+# Claude Code (local dev context)
+CLAUDE.md
+AGENTS.md
+memory/
+.claude/
+
+.metadata_never_index

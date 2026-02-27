@@ -1,0 +1,27 @@
+[
+  { "type": "user_message", "run_id": "run-1", "text": "Hello" },
+  { "type": "run_state", "run_id": "run-1", "state": "spawning", "error": null, "exit_code": null },
+  {
+    "type": "session_init",
+    "run_id": "run-1",
+    "session_id": "sess-1",
+    "model": "claude-opus-4-6",
+    "tools": ["Bash", "Read", "Write"],
+    "cwd": "/"
+  },
+  { "type": "run_state", "run_id": "run-1", "state": "running", "error": null, "exit_code": null },
+  {
+    "type": "message_complete",
+    "run_id": "run-1",
+    "message_id": "msg-1",
+    "text": "Hi there! How can I help?"
+  },
+  {
+    "type": "usage_update",
+    "run_id": "run-1",
+    "input_tokens": 100,
+    "output_tokens": 20,
+    "total_cost_usd": 0.005
+  },
+  { "type": "run_state", "run_id": "run-1", "state": "idle", "error": null, "exit_code": null }
+]

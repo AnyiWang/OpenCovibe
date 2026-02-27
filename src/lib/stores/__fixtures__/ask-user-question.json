@@ -1,0 +1,45 @@
+[
+  { "type": "user_message", "run_id": "run-5", "text": "Create a file" },
+  { "type": "run_state", "run_id": "run-5", "state": "spawning", "error": null, "exit_code": null },
+  {
+    "type": "session_init",
+    "run_id": "run-5",
+    "session_id": "sess-5",
+    "model": "claude-opus-4-6",
+    "tools": ["Bash", "AskUserQuestion"],
+    "cwd": "/"
+  },
+  { "type": "run_state", "run_id": "run-5", "state": "running", "error": null, "exit_code": null },
+  {
+    "type": "tool_start",
+    "run_id": "run-5",
+    "tool_use_id": "ask-1",
+    "tool_name": "AskUserQuestion",
+    "input": { "question": "What filename?", "options": ["app.js", "index.js"] }
+  },
+  {
+    "type": "tool_end",
+    "run_id": "run-5",
+    "tool_use_id": "ask-1",
+    "tool_name": "AskUserQuestion",
+    "output": { "error": "auto-failed" },
+    "status": "error"
+  },
+  { "type": "run_state", "run_id": "run-5", "state": "idle", "error": null, "exit_code": null },
+  { "type": "user_message", "run_id": "run-5", "text": "app.js" },
+  { "type": "run_state", "run_id": "run-5", "state": "running", "error": null, "exit_code": null },
+  {
+    "type": "message_complete",
+    "run_id": "run-5",
+    "message_id": "msg-5",
+    "text": "Created app.js"
+  },
+  {
+    "type": "usage_update",
+    "run_id": "run-5",
+    "input_tokens": 300,
+    "output_tokens": 60,
+    "total_cost_usd": 0.015
+  },
+  { "type": "run_state", "run_id": "run-5", "state": "idle", "error": null, "exit_code": null }
+]

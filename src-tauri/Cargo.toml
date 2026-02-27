@@ -1,0 +1,53 @@
+[package]
+name = "OpenCovibe"
+version = "0.1.0"
+edition = "2021"
+description = "Local-first desktop app for AI-assisted vibe coding"
+license = "Apache-2.0"
+repository = "https://github.com/AnyiWang/OpenCovibe"
+homepage = "https://github.com/AnyiWang/OpenCovibe"
+
+[lib]
+name = "opencovibe_desktop_lib"
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[[bin]]
+name = "OpenCovibe"
+path = "src/main.rs"
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri-plugin-notification = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-shell = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+tokio = { version = "1", features = ["full"] }
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+base64 = "0.22"
+portable-pty = "0.8"
+strip-ansi-escapes = "0.2"
+notify = { version = "7", default-features = false, features = ["macos_fsevent"] }
+reqwest = { version = "0.12", features = ["json", "stream"] }
+futures-util = "0.3"
+tokio-util = { version = "0.7", features = ["rt"] }
+log = "0.4"
+env_logger = "0.11"
+sha2 = "0.10"
+url = "2"
+tauri-plugin-global-shortcut = "2"
+
+[dev-dependencies]
+tempfile = "3"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true

@@ -1,0 +1,145 @@
+[
+  { "type": "user_message", "run_id": "run-1", "text": "Create a team and assign tasks" },
+  { "type": "run_state", "run_id": "run-1", "state": "spawning", "error": null, "exit_code": null },
+  {
+    "type": "session_init",
+    "run_id": "run-1",
+    "session_id": "sess-1",
+    "model": "claude-opus-4-6",
+    "tools": ["Bash", "TeamCreate", "TaskCreate", "TaskUpdate", "TaskList", "SendMessage"],
+    "cwd": "/"
+  },
+  { "type": "run_state", "run_id": "run-1", "state": "running", "error": null, "exit_code": null },
+  {
+    "type": "tool_start",
+    "run_id": "run-1",
+    "tool_use_id": "tc-1",
+    "tool_name": "TeamCreate",
+    "input": { "team_name": "sdk-p0p1", "description": "SDK priority features" }
+  },
+  {
+    "type": "tool_end",
+    "run_id": "run-1",
+    "tool_use_id": "tc-1",
+    "tool_name": "TeamCreate",
+    "output": { "content": "Team sdk-p0p1 created" },
+    "status": "success",
+    "duration_ms": 500
+  },
+  {
+    "type": "tool_start",
+    "run_id": "run-1",
+    "tool_use_id": "tk-1",
+    "tool_name": "TaskCreate",
+    "input": {
+      "subject": "Implement auth module",
+      "description": "Add OAuth2 login flow",
+      "activeForm": "Implementing auth"
+    }
+  },
+  {
+    "type": "tool_end",
+    "run_id": "run-1",
+    "tool_use_id": "tk-1",
+    "tool_name": "TaskCreate",
+    "output": {
+      "content": "{\"id\":\"1\",\"subject\":\"Implement auth module\",\"status\":\"pending\"}"
+    },
+    "status": "success",
+    "duration_ms": 200
+  },
+  {
+    "type": "tool_start",
+    "run_id": "run-1",
+    "tool_use_id": "tk-2",
+    "tool_name": "TaskCreate",
+    "input": { "subject": "Write unit tests", "description": "Test the auth module" }
+  },
+  {
+    "type": "tool_end",
+    "run_id": "run-1",
+    "tool_use_id": "tk-2",
+    "tool_name": "TaskCreate",
+    "output": {
+      "content": "{\"id\":\"2\",\"subject\":\"Write unit tests\",\"status\":\"pending\"}"
+    },
+    "status": "success",
+    "duration_ms": 150
+  },
+  {
+    "type": "tool_start",
+    "run_id": "run-1",
+    "tool_use_id": "tu-1",
+    "tool_name": "TaskUpdate",
+    "input": { "taskId": "1", "status": "in_progress", "owner": "researcher" }
+  },
+  {
+    "type": "tool_end",
+    "run_id": "run-1",
+    "tool_use_id": "tu-1",
+    "tool_name": "TaskUpdate",
+    "output": { "content": "{\"id\":\"1\",\"status\":\"in_progress\",\"owner\":\"researcher\"}" },
+    "status": "success",
+    "duration_ms": 100
+  },
+  {
+    "type": "tool_start",
+    "run_id": "run-1",
+    "tool_use_id": "tl-1",
+    "tool_name": "TaskList",
+    "input": {}
+  },
+  {
+    "type": "tool_end",
+    "run_id": "run-1",
+    "tool_use_id": "tl-1",
+    "tool_name": "TaskList",
+    "output": {
+      "content": "[{\"id\":\"1\",\"subject\":\"Implement auth module\",\"status\":\"in_progress\",\"owner\":\"researcher\",\"blockedBy\":[]},{\"id\":\"2\",\"subject\":\"Write unit tests\",\"status\":\"pending\",\"owner\":\"\",\"blockedBy\":[\"1\"]}]"
+    },
+    "status": "success",
+    "duration_ms": 50
+  },
+  {
+    "type": "tool_start",
+    "run_id": "run-1",
+    "tool_use_id": "sm-1",
+    "tool_name": "SendMessage",
+    "input": {
+      "type": "message",
+      "recipient": "researcher",
+      "content": "Please start on auth",
+      "summary": "Task assignment"
+    }
+  },
+  {
+    "type": "tool_end",
+    "run_id": "run-1",
+    "tool_use_id": "sm-1",
+    "tool_name": "SendMessage",
+    "output": { "content": "Message sent" },
+    "status": "success",
+    "duration_ms": 80
+  },
+  {
+    "type": "task_notification",
+    "run_id": "run-1",
+    "task_id": "1",
+    "status": "in_progress",
+    "data": { "owner": "researcher" }
+  },
+  {
+    "type": "message_complete",
+    "run_id": "run-1",
+    "message_id": "msg-1",
+    "text": "Team created and tasks assigned."
+  },
+  {
+    "type": "usage_update",
+    "run_id": "run-1",
+    "input_tokens": 500,
+    "output_tokens": 100,
+    "total_cost_usd": 0.05
+  },
+  { "type": "run_state", "run_id": "run-1", "state": "idle", "error": null, "exit_code": null }
+]
