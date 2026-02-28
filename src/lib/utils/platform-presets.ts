@@ -140,6 +140,18 @@ export const PLATFORM_PRESETS: PlatformPreset[] = [
     category: "proxy",
   },
 
+  // ── Local Proxy ──
+  {
+    id: "ccr",
+    name: "Claude Code Router",
+    base_url: "http://127.0.0.1:3456",
+    auth_env_var: "ANTHROPIC_AUTH_TOKEN",
+    description: "Local proxy for third-party providers",
+    key_placeholder: "(leave empty)",
+    models: ["claude-sonnet-4-6"],
+    category: "local",
+  },
+
   // ── Local Inference ──
   {
     id: "ollama",

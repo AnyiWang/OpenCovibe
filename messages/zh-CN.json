@@ -26,7 +26,7 @@
   "settings_general_baseUrl": "基础 URL",
   "settings_general_baseUrlHelp": "留空使用官方 Anthropic API。设置代理或 OpenAI 兼容端点时填写。",
   "settings_general_models": "模型",
-  "settings_general_modelsPlaceholder": "例如 anthropic/claude-sonnet-4.5",
+  "settings_general_modelsPlaceholder": "例如 model-name",
   "settings_general_modelsHelp": "逗号分隔的模型名，第一个为默认模型。留空使用 CLI 默认值。",
   "settings_general_platform": "平台",
   "settings_general_changePlatform": "更换",
