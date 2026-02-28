@@ -540,7 +540,7 @@
             ></div>
           </div>
         </div>
-        <p class="text-sm text-foreground mb-3">{askQuestion}</p>
+        <MarkdownContent text={askQuestion} class="text-sm text-foreground mb-3 [&>*:last-child]:mb-0" />
         {#if askOptions.length > 0 && onAnswer}
           {#if isMultiSelect}
             <div class="flex flex-wrap items-center gap-2">
@@ -700,7 +700,7 @@
                     >{pq.header}</span
                   >
                 {/if}
-                <p class="text-sm text-foreground mb-1">{pq.question}</p>
+                <MarkdownContent text={pq.question} class="text-sm text-foreground mb-1 [&>*:last-child]:mb-0" />
                 {#if pq.options.length > 0}
                   <div class="flex flex-wrap gap-1.5">
                     {#each pq.options as option}
@@ -779,7 +779,7 @@
           </div>
         {:else}
           <!-- Single question done -->
-          <p class="text-sm text-foreground mb-3">{askQuestion}</p>
+          <MarkdownContent text={askQuestion} class="text-sm text-foreground mb-3 [&>*:last-child]:mb-0" />
           {#if askOptions.length > 0}
             <div class="flex flex-wrap gap-2">
               {#each askOptions as option}
@@ -907,7 +907,7 @@
                       >{pq.header}</span
                     >
                   {/if}
-                  <p class="text-sm text-foreground mb-1.5">{pq.question}</p>
+                  <MarkdownContent text={pq.question} class="text-sm text-foreground mb-1.5 [&>*:last-child]:mb-0" />
                   <div class="flex flex-wrap gap-1.5">
                     {#each pq.options as option}
                       <button
@@ -935,10 +935,9 @@
                         {/if}
                         <span>{option.label}</span>
                         {#if option.description}
-                          <span
-                            class="block text-[10px] text-muted-foreground/70 font-normal mt-0.5"
-                            >{option.description}</span
-                          >
+                          <span class="block text-[10px] text-muted-foreground/70 font-normal mt-0.5">
+                            <MarkdownContent text={option.description} class="[&>*:last-child]:mb-0 [&_p]:text-[10px] [&_p]:leading-snug" />
+                          </span>
                         {/if}
                       </button>
                     {/each}
@@ -996,7 +995,7 @@
             </div>
           {:else if isMultiSelect}
             <!-- Single multi-select question -->
-            <p class="text-sm text-foreground mb-3">{askQuestion}</p>
+            <MarkdownContent text={askQuestion} class="text-sm text-foreground mb-3 [&>*:last-child]:mb-0" />
             <div class="flex flex-wrap items-center gap-2">
               {#each askOptions as option}
                 <button
@@ -1067,7 +1066,7 @@
             </div>
           {:else}
             <!-- Single question, single select -->
-            <p class="text-sm text-foreground mb-3">{askQuestion}</p>
+            <MarkdownContent text={askQuestion} class="text-sm text-foreground mb-3 [&>*:last-child]:mb-0" />
             <div class="flex flex-wrap gap-2">
               {#each askOptions as option}
                 <button

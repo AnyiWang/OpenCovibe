@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/nicegui/nicegui/main/.github/schemas/tauri-v2.json",
   "productName": "OpenCovibe",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "identifier": "com.opencovibe.desktop",
   "build": {
     "frontendDist": "../build",

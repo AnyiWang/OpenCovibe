@@ -2,6 +2,7 @@
   import type { BusToolItem } from "$lib/types";
   import { extractOutputText, extractStructuredOutput } from "$lib/utils/tool-rendering";
   import { t } from "$lib/i18n/index.svelte";
+  import MarkdownContent from "$lib/components/MarkdownContent.svelte";
 
   let { tool }: { tool: BusToolItem } = $props();
 
@@ -47,7 +48,7 @@
         <div class="text-xs font-medium text-foreground">{tool.input.subject}</div>
       {/if}
       {#if tool.input?.description}
-        <p class="text-xs text-muted-foreground line-clamp-3">{tool.input.description}</p>
+        <MarkdownContent text={String(tool.input.description)} class="text-xs text-muted-foreground line-clamp-3 [&>*:last-child]:mb-0" />
       {/if}
       {#if tool.input?.activeForm}
         <div class="text-[10px] text-muted-foreground/60 italic">{tool.input.activeForm}</div>
@@ -257,7 +258,7 @@
             {/if}
           </div>
           {#if task.description}
-            <p class="text-xs text-muted-foreground line-clamp-4">{task.description}</p>
+            <MarkdownContent text={String(task.description)} class="text-xs text-muted-foreground line-clamp-4 [&>*:last-child]:mb-0" />
           {/if}
           <div class="flex flex-wrap gap-2 text-[10px] text-muted-foreground/70">
             {#if task.owner}
@@ -335,7 +336,7 @@
         {/if}
       </div>
       {#if tool.input?.content}
-        <p class="text-xs text-muted-foreground line-clamp-3">{tool.input.content}</p>
+        <MarkdownContent text={String(tool.input.content)} class="text-xs text-muted-foreground line-clamp-3 [&>*:last-child]:mb-0" />
       {/if}
       {#if tool.input?.summary}
         <div class="text-[10px] text-muted-foreground/60 italic">{tool.input.summary}</div>
