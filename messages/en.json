@@ -26,7 +26,7 @@
   "settings_general_baseUrl": "Base URL",
   "settings_general_baseUrlHelp": "Leave empty for official Anthropic API. Set for proxies or OpenAI-compatible endpoints.",
   "settings_general_models": "Models",
-  "settings_general_modelsPlaceholder": "e.g. anthropic/claude-sonnet-4.5",
+  "settings_general_modelsPlaceholder": "e.g. model-name",
   "settings_general_modelsHelp": "Comma-separated model names. First model is used as default. Leave empty to use CLI default.",
   "settings_general_platform": "Platform",
   "settings_general_changePlatform": "Change",

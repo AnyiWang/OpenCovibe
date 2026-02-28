@@ -11,6 +11,28 @@ use std::path::PathBuf;
 use tokio::process::Command;
 use tokio::time::Duration;
 
+/// Resolve an nvm alias recursively (e.g., default → lts/jod → 22).
+/// Returns the terminal version string (e.g., "22", "v22.22.0") or None.
+/// Handles chains like: default → lts/jod → 22, or default → node (unresolvable → None).
+fn resolve_nvm_alias(home: &std::path::Path, alias_name: &str, max_depth: u8) -> Option<String> {
+    if max_depth == 0 {
+        return None;
+    }
+    let alias_path = home.join(".nvm").join("alias").join(alias_name);
+    let content = std::fs::read_to_string(&alias_path).ok()?;
+    let content = content.trim().to_string();
+    if content.is_empty() {
+        return None;
+    }
+    // If it looks like a version number (starts with digit or 'v'), return it
+    let first = content.chars().next()?;
+    if first.is_ascii_digit() || first == 'v' {
+        return Some(content);
+    }
+    // Otherwise it's another alias name (e.g., "lts/jod"), resolve recursively
+    resolve_nvm_alias(home, &content, max_depth - 1)
+}
+
 /// Collect extra directories to prepend to PATH (platform-specific).
 /// Returns empty dirs when home is unavailable to avoid relative-path mis-hits.
 fn extra_path_dirs() -> Vec<PathBuf> {
@@ -76,27 +98,27 @@ fn extra_path_dirs() -> Vec<PathBuf> {
 
         // nvm: prefer the default alias, then fall back to highest version
         let mut nvm_resolved = false;
-        let alias_path = home.join(".nvm").join("alias").join("default");
-        if let Ok(alias_content) = std::fs::read_to_string(&alias_path) {
-            let ver = alias_content.trim().to_string();
-            if !ver.is_empty() {
-                if let Ok(entries) = std::fs::read_dir(&nvm_dir) {
-                    for entry in entries.flatten() {
-                        let name = entry.file_name().to_string_lossy().to_string();
-                        if name
-                            .trim_start_matches('v')
-                            .starts_with(ver.trim_start_matches('v'))
-                        {
-                            let bin = entry.path().join("bin");
-                            if bin.exists() {
-                                dirs.push(bin);
-                                nvm_resolved = true;
-                                break;
-                            }
+        if let Some(ver) = resolve_nvm_alias(&home, "default", 5) {
+            log::debug!("[path] nvm alias 'default' resolved to: {ver}");
+            if let Ok(entries) = std::fs::read_dir(&nvm_dir) {
+                for entry in entries.flatten() {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    if name
+                        .trim_start_matches('v')
+                        .starts_with(ver.trim_start_matches('v'))
+                    {
+                        let bin = entry.path().join("bin");
+                        if bin.exists() {
+                            log::debug!("[path] nvm: using alias-resolved path: {}", bin.display());
+                            dirs.push(bin);
+                            nvm_resolved = true;
+                            break;
                         }
                     }
                 }
             }
+        } else {
+            log::debug!("[path] nvm alias 'default' could not be resolved");
         }
         if !nvm_resolved {
             if let Ok(entries) = std::fs::read_dir(&nvm_dir) {
@@ -162,6 +184,15 @@ pub fn augmented_path() -> String {
 /// - Unix: pure Rust PATH traversal (avoids dependency on `which` binary,
 ///   which is not pre-installed on all Linux distros).
 pub fn which_binary(name: &str) -> Option<String> {
+    let result = which_binary_inner(name);
+    match &result {
+        Some(path) => log::debug!("[path] which_binary({name}) → {path}"),
+        None => log::warn!("[path] which_binary({name}) → not found"),
+    }
+    result
+}
+
+fn which_binary_inner(name: &str) -> Option<String> {
     #[cfg(windows)]
     {
         let output = std::process::Command::new("where")
@@ -183,6 +214,7 @@ pub fn which_binary(name: &str) -> Option<String> {
     {
         use std::os::unix::fs::PermissionsExt;
         let path_str = augmented_path();
+        log::debug!("[path] searching PATH for '{name}': {path_str}");
         let path_os = std::ffi::OsString::from(&path_str);
         for dir in std::env::split_paths(&path_os) {
             let candidate = dir.join(name);
