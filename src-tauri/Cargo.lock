@@ -10,6 +10,7 @@ dependencies = [
  "chrono",
  "env_logger",
  "futures-util",
+ "libc",
  "log",
  "notify",
  "portable-pty",

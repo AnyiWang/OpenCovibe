@@ -895,7 +895,7 @@
 
           <!-- Auth Mode selector: 2-way radio -->
           <div>
-            <label class="text-sm font-medium mb-2 block">{t("settings_auth_modeLabel")}</label>
+            <span class="text-sm font-medium mb-2 block">{t("settings_auth_modeLabel")}</span>
             <div class="mt-1 grid grid-cols-2 gap-3">
               <button
                 class="flex flex-col items-center gap-2 rounded-lg border p-4 text-sm transition-all duration-150
@@ -1058,8 +1058,8 @@
               </div>
               <!-- Platform selector -->
               <div>
-                <label class="text-sm font-medium mb-1.5 block"
-                  >{t("settings_general_platform")}</label
+                <span class="text-sm font-medium mb-1.5 block"
+                  >{t("settings_general_platform")}</span
                 >
                 {#if selectedPlatform && !showPlatformPicker}
                   <!-- Selected platform badge -->
@@ -1106,11 +1106,19 @@
                                   >{preset.description}</span
                                 >
                                 {#if isCustomPlatform(preset.id)}
-                                  <button
-                                    class="absolute top-1 right-1 opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive transition-all p-0.5"
+                                  <span
+                                    role="button"
+                                    tabindex="0"
+                                    class="absolute top-1 right-1 opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive transition-all p-0.5 cursor-pointer"
                                     onclick={(e: MouseEvent) => {
                                       e.stopPropagation();
                                       deleteCustomEndpoint(preset.id);
+                                    }}
+                                    onkeydown={(e: KeyboardEvent) => {
+                                      if (e.key === "Enter" || e.key === " ") {
+                                        e.stopPropagation();
+                                        deleteCustomEndpoint(preset.id);
+                                      }
                                     }}
                                     title={t("settings_general_deleteCustom")}
                                   >
@@ -1122,7 +1130,7 @@
                                       stroke-width="2"
                                       ><path d="M18 6 6 18" /><path d="m6 6 12 12" /></svg
                                     >
-                                  </button>
+                                  </span>
                                 {/if}
                                 {#if findCredential(platformCredentials, preset.id)?.api_key}
                                   <span
@@ -1344,6 +1352,7 @@
                 </div>
                 {#if def.type === "boolean"}
                   <button
+                    aria-label={def.label}
                     class="relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors duration-200 {getCliConfigValue(
                       def.key,
                       def,
@@ -1410,6 +1419,7 @@
                 </div>
                 {#if def.type === "boolean"}
                   <button
+                    aria-label={def.label}
                     class="relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors duration-200 {getCliConfigValue(
                       def.key,
                       def,
@@ -1495,6 +1505,7 @@
                 </div>
                 {#if def.type === "boolean"}
                   <button
+                    aria-label={def.label}
                     class="relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors duration-200 {getCliConfigValue(
                       def.key,
                       def,
@@ -1722,9 +1733,9 @@
           </p>
 
           <div class="grid grid-cols-2 gap-3">
-            <div>
-              <label class="text-xs text-muted-foreground block mb-1"
-                >{t("settings_remote_name")} *</label
+            <label class="block">
+              <span class="text-xs text-muted-foreground block mb-1"
+                >{t("settings_remote_name")} *</span
               >
               <input
                 type="text"
@@ -1735,10 +1746,10 @@
                   ? 'border-red-500'
                   : 'border-input'}"
               />
-            </div>
-            <div>
-              <label class="text-xs text-muted-foreground block mb-1"
-                >{t("settings_remote_host")} *</label
+            </label>
+            <label class="block">
+              <span class="text-xs text-muted-foreground block mb-1"
+                >{t("settings_remote_host")} *</span
               >
               <input
                 type="text"
@@ -1749,10 +1760,10 @@
                   ? 'border-red-500'
                   : 'border-input'}"
               />
-            </div>
-            <div>
-              <label class="text-xs text-muted-foreground block mb-1"
-                >{t("settings_remote_user")} *</label
+            </label>
+            <label class="block">
+              <span class="text-xs text-muted-foreground block mb-1"
+                >{t("settings_remote_user")} *</span
               >
               <input
                 type="text"
@@ -1763,10 +1774,10 @@
                   ? 'border-red-500'
                   : 'border-input'}"
               />
-            </div>
-            <div>
-              <label class="text-xs text-muted-foreground block mb-1"
-                >{t("settings_remote_port")}</label
+            </label>
+            <label class="block">
+              <span class="text-xs text-muted-foreground block mb-1"
+                >{t("settings_remote_port")}</span
               >
               <input
                 type="number"
@@ -1774,14 +1785,15 @@
                 placeholder="22"
                 class="w-full text-sm px-2 py-1.5 rounded border border-input bg-background"
               />
-            </div>
+            </label>
             <div class="col-span-2">
-              <label class="text-xs text-muted-foreground block mb-1"
-                >{t("settings_remote_keyPath")}</label
+              <span class="text-xs text-muted-foreground block mb-1"
+                >{t("settings_remote_keyPath")}</span
               >
               <div class="flex gap-2">
                 <input
                   type="text"
+                  aria-label={t("settings_remote_keyPath")}
                   bind:value={remoteFormKeyPath}
                   placeholder="~/.ssh/id_ed25519"
                   class="flex-1 text-sm px-2 py-1.5 rounded border border-input bg-background"
@@ -1944,9 +1956,9 @@
                 </div>
               {/if}
             </div>
-            <div>
-              <label class="text-xs text-muted-foreground block mb-1"
-                >{t("settings_remote_remoteCwd")}</label
+            <label class="block">
+              <span class="text-xs text-muted-foreground block mb-1"
+                >{t("settings_remote_remoteCwd")}</span
               >
               <input
                 type="text"
@@ -1956,10 +1968,10 @@
                   : "/home/user/projects"}
                 class="w-full text-sm px-2 py-1.5 rounded border border-input bg-background"
               />
-            </div>
-            <div>
-              <label class="text-xs text-muted-foreground block mb-1"
-                >{t("settings_remote_claudePath")}</label
+            </label>
+            <label class="block">
+              <span class="text-xs text-muted-foreground block mb-1"
+                >{t("settings_remote_claudePath")}</span
               >
               <input
                 type="text"
@@ -1967,7 +1979,7 @@
                 placeholder="claude (default)"
                 class="w-full text-sm px-2 py-1.5 rounded border border-input bg-background"
               />
-            </div>
+            </label>
             <div class="flex items-end">
               <label class="flex items-center gap-2 text-sm cursor-pointer">
                 <input type="checkbox" bind:checked={remoteFormForwardKey} class="rounded" />
@@ -2069,6 +2081,7 @@
             </p>
           </div>
           <button
+            aria-label="Debug mode"
             class="relative inline-flex h-6 w-11 items-center rounded-full transition-colors duration-200 {debugOn
               ? 'bg-primary'
               : 'bg-neutral-700'}"

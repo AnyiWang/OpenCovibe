@@ -29,11 +29,35 @@ pub fn run_dir(run_id: &str) -> PathBuf {
 }
 
 pub(crate) fn dirs_next() -> Option<PathBuf> {
-    #[cfg(target_os = "macos")]
+    // Primary: system user database (works even when $HOME is unset,
+    // e.g. GUI apps launched from Finder/Dock on macOS 26+)
+    #[cfg(unix)]
     {
+        let home = unsafe {
+            let uid = libc::getuid();
+            let pw = libc::getpwuid(uid);
+            if !pw.is_null() {
+                let dir = (*pw).pw_dir;
+                if !dir.is_null() {
+                    Some(
+                        std::ffi::CStr::from_ptr(dir)
+                            .to_string_lossy()
+                            .into_owned(),
+                    )
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        };
+        if let Some(h) = home {
+            return Some(PathBuf::from(h));
+        }
+        // Fallback: $HOME env var
         std::env::var("HOME").ok().map(PathBuf::from)
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(unix))]
     {
         std::env::var("HOME")
             .or_else(|_| std::env::var("USERPROFILE"))

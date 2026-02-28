@@ -1,6 +1,6 @@
 [package]
 name = "OpenCovibe"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Local-first desktop app for AI-assisted vibe coding"
 license = "Apache-2.0"
@@ -33,6 +33,7 @@ notify = { version = "7", default-features = false, features = ["macos_fsevent"]
 reqwest = { version = "0.12", features = ["json", "stream"] }
 futures-util = "0.3"
 tokio-util = { version = "0.7", features = ["rt"] }
+libc = "0.2"
 log = "0.4"
 env_logger = "0.11"
 sha2 = "0.10"

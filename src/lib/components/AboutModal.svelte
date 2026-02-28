@@ -1,10 +1,21 @@
 <script lang="ts">
+  import { onMount } from "svelte";
   import { renderMarkdown } from "$lib/utils/markdown";
   import { currentLocale } from "$lib/i18n/index.svelte";
   import readmeEn from "../../../README.md?raw";
   import readmeZhCN from "../../../README.zh-CN.md?raw";
 
   let { open = $bindable(false) }: { open: boolean } = $props();
+
+  let appVersion = $state("");
+  onMount(async () => {
+    try {
+      const { getVersion } = await import("@tauri-apps/api/app");
+      appVersion = await getVersion();
+    } catch {
+      appVersion = "";
+    }
+  });
 
   /** Fix image paths for Tauri webview and remove redundant language switcher. */
   function processReadme(html: string): string {
@@ -46,7 +57,7 @@
     >
       <!-- Header -->
       <div class="flex items-center justify-between border-b border-border px-6 py-4">
-        <span class="text-xs text-muted-foreground">v0.1.0</span>
+        <span class="text-xs text-muted-foreground">{appVersion ? `v${appVersion}` : ""}</span>
         <button
           class="rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
           onclick={() => (open = false)}

@@ -1,6 +1,6 @@
 {
   "name": "opencovibe",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Local-first desktop app for AI-assisted vibe coding",
   "type": "module",
   "license": "Apache-2.0",
@@ -33,7 +33,8 @@
     "i18n:check": "node scripts/i18n-check.mjs",
     "doc:check": "node scripts/doc-check.mjs",
     "fix": "npm run lint:fix && npm run format && cargo fmt --manifest-path src-tauri/Cargo.toml",
-    "verify": "npm run lint && npm run format:check && npm run i18n:check && npm run test && npm run build && npm run rust:check"
+    "verify": "npm run lint && npm run format:check && npm run i18n:check && npm run test && npm run build && npm run rust:check",
+    "release": "node scripts/release.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.2",
