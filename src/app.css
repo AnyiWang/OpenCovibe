@@ -644,6 +644,8 @@ code.hljs {
   height: 100%;
 }
 .cm-editor .cm-scroller {
+  display: flex !important;
+  flex-direction: row !important;
   overflow: auto;
 }
 .cm-editor .cm-gutters {

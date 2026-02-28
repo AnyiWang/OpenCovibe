@@ -229,7 +229,5 @@
   .code-editor-wrapper :global(.cm-editor) {
     height: 100%;
   }
-  .code-editor-wrapper :global(.cm-scroller) {
-    overflow: auto;
-  }
+  /* scroller flex layout is enforced globally in app.css */
 </style>
