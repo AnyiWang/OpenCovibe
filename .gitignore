@@ -49,4 +49,7 @@ AGENTS.md
 memory/
 .claude/
 
+# Git hooks (local only)
+.githooks/
+
 .metadata_never_index

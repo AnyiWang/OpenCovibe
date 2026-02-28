@@ -282,7 +282,7 @@ pub(crate) fn detect_cli_api_key(
 /// Handles: `export VAR=val`, `export VAR="val"`, `export VAR='val'`.
 /// Skips commented lines. Returns (value, file_path) of the first match.
 fn read_env_from_shell_config(var_name: &str) -> Option<(String, String)> {
-    let home = std::env::var("HOME").ok()?;
+    let home = crate::storage::home_dir()?;
     let config_files = [
         format!("{}/.zshrc", home),
         format!("{}/.zprofile", home),

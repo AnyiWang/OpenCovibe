@@ -641,7 +641,7 @@ fn resolve_path(path: &str, cwd: &str) -> Result<String, String> {
     let resolved = if path.starts_with('/') {
         std::path::PathBuf::from(path)
     } else if path.starts_with('~') {
-        let home = std::env::var("HOME").unwrap_or_default();
+        let home = crate::storage::home_dir().unwrap_or_default();
         std::path::PathBuf::from(home).join(path.strip_prefix("~/").unwrap_or(path))
     } else {
         std::path::PathBuf::from(cwd).join(path)

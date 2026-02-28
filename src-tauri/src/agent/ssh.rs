@@ -26,7 +26,7 @@ fn shell_escape_path(s: &str) -> String {
 /// Unlike shell_escape_path, this does actual expansion since `Command::arg()` doesn't go through a shell.
 pub fn expand_local_tilde(path: &str) -> String {
     if let Some(rest) = path.strip_prefix("~/") {
-        if let Ok(home) = std::env::var("HOME") {
+        if let Some(home) = crate::storage::home_dir() {
             return format!("{}/{}", home, rest);
         }
     }

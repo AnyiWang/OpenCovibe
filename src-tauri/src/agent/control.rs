@@ -259,7 +259,7 @@ async fn read_control_response(
 
 /// Read the "model" field from ~/.claude/settings.json (Claude Code's active model).
 fn read_claude_settings_model() -> Option<String> {
-    let home = std::env::var("HOME").ok()?;
+    let home = crate::storage::home_dir()?;
     let path = std::path::Path::new(&home)
         .join(".claude")
         .join("settings.json");

@@ -12,7 +12,7 @@ use tokio::time::Duration;
 
 /// Build a PATH that includes common binary locations
 pub fn augmented_path() -> String {
-    let home = std::env::var("HOME").unwrap_or_default();
+    let home = crate::storage::home_dir().unwrap_or_default();
     let current_path = std::env::var("PATH").unwrap_or_default();
     let extra_dirs = [
         format!("{}/.local/bin", home),
@@ -293,7 +293,7 @@ pub(crate) fn resolve_claude_path() -> String {
     if let Some(ref path) = *cached {
         return path.clone();
     }
-    let home = std::env::var("HOME").unwrap_or_default();
+    let home = crate::storage::home_dir().unwrap_or_default();
     let candidates = [
         format!("{}/.local/bin/claude", home),
         "/usr/local/bin/claude".to_string(),

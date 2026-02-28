@@ -42,7 +42,7 @@ fn validate_file_path(path: &str, extra_allowed: Option<&str>) -> Result<PathBuf
     .map_err(|e| format!("Cannot resolve path: {}", e))?;
 
     let data_dir = crate::storage::data_dir();
-    let home = std::env::var("HOME").unwrap_or_default();
+    let home = crate::storage::home_dir().unwrap_or_default();
     let claude_dir = PathBuf::from(&home).join(".claude");
 
     // Allow: ~/.opencovibe/*, ~/.claude/*

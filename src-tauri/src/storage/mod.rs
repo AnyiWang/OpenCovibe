@@ -28,12 +28,14 @@ pub fn run_dir(run_id: &str) -> PathBuf {
     runs_dir().join(run_id)
 }
 
-pub(crate) fn dirs_next() -> Option<PathBuf> {
-    // Primary: system user database (works even when $HOME is unset,
-    // e.g. GUI apps launched from Finder/Dock on macOS 26+)
+/// Resolve the user's home directory reliably.
+/// Primary: `getpwuid()` system call (works even when `$HOME` is unset,
+/// e.g. GUI apps launched from Finder/Dock on macOS 26+).
+/// Fallback: `$HOME` (Unix) or `$USERPROFILE` (Windows).
+pub fn home_dir() -> Option<String> {
     #[cfg(unix)]
     {
-        let home = unsafe {
+        let pwd_home = unsafe {
             let uid = libc::getuid();
             let pw = libc::getpwuid(uid);
             if !pw.is_null() {
@@ -51,19 +53,21 @@ pub(crate) fn dirs_next() -> Option<PathBuf> {
                 None
             }
         };
-        if let Some(h) = home {
-            return Some(PathBuf::from(h));
+        if pwd_home.is_some() {
+            return pwd_home;
         }
-        // Fallback: $HOME env var
-        std::env::var("HOME").ok().map(PathBuf::from)
+        std::env::var("HOME").ok()
     }
     #[cfg(not(unix))]
     {
         std::env::var("HOME")
             .or_else(|_| std::env::var("USERPROFILE"))
             .ok()
-            .map(PathBuf::from)
     }
+}
+
+pub(crate) fn dirs_next() -> Option<PathBuf> {
+    home_dir().map(PathBuf::from)
 }
 
 pub fn ensure_dir(path: &std::path::Path) -> std::io::Result<()> {
