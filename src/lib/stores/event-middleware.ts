@@ -4,11 +4,11 @@
  * - Registers all 10 Tauri event listeners once
  * - Routes events by run_id to the subscribed SessionStore
  * - Microbatches bus-events (16ms) to reduce reactive updates
- * - PTY/Pipe/Permission events go through handler callbacks (DOM-bound)
+ * - PTY/Pipe events go through handler callbacks (DOM-bound)
  */
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { dbg, dbgWarn } from "$lib/utils/debug";
-import type { BusEvent, HookEvent, ToolRequest, ToolResultPayload } from "$lib/types";
+import type { BusEvent, HookEvent } from "$lib/types";
 import type { SessionStore } from "./session-store.svelte";
 import type { TeamStore } from "./team-store.svelte";
 
@@ -22,10 +22,6 @@ export interface PtyHandler {
 export interface PipeHandler {
   onDelta(delta: { text: string }): void;
   onDone(done: { ok: boolean; code: number; error?: string }): void;
-}
-
-export interface PermissionHandler {
-  onToolRequest(req: ToolRequest): void;
 }
 
 export interface RunEventHandler {
@@ -43,7 +39,6 @@ export class EventMiddleware {
   // Handler callbacks (set by page component)
   private _ptyHandler: PtyHandler | null = null;
   private _pipeHandler: PipeHandler | null = null;
-  private _permissionHandler: PermissionHandler | null = null;
   private _runEventHandler: RunEventHandler | null = null;
   private _teamStore: TeamStore | null = null;
 
@@ -96,13 +91,13 @@ export class EventMiddleware {
       this._ptyHandler?.onExit(event.payload);
     });
 
-    // 4. Chat delta (pipe mode / API mode)
+    // 4. Chat delta (pipe mode)
     await reg<{ text: string }>("chat-delta", (event) => {
       dbg("middleware", "chat-delta", { len: event.payload.text.length });
       this._pipeHandler?.onDelta(event.payload);
     });
 
-    // 5. Chat done (pipe mode / API mode)
+    // 5. Chat done (pipe mode)
     await reg<{ ok: boolean; code: number; error?: string }>("chat-done", (event) => {
       dbg("middleware", "chat-done", event.payload);
       this._pipeHandler?.onDone(event.payload);
@@ -132,27 +127,13 @@ export class EventMiddleware {
       },
     );
 
-    // 9. Tool request (API mode permissions)
-    await reg<ToolRequest>("tool-request", (event) => {
-      dbg("middleware", "tool-request", { tool: event.payload.tool_name });
-      this._permissionHandler?.onToolRequest(event.payload);
-    });
-
-    // 10. Tool result (API mode — currently no-op, handled via hook-event)
-    await reg<ToolResultPayload>("tool-result", (event) => {
-      dbg("middleware", "tool-result", {
-        tool: event.payload.tool_name,
-        status: event.payload.status,
-      });
-    });
-
-    // 11. Team file watcher events
+    // 9. Team file watcher events
     await reg<{ team_name: string; change: string }>("team-update", (event) => {
       dbg("middleware", "team-update", event.payload);
       this._teamStore?.handleTeamUpdate(event.payload);
     });
 
-    // 12. Task file watcher events
+    // 10. Task file watcher events
     await reg<{ team_name: string; task_id: string; change: string }>("task-update", (event) => {
       dbg("middleware", "task-update", event.payload);
       this._teamStore?.handleTaskUpdate(event.payload);
@@ -224,10 +205,6 @@ export class EventMiddleware {
 
   setPipeHandler(handler: PipeHandler | null): void {
     this._pipeHandler = handler;
-  }
-
-  setPermissionHandler(handler: PermissionHandler | null): void {
-    this._permissionHandler = handler;
   }
 
   setRunEventHandler(handler: RunEventHandler | null): void {

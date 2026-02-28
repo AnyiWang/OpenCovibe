@@ -195,21 +195,6 @@ export interface TokenUsage {
   cost: number;
 }
 
-export interface ToolRequest {
-  run_id: string;
-  request_id: string;
-  tool_name: string;
-  input: Record<string, unknown>;
-}
-
-export interface ToolResultPayload {
-  run_id: string;
-  request_id: string;
-  tool_name: string;
-  output: Record<string, unknown>;
-  status: string;
-}
-
 export interface AgentSettings {
   agent: string;
   model?: string;

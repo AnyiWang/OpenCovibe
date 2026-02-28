@@ -382,21 +382,6 @@ pub fn reconcile_orphaned_runs() {
                         );
                     }
 
-                    // Migrate: detect API runs that defaulted to "cli"
-                    if meta.auth_mode == "cli" {
-                        let events_path = entry.path().join("events.jsonl");
-                        if events_path.exists() {
-                            if let Ok(events_content) = fs::read_to_string(&events_path) {
-                                if events_content.contains("\"source\":\"api_chat\"")
-                                    || events_content.contains("\"source\": \"api_chat\"")
-                                {
-                                    meta.auth_mode = "api".to_string();
-                                    dirty = true;
-                                }
-                            }
-                        }
-                    }
-
                     if dirty {
                         let _ = save_meta(&meta);
                     }

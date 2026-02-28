@@ -81,13 +81,7 @@
         return;
       }
 
-      if (!cliResult.found && authResult.has_api_key) {
-        // No CLI but has API key — can use API direct mode, skip
-        await completeOnboarding();
-        return;
-      }
-
-      // CLI not found, no auth — show install commands
+      // CLI not found — show install commands
       step = "cli_not_found";
       await loadInstallMethods();
     } catch (e) {

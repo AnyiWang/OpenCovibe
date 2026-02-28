@@ -1,5 +1,4 @@
 pub mod agent;
-pub mod api_client;
 pub mod commands;
 pub mod hooks;
 pub mod models;
@@ -11,7 +10,6 @@ use agent::control::CliInfoCache;
 use agent::pty::new_pty_map;
 use agent::spawn_locks::SpawnLocks;
 use agent::stream::new_process_map;
-use api_client::executor::new_permission_map;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use storage::events::EventWriter;
@@ -50,7 +48,6 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .manage(new_process_map())
         .manage(new_pty_map())
-        .manage(new_permission_map())
         .manage(new_actor_session_map())
         .manage(CliInfoCache::new())
         .manage(Arc::new(EventWriter::new()))
@@ -103,9 +100,6 @@ pub fn run() {
             commands::pty::write_pty,
             commands::pty::resize_pty,
             commands::pty::close_pty,
-            commands::api_chat::send_api_message,
-            commands::api_chat::resolve_permission,
-            commands::api_chat::stop_api_agent,
             commands::session::start_session,
             commands::session::send_session_message,
             commands::session::stop_session,

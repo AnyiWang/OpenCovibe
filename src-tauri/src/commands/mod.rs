@@ -1,5 +1,4 @@
 pub mod agents;
-pub mod api_chat;
 pub mod artifacts;
 pub mod chat;
 pub mod cli_config;

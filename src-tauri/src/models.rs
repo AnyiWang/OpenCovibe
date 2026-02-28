@@ -721,24 +721,6 @@ pub struct PtyExit {
     pub exit_code: i32,
 }
 
-// API mode types
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolRequest {
-    pub run_id: String,
-    pub request_id: String,
-    pub tool_name: String,
-    pub input: serde_json::Value,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolResult {
-    pub run_id: String,
-    pub request_id: String,
-    pub tool_name: String,
-    pub output: serde_json::Value,
-    pub status: String, // "success" | "error" | "denied"
-}
-
 // ── CLI Control Protocol types ──
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

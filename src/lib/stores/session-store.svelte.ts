@@ -1123,7 +1123,7 @@ export class SessionStore {
           reducer: Math.round(reducerMs),
           entries: this.timeline.length,
         });
-      } else if (!this.isApiMode) {
+      } else {
         // CLI mode: replay history in terminal
         const events = await api.getRunEvents(id);
         if (gen !== this._loadGen) {
@@ -1148,24 +1148,6 @@ export class SessionStore {
         if (hasHistory && !this.isRunning) {
           xtermRef.writeText(`\r\n\x1b[90m--- Session ended ---\x1b[0m\r\n`);
         }
-      } else {
-        // API mode: replay messages from events (batched)
-        const events = await api.getRunEvents(id);
-        if (gen !== this._loadGen) {
-          dbg("store", "stale after getRunEvents, gen=", gen);
-          return;
-        }
-        const apiTl: TimelineEntry[] = [];
-        for (const event of events) {
-          const text = String((event.payload as Record<string, unknown>).text ?? "");
-          if (!text) continue;
-          if (event.type === "user") {
-            apiTl.push({ kind: "user", id: event.id, content: text, ts: event.timestamp });
-          } else if (event.type === "assistant") {
-            apiTl.push({ kind: "assistant", id: event.id, content: text, ts: event.timestamp });
-          }
-        }
-        this.timeline = apiTl;
       }
 
       // After replay, reconcile phase with run.status:
@@ -1254,23 +1236,6 @@ export class SessionStore {
         } else {
           this._startResponseTimeout(run.id);
         }
-      } else if (this.isApiMode) {
-        this.timeline = [
-          ...this.timeline,
-          {
-            kind: "user",
-            id: crypto.randomUUID(),
-            content: prompt,
-            ts: new Date().toISOString(),
-          },
-        ];
-        this._setPhase("running");
-        if (this.isKnownSlashCommand(prompt)) {
-          dbg("store", "skip response timeout for slash command", { cmd: prompt.split(" ")[0] });
-        } else {
-          this._startResponseTimeout(run.id);
-        }
-        await api.sendApiMessage(run.id, prompt);
       } else if (this.agent === "claude") {
         // CLI PTY mode — caller handles PTY spawn
         // Return run ID; page will queue pendingMessage and spawn PTY
@@ -1323,23 +1288,6 @@ export class SessionStore {
         } else {
           this._startResponseTimeout(this.run.id);
         }
-      } else if (this.isApiMode) {
-        this.timeline = [
-          ...this.timeline,
-          {
-            kind: "user",
-            id: crypto.randomUUID(),
-            content: text,
-            ts: new Date().toISOString(),
-          },
-        ];
-        this._setPhase("running");
-        if (this.isKnownSlashCommand(text)) {
-          dbg("store", "skip response timeout for slash command", { cmd: text.split(" ")[0] });
-        } else {
-          this._startResponseTimeout(this.run.id);
-        }
-        await api.sendApiMessage(this.run.id, text);
       } else if (this.agent === "claude" && this.ptySpawned) {
         await api.sendChatMessage(
           this.run.id,
@@ -1413,8 +1361,6 @@ export class SessionStore {
           // Force frontend state to stopped regardless.
           dbgWarn("store", "stopSession failed (forcing stopped):", e);
         }
-      } else if (this.isApiMode) {
-        await api.stopApiAgent(this.run.id);
       } else {
         await api.stopRun(this.run.id);
       }
@@ -1818,34 +1764,11 @@ export class SessionStore {
     }
   }
 
-  /** Handle chat-done event (pipe mode / API mode). */
-  handleChatDone(done: { ok: boolean; code: number; error?: string }): void {
+  /** Handle chat-done event (pipe mode). */
+  handleChatDone(_done: { ok: boolean; code: number; error?: string }): void {
     if (!this.run) return;
 
-    if (this.isApiMode) {
-      if (this.streamingText.trim()) {
-        this.timeline = [
-          ...this.timeline,
-          {
-            kind: "assistant",
-            id: crypto.randomUUID(),
-            content: this.streamingText,
-            ts: new Date().toISOString(),
-          },
-        ];
-        this.streamingText = "";
-      }
-      if (!done.ok && done.error) {
-        this.error = done.error;
-      }
-      this._setPhase("completed");
-      api
-        .getRun(this.run.id)
-        .then((r) => {
-          this.run = r;
-        })
-        .catch((e) => dbgWarn("store", "getRun after API done failed:", e));
-    } else if (this.run.agent === "codex") {
+    if (this.run.agent === "codex") {
       this._setPhase("completed");
       api
         .getRun(this.run.id)
@@ -1856,12 +1779,10 @@ export class SessionStore {
     }
   }
 
-  /** Handle chat-delta event (pipe mode / API mode). */
+  /** Handle chat-delta event (pipe mode). */
   handleChatDelta(text: string, xtermRef?: { writeText(s: string): void }): void {
     if (!this.run) return;
-    if (this.isApiMode) {
-      this.streamingText += text;
-    } else if (this.run.agent === "codex" && xtermRef) {
+    if (this.run.agent === "codex" && xtermRef) {
       xtermRef.writeText(text);
     }
   }

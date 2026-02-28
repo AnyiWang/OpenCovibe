@@ -19,7 +19,6 @@
   } from "$lib/stores";
   import type {
     Attachment,
-    ToolRequest as ToolRequestType,
     UserSettings,
     AgentSettings,
     SessionMode,
@@ -41,7 +40,6 @@
   import BackgroundTaskPanel from "$lib/components/BackgroundTaskPanel.svelte";
   import ShortcutHelpPanel from "$lib/components/ShortcutHelpPanel.svelte";
   import type { PromptInputSnapshot } from "$lib/types";
-  import PermissionModal from "$lib/components/PermissionModal.svelte";
   import MarkdownContent from "$lib/components/MarkdownContent.svelte";
   import HookReviewCard from "$lib/components/HookReviewCard.svelte";
   import CliSessionBrowser from "$lib/components/CliSessionBrowser.svelte";
@@ -77,7 +75,6 @@
   let promptRef: PromptInput | undefined = $state();
   let xtermReady = $state(false);
   let pendingMessage = $state<{ text: string; attachments: Attachment[] } | null>(null);
-  let pendingPermission = $state<ToolRequestType | null>(null);
   let sidebarCollapsed = $state(false);
   let chatAreaRef: HTMLDivElement | undefined = $state();
   let agentSettings = $state<AgentSettings | null>(null);
@@ -796,7 +793,7 @@
       },
     });
 
-    // Pipe handler: chat-delta / chat-done (Codex pipe mode + API mode)
+    // Pipe handler: chat-delta / chat-done (Codex pipe mode)
     middleware.setPipeHandler({
       onDelta(delta) {
         store.handleChatDelta(delta.text, xtermRef);
@@ -818,15 +815,6 @@
           if (event.type === "stderr") {
             xtermRef.writeText(`\x1b[31m${event.text}\x1b[0m\r\n`);
           }
-        }
-      },
-    });
-
-    // Permission handler: API mode tool requests
-    middleware.setPermissionHandler({
-      onToolRequest(req) {
-        if (store.run && req.run_id === store.run.id) {
-          pendingPermission = req;
         }
       },
     });
@@ -909,7 +897,7 @@
         shortcutHelpOpen = false;
         return;
       }
-      if (store.isRunning && !store.isApiMode) {
+      if (store.isRunning) {
         store.interrupt();
       }
     });
@@ -1045,7 +1033,7 @@
 
   // Auto-scroll chat
   $effect(() => {
-    if ((store.isApiMode || store.useStreamSession) && chatAreaRef) {
+    if (store.useStreamSession && chatAreaRef) {
       const _ = store.timeline.length + store.streamingText.length;
       if (isExpandingTimeline) return; // progressive expansion handles its own scrolling
       requestAnimationFrame(() => {
@@ -1118,7 +1106,6 @@
       !store.ptySpawned &&
       pendingMessage &&
       store.agent === "claude" &&
-      !store.isApiMode &&
       !store.useStreamSession
     ) {
       await doSpawnPty(cols, rows);
@@ -1194,7 +1181,7 @@
         window.dispatchEvent(new Event("ocv:runs-changed"));
 
         // CLI PTY mode: queue message and spawn PTY
-        if (!store.useStreamSession && !store.isApiMode && store.agent === "claude") {
+        if (!store.useStreamSession && store.agent === "claude") {
           pendingMessage = { text, attachments };
           if (xtermReady && xtermRef) {
             await doSpawnPty(80, 24);
@@ -1904,10 +1891,6 @@
     await handleResume("fork", sourceRunId);
   }
 
-  function handlePermissionResolved() {
-    pendingPermission = null;
-  }
-
   // ── Chat-level toast (same pattern as PromptInput's showFileToast) ──
   let chatToast = $state<string | null>(null);
   let chatToastTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -2402,13 +2385,7 @@
       microcompactCount={store.microcompactCount}
       turnUsages={store.turnUsages}
       activeTaskCount={store.activeBackgroundTasks.length}
-      mode={store.run || store.isApiMode
-        ? store.isApiMode
-          ? "API"
-          : store.useStreamSession
-            ? "Stream"
-            : "CLI"
-        : ""}
+      mode={store.run ? (store.useStreamSession ? "Stream" : "CLI") : ""}
       toolsCount={sidebarCollapsed
         ? store.timeline.some((e) => e.kind === "tool")
           ? store.timeline.filter((e) => e.kind === "tool").length
@@ -2452,7 +2429,7 @@
 
     <!-- Main area -->
     <div class="flex-1 overflow-hidden relative">
-      {#if store.isApiMode || store.useStreamSession}
+      {#if store.useStreamSession}
         <!-- API mode: chat messages -->
         <div class="h-full overflow-y-auto" style="overflow-anchor:auto" bind:this={chatAreaRef}>
           {#if welcomeVisible}
@@ -3170,9 +3147,6 @@
       bind:requestedTab={sidebarRequestedTab}
     />
   {/if}
-
-  <!-- Permission modal (API mode) -->
-  <PermissionModal request={pendingPermission} onResolved={handlePermissionResolved} />
 
   <!-- CLI session browser modal -->
   {#if showCliBrowser}

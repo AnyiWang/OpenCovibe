@@ -19,8 +19,6 @@ vi.mock("$lib/api", () => ({
   sendChatMessage: vi.fn(),
   stopSession: vi.fn(),
   stopRun: vi.fn(),
-  sendApiMessage: vi.fn(),
-  stopApiAgent: vi.fn(),
   sendSessionControl: vi.fn(),
   syncCliSession: vi.fn().mockResolvedValue({ newEvents: 0 }),
 }));

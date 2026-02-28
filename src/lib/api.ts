@@ -335,26 +335,6 @@ export async function resizePty(runId: string, rows: number, cols: number): Prom
   return invoke("resize_pty", { runId, rows, cols });
 }
 
-// API mode
-export async function sendApiMessage(
-  runId: string,
-  message: string,
-  model?: string,
-): Promise<void> {
-  dbg("api", "sendApiMessage", { runId, msgLen: message.length });
-  return invoke("send_api_message", { runId, message, model });
-}
-
-export async function resolvePermission(requestId: string, decision: string): Promise<void> {
-  dbg("api", "resolvePermission", { requestId, decision });
-  return invoke("resolve_permission", { requestId, decision });
-}
-
-export async function stopApiAgent(runId: string): Promise<void> {
-  dbg("api", "stopApiAgent", runId);
-  return invoke("stop_api_agent", { runId });
-}
-
 // CLI Control Protocol
 export async function getCliInfo(forceRefresh?: boolean): Promise<CliInfo> {
   dbg("api", "getCliInfo", { forceRefresh });

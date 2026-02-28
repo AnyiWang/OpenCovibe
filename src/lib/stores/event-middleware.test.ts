@@ -75,9 +75,9 @@ describe("EventMiddleware", () => {
   // ── Lifecycle ──
 
   describe("lifecycle", () => {
-    it("registers all 12 listeners on start()", async () => {
+    it("registers all 10 listeners on start()", async () => {
       await mw.start();
-      expect(_listeners.size).toBe(12);
+      expect(_listeners.size).toBe(10);
       expect(_listeners.has("bus-event")).toBe(true);
       expect(_listeners.has("pty-output")).toBe(true);
       expect(_listeners.has("pty-exit")).toBe(true);
@@ -86,8 +86,6 @@ describe("EventMiddleware", () => {
       expect(_listeners.has("run-event")).toBe(true);
       expect(_listeners.has("hook-event")).toBe(true);
       expect(_listeners.has("hook-usage")).toBe(true);
-      expect(_listeners.has("tool-request")).toBe(true);
-      expect(_listeners.has("tool-result")).toBe(true);
       expect(_listeners.has("team-update")).toBe(true);
       expect(_listeners.has("task-update")).toBe(true);
     });
@@ -341,17 +339,6 @@ describe("EventMiddleware", () => {
       expect(onDelta).toHaveBeenCalledWith({ text: "hello" });
     });
 
-    it("routes tool-request to permission handler", async () => {
-      await mw.start();
-      const onToolRequest = vi.fn();
-      mw.setPermissionHandler({ onToolRequest });
-
-      const handler = _listeners.get("tool-request")!;
-      handler({ payload: { run_id: "run-1", request_id: "r1", tool_name: "Bash", input: {} } });
-
-      expect(onToolRequest).toHaveBeenCalledOnce();
-    });
-
     it("no-op when handler is null", async () => {
       await mw.start();
       // Don't set any handlers — should not throw
@@ -381,8 +368,8 @@ describe("EventMiddleware", () => {
 
       await mw.start();
 
-      // Should have 11 listeners (12 - 1 failed)
-      expect(_listeners.size).toBe(11);
+      // Should have 9 listeners (10 - 1 failed)
+      expect(_listeners.size).toBe(9);
       expect(dbgWarn).toHaveBeenCalledWith(
         "middleware",
         expect.stringContaining("failed to register listener"),
