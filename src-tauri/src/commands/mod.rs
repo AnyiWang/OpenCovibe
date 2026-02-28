@@ -22,3 +22,4 @@ pub mod session;
 pub mod settings;
 pub mod stats;
 pub mod teams;
+pub mod updates;

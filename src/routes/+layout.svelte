@@ -15,6 +15,7 @@
   import SetupWizard from "$lib/components/SetupWizard.svelte";
   import AboutModal from "$lib/components/AboutModal.svelte";
   import CliSessionBrowser from "$lib/components/CliSessionBrowser.svelte";
+  import UpdateBanner from "$lib/components/UpdateBanner.svelte";
   import type {
     TaskRun,
     UserSettings,
@@ -1374,6 +1375,7 @@
 
   <!-- Main content -->
   <div class="flex flex-1 flex-col overflow-hidden">
+    <UpdateBanner />
     <!-- Top bar (non-chat pages only — chat uses SessionStatusBar) -->
     {#if !isChatPage}
       <header class="flex h-14 items-center gap-3 border-b px-4">

@@ -1016,6 +1016,9 @@
   "cliSync_imported": "Imported",
   "cliSync_alreadyImported": "Already imported",
   "cliSync_noSessions": "No CLI sessions found for this project",
+  "cliSync_allProjects": "All Projects",
+  "cliSync_filterAll": "All",
+  "cliSync_filterProject": "Project",
   "cliSync_messages": "{count} messages",
   "cliSync_subagents": "Has subagents",
   "cliSync_syncAvailable": "Updates available",
@@ -1211,5 +1214,9 @@
   "agent_nameFormat": "Lowercase letters, numbers, and hyphens only.",
   "agent_inherit": "inherit",
   "agent_noTools": "No tools specified",
-  "agent_allTools": "All tools (inherited)"
+  "agent_allTools": "All tools (inherited)",
+
+  "appUpdate_available": "A new version ({version}) is available.",
+  "appUpdate_download": "Download",
+  "appUpdate_dismiss": "Dismiss"
 }

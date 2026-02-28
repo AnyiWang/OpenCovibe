@@ -58,9 +58,9 @@ pub struct SyncResult {
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
-/// Encode cwd for Claude CLI directory naming: '/' → '-'.
+/// Encode cwd for Claude CLI directory naming: '/' and '\' → '-'.
 pub fn encode_cwd(cwd: &str) -> String {
-    cwd.replace('/', "-")
+    cwd.replace(['/', '\\'], "-")
 }
 
 fn claude_projects_dir() -> Option<PathBuf> {
@@ -698,15 +698,18 @@ pub fn discover_sessions(target_cwd: &str) -> Result<Vec<CliSessionSummary>, Str
 
     // Collect all JSONL files with metadata
     let mut candidates: Vec<(PathBuf, u64, std::time::SystemTime)> = Vec::new();
+    let show_all = target_cwd.is_empty() || target_cwd == "/";
 
-    // Quick path: try encoded cwd directory first
-    let encoded = encode_cwd(target_cwd);
-    let quick_dir = projects_dir.join(&encoded);
-    if quick_dir.is_dir() {
-        collect_jsonl_files(&quick_dir, &mut candidates);
+    // Quick path: try encoded cwd directory first (skip when showing all)
+    if !show_all {
+        let encoded = encode_cwd(target_cwd);
+        let quick_dir = projects_dir.join(&encoded);
+        if quick_dir.is_dir() {
+            collect_jsonl_files(&quick_dir, &mut candidates);
+        }
     }
 
-    // Fallback: scan all project directories
+    // Fallback (or show-all): scan all project directories
     if candidates.is_empty() {
         if let Ok(entries) = fs::read_dir(&projects_dir) {
             for entry in entries.flatten() {
@@ -979,9 +982,10 @@ fn extract_summary(
         }
     }
 
-    // If cwd doesn't match target, skip
+    // If cwd doesn't match target, skip (empty or "/" means show all)
+    let show_all = target_cwd.is_empty() || target_cwd == "/";
     let matched_cwd = match &cwd {
-        Some(c) if c == target_cwd => c.clone(),
+        Some(c) if show_all || c == target_cwd => c.clone(),
         _ => return Ok(None),
     };
 
@@ -1629,6 +1633,15 @@ mod tests {
         assert_eq!(encode_cwd("/Users/alice/project"), "-Users-alice-project");
         assert_eq!(encode_cwd("/"), "-");
         assert_eq!(encode_cwd("relative"), "relative");
+        // Windows paths
+        assert_eq!(
+            encode_cwd("C:\\Users\\alice\\project"),
+            "C:-Users-alice-project"
+        );
+        assert_eq!(
+            encode_cwd("C:/Users/alice/project"),
+            "C:-Users-alice-project"
+        );
     }
 
     #[test]

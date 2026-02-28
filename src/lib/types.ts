@@ -979,6 +979,15 @@ export type TimelineEntry =
   | { kind: "separator"; id: string; content: string; ts: string }
   | { kind: "command_output"; id: string; content: string; ts: string };
 
+// ── App Updates ──
+
+export interface UpdateInfo {
+  hasUpdate: boolean;
+  latestVersion: string;
+  currentVersion: string;
+  downloadUrl: string;
+}
+
 // ── Changelog ──
 
 export interface ChangelogEntry {

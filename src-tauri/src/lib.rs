@@ -166,6 +166,7 @@ pub fn run() {
             commands::cli_sync::discover_cli_sessions,
             commands::cli_sync::import_cli_session,
             commands::cli_sync::sync_cli_session,
+            commands::updates::check_for_updates,
         ])
         .setup(|app| {
             // Start team file watcher for ~/.claude/teams/ and ~/.claude/tasks/

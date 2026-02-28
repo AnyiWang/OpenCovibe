@@ -3,6 +3,7 @@
   import { t } from "$lib/i18n/index.svelte";
   import { dbg, dbgWarn } from "$lib/utils/debug";
   import { fmtRelative } from "$lib/i18n/format";
+  import { cwdDisplayLabel } from "$lib/utils/format";
   import type { CliSessionSummary, ImportResult, SyncResult } from "$lib/types";
 
   let {
@@ -23,17 +24,47 @@
   let warning = $state<string | null>(null);
   let importingAll = $state(false);
 
-  const filtered = $derived(
-    searchQuery.trim()
-      ? sessions.filter(
-          (s) =>
-            s.firstPrompt.toLowerCase().includes(searchQuery.toLowerCase()) ||
-            (s.model ?? "").toLowerCase().includes(searchQuery.toLowerCase()),
-        )
-      : sessions,
-  );
+  // ── Project filter ──
+  const isShowAll = $derived(!cwd || cwd === "/");
+  let selectedProject = $state<string | null>(null); // null = all
 
-  const newCount = $derived(sessions.filter((s) => !s.alreadyImported).length);
+  const projects = $derived.by(() => {
+    const cwdMap = new Map<string, number>();
+    for (const s of sessions) {
+      if (s.cwd) {
+        cwdMap.set(s.cwd, (cwdMap.get(s.cwd) ?? 0) + 1);
+      }
+    }
+    return Array.from(cwdMap.entries())
+      .sort((a, b) => b[1] - a[1])
+      .map(([path, count]) => ({ path, label: cwdDisplayLabel(path), count }));
+  });
+
+  const filtered = $derived.by(() => {
+    let list = sessions;
+    // Project filter
+    if (selectedProject) {
+      list = list.filter((s) => s.cwd === selectedProject);
+    }
+    // Search filter
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase();
+      list = list.filter(
+        (s) =>
+          s.firstPrompt.toLowerCase().includes(q) ||
+          (s.model ?? "").toLowerCase().includes(q) ||
+          (s.cwd ?? "").toLowerCase().includes(q),
+      );
+    }
+    return list;
+  });
+
+  const newCount = $derived(filtered.filter((s) => !s.alreadyImported).length);
+
+  /** Effective cwd for import — use the session's own cwd */
+  function importCwd(session: CliSessionSummary): string {
+    return session.cwd || cwd;
+  }
 
   // ── Load sessions on mount ──
 
@@ -57,19 +88,22 @@
     }
   }
 
-  async function importSession(sessionId: string) {
+  async function importSession(session: CliSessionSummary) {
     if (importingId) return;
-    importingId = sessionId;
+    importingId = session.sessionId;
     error = null;
     warning = null;
-    dbg("cli-browser", "importing session", { sessionId });
+    const sessionCwd = importCwd(session);
+    dbg("cli-browser", "importing session", { sessionId: session.sessionId, cwd: sessionCwd });
     try {
-      const result = await invoke<ImportResult>("import_cli_session", { sessionId, cwd });
+      const result = await invoke<ImportResult>("import_cli_session", {
+        sessionId: session.sessionId,
+        cwd: sessionCwd,
+      });
       dbg("cli-browser", "import success", { runId: result.runId, events: result.eventsImported });
       if (result.usageIncomplete) {
         warning = t("cliSync_usageIncomplete");
       }
-      // Refresh list to reflect imported status
       await discoverSessions();
       onimported(result.runId);
     } catch (e) {
@@ -103,7 +137,7 @@
   }
 
   async function importAllNew() {
-    const newSessions = sessions.filter((s) => !s.alreadyImported);
+    const newSessions = filtered.filter((s) => !s.alreadyImported);
     if (newSessions.length === 0) return;
     importingAll = true;
     error = null;
@@ -114,9 +148,10 @@
     try {
       for (const s of newSessions) {
         importingId = s.sessionId;
+        const sessionCwd = importCwd(s);
         const result = await invoke<ImportResult>("import_cli_session", {
           sessionId: s.sessionId,
-          cwd,
+          cwd: sessionCwd,
         });
         dbg("cli-browser", "imported", { sessionId: s.sessionId, runId: result.runId });
         lastRunId = result.runId;
@@ -126,7 +161,6 @@
         }
       }
       await discoverSessions();
-      // Navigate to last imported run only after all imports complete
       if (lastRunId) {
         dbg("cli-browser", "import-all done, navigating", { importedCount, lastRunId });
         onimported(lastRunId);
@@ -135,7 +169,6 @@
       const msg = String(e);
       dbgWarn("cli-browser", "import-all failed", msg);
       error = msg;
-      // Still refresh list to show partial progress
       await discoverSessions().catch(() => {});
     } finally {
       importingId = null;
@@ -170,22 +203,55 @@
     class="relative flex max-h-[80vh] w-full max-w-2xl flex-col rounded-xl border border-border bg-background shadow-2xl animate-slide-up"
   >
     <!-- Header -->
-    <div class="flex items-center justify-between border-b border-border px-6 py-4">
-      <div>
-        <h2 class="text-base font-semibold text-foreground">{t("cliSync_title")}</h2>
-        <p class="mt-0.5 text-xs text-muted-foreground">
-          {cwd} &middot; {t("cliSync_found", { count: String(sessions.length) })}
-        </p>
-      </div>
-      <button
-        class="rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
-        onclick={onclose}
-        aria-label="Close"
-      >
-        <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-          ><path d="M18 6 6 18M6 6l12 12" /></svg
+    <div class="border-b border-border px-6 py-4">
+      <div class="flex items-center justify-between">
+        <div>
+          <h2 class="text-base font-semibold text-foreground">{t("cliSync_title")}</h2>
+          <p class="mt-0.5 text-xs text-muted-foreground">
+            {#if isShowAll}
+              {t("cliSync_allProjects")} &middot; {t("cliSync_found", { count: String(sessions.length) })}
+            {:else}
+              {cwd} &middot; {t("cliSync_found", { count: String(sessions.length) })}
+            {/if}
+          </p>
+        </div>
+        <button
+          class="rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+          onclick={onclose}
+          aria-label="Close"
         >
-      </button>
+          <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+            ><path d="M18 6 6 18M6 6l12 12" /></svg
+          >
+        </button>
+      </div>
+
+      <!-- Project filter (inline in header) -->
+      {#if isShowAll && projects.length > 1}
+        <div class="mt-3 flex items-center gap-1.5 overflow-x-auto">
+          <button
+            class="shrink-0 rounded-md px-2.5 py-1 text-xs font-medium transition-colors
+              {selectedProject === null
+              ? 'bg-accent text-accent-foreground'
+              : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground'}"
+            onclick={() => (selectedProject = null)}
+          >
+            {t("cliSync_filterAll")} ({sessions.length})
+          </button>
+          {#each projects as proj (proj.path)}
+            <button
+              class="shrink-0 rounded-md px-2.5 py-1 text-xs font-medium transition-colors
+                {selectedProject === proj.path
+                ? 'bg-accent text-accent-foreground'
+                : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground'}"
+              onclick={() => (selectedProject = proj.path)}
+              title={proj.path}
+            >
+              {proj.label} ({proj.count})
+            </button>
+          {/each}
+        </div>
+      {/if}
     </div>
 
     <!-- Search -->
@@ -269,6 +335,14 @@
                     <span class="text-xs text-muted-foreground shrink-0">
                       {fmtRelative(session.lastActivityAt)}
                     </span>
+                    {#if isShowAll && !selectedProject && session.cwd}
+                      <span
+                        class="shrink-0 truncate max-w-[140px] rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground"
+                        title={session.cwd}
+                      >
+                        {cwdDisplayLabel(session.cwd)}
+                      </span>
+                    {/if}
                     {#if session.model}
                       <span
                         class="ml-auto shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground"
@@ -278,7 +352,7 @@
                     {/if}
                   </div>
                   <p class="mt-1 truncate text-sm font-medium text-foreground">
-                    {session.firstPrompt || "—"}
+                    {session.firstPrompt || "\u2014"}
                   </p>
                   <div class="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
                     <span>{t("cliSync_messages", { count: String(session.messageCount) })}</span>
@@ -322,7 +396,7 @@
                   {:else}
                     <button
                       class="rounded-md bg-primary px-2.5 py-1 text-xs font-medium text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-50"
-                      onclick={() => importSession(session.sessionId)}
+                      onclick={() => importSession(session)}
                       disabled={!!importingId}
                     >
                       {#if isImporting}
@@ -343,7 +417,7 @@
     </div>
 
     <!-- Footer -->
-    {#if !loading && sessions.length > 0}
+    {#if !loading && filtered.length > 0}
       <div class="flex items-center justify-between border-t border-border px-6 py-3">
         {#if error}
           <p class="text-xs text-destructive truncate max-w-[60%]">{error}</p>

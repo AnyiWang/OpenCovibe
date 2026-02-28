@@ -1016,6 +1016,9 @@
   "cliSync_imported": "已导入",
   "cliSync_alreadyImported": "已导入",
   "cliSync_noSessions": "未找到此项目的 CLI 会话",
+  "cliSync_allProjects": "所有项目",
+  "cliSync_filterAll": "全部",
+  "cliSync_filterProject": "项目",
   "cliSync_messages": "{count} 条消息",
   "cliSync_subagents": "包含子代理",
   "cliSync_syncAvailable": "有更新",
@@ -1211,5 +1214,9 @@
   "agent_nameFormat": "仅允许小写字母、数字和连字符。",
   "agent_inherit": "继承",
   "agent_noTools": "未指定工具",
-  "agent_allTools": "全部工具（继承）"
+  "agent_allTools": "全部工具（继承）",
+
+  "appUpdate_available": "发现新版本（{version}）。",
+  "appUpdate_download": "下载",
+  "appUpdate_dismiss": "忽略"
 }

@@ -842,6 +842,13 @@ export async function updateCliConfig(
   return invoke<Record<string, unknown>>("update_cli_config", { patch });
 }
 
+// ── App Updates ──
+
+export async function checkForUpdates(): Promise<import("./types").UpdateInfo> {
+  dbg("api", "checkForUpdates");
+  return invoke<import("./types").UpdateInfo>("check_for_updates");
+}
+
 // ── Changelog ──
 
 export async function getChangelog(): Promise<ChangelogEntry[]> {
