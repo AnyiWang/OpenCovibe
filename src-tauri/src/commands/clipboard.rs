@@ -78,9 +78,76 @@ fn mime_from_extension(ext: &str) -> &'static str {
     }
 }
 
-/// Read file paths from the native clipboard (macOS only).
+/// Build ClipboardFileInfo entries from an iterator of file paths.
+/// Shared logic for macOS and Linux clipboard reading.
+fn paths_to_clipboard_infos(paths: impl Iterator<Item = String>) -> Vec<ClipboardFileInfo> {
+    let mut results = Vec::new();
+    for path_str in paths {
+        let p = PathBuf::from(&path_str);
+        if !p.exists() || !p.is_file() {
+            log::debug!("[clipboard] skipping {}: not a regular file", path_str);
+            continue;
+        }
+        let size = std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
+        let ext = p
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_lowercase())
+            .unwrap_or_default();
+        let name = p
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown")
+            .to_string();
+        let mime_type = mime_from_extension(&ext).to_string();
+
+        log::debug!("[clipboard] file: {} ({}, {} bytes)", name, mime_type, size);
+        results.push(ClipboardFileInfo {
+            path: path_str,
+            name,
+            size,
+            mime_type,
+        });
+    }
+    results
+}
+
+/// Parse a text/uri-list payload into file paths.
+/// Skips comment lines (starting with #) and non-file:// URIs.
+#[cfg(any(target_os = "linux", test))]
+fn parse_uri_list(raw: &str) -> Vec<String> {
+    let mut paths = Vec::new();
+    for line in raw.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some(path) = file_uri_to_path(line) {
+            paths.push(path);
+        }
+    }
+    paths
+}
+
+/// Convert a file:// URI to a local filesystem path.
+/// Uses the `url` crate for safe percent-decoding.
+#[cfg(any(target_os = "linux", test))]
+fn file_uri_to_path(uri: &str) -> Option<String> {
+    let parsed = url::Url::parse(uri).ok()?;
+    if parsed.scheme() != "file" {
+        return None;
+    }
+    parsed
+        .to_file_path()
+        .ok()
+        .map(|p| p.to_string_lossy().into_owned())
+}
+
+/// Read file paths from the native clipboard.
 ///
-/// Uses osascript with AppleScriptObjC to access NSPasteboard file URLs.
+/// - macOS: uses osascript with AppleScriptObjC to access NSPasteboard file URLs.
+/// - Linux: probes wl-paste → xclip → xsel for text/uri-list content.
+/// - Other platforms: returns empty.
 #[tauri::command]
 pub fn get_clipboard_files() -> Result<Vec<ClipboardFileInfo>, String> {
     #[cfg(target_os = "macos")]
@@ -120,50 +187,73 @@ return paths as text
             return Ok(vec![]);
         }
 
-        let mut results = Vec::new();
-        for line in raw.lines() {
-            let line = line.trim();
-            if line.is_empty() {
-                continue;
-            }
-            // Light validation: exists + is_file only.
-            // Extension/size filtering is left to the frontend (shows toast for unsupported/oversized).
-            // Full validation (extension whitelist + size limit) is enforced in read_clipboard_file.
-            let p = PathBuf::from(line);
-            if !p.exists() || !p.is_file() {
-                log::debug!("[clipboard] skipping {}: not a regular file", line);
-                continue;
-            }
-            let size = std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
-            let ext = p
-                .extension()
-                .and_then(|e| e.to_str())
-                .map(|e| e.to_lowercase())
-                .unwrap_or_default();
-            let name = p
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("unknown")
-                .to_string();
-            let mime_type = mime_from_extension(&ext).to_string();
-
-            log::debug!("[clipboard] file: {} ({}, {} bytes)", name, mime_type, size);
-            results.push(ClipboardFileInfo {
-                path: line.to_string(),
-                name,
-                size,
-                mime_type,
-            });
-        }
+        let results = paths_to_clipboard_infos(
+            raw.lines()
+                .map(|l| l.trim())
+                .filter(|l| !l.is_empty())
+                .map(|l| l.to_string()),
+        );
 
         log::debug!("[clipboard] returning {} files", results.len());
         Ok(results)
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
     {
-        log::debug!("[clipboard] not macOS, returning empty");
+        log::debug!("[clipboard] reading Linux clipboard for file URLs");
+
+        // Probe clipboard tools in priority order: wl-paste (Wayland) → xclip → xsel (X11)
+        let tools: &[(&str, &[&str])] = &[
+            ("wl-paste", &["--type", "text/uri-list"]),
+            (
+                "xclip",
+                &["-selection", "clipboard", "-t", "text/uri-list", "-o"],
+            ),
+            ("xsel", &["--clipboard", "--output"]),
+        ];
+
+        for (bin, args) in tools {
+            if let Some(raw) = try_clipboard_tool(bin, args) {
+                let parsed = parse_uri_list(&raw);
+                if !parsed.is_empty() {
+                    let results = paths_to_clipboard_infos(parsed.into_iter());
+                    log::debug!("[clipboard] {} returned {} files", bin, results.len());
+                    return Ok(results);
+                }
+                log::debug!(
+                    "[clipboard] {} returned data but no file:// URIs, trying next tool",
+                    bin
+                );
+            }
+        }
+
+        log::warn!(
+            "[clipboard] no clipboard tool found or no file URIs (tried wl-paste, xclip, xsel)"
+        );
         Ok(vec![])
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        log::debug!("[clipboard] unsupported platform, returning empty");
+        Ok(vec![])
+    }
+}
+
+/// Try running a clipboard tool, returning its stdout on success.
+#[cfg(target_os = "linux")]
+fn try_clipboard_tool(bin: &str, args: &[&str]) -> Option<String> {
+    match std::process::Command::new(bin).args(args).output() {
+        Ok(o) if o.status.success() => {
+            let s = String::from_utf8_lossy(&o.stdout).into_owned();
+            if s.trim().is_empty() {
+                None
+            } else {
+                Some(s)
+            }
+        }
+        Ok(_) => None,  // command exists but clipboard has no matching content
+        Err(_) => None, // command not found
     }
 }
 
@@ -341,6 +431,48 @@ mod tests {
             let result = validate_clipboard_path(file_path.to_str().unwrap());
             assert!(result.is_ok(), "expected .{} to be allowed", ext);
         }
+    }
+
+    #[test]
+    fn parse_file_uri_basic() {
+        let result = file_uri_to_path("file:///home/user/doc.txt");
+        assert_eq!(result, Some("/home/user/doc.txt".to_string()));
+    }
+
+    #[test]
+    fn parse_file_uri_with_spaces() {
+        let result = file_uri_to_path("file:///home/user/my%20file.txt");
+        assert_eq!(result, Some("/home/user/my file.txt".to_string()));
+    }
+
+    #[test]
+    fn parse_file_uri_ignores_non_file() {
+        assert_eq!(file_uri_to_path("http://example.com/file.txt"), None);
+        assert_eq!(file_uri_to_path("https://example.com/file.txt"), None);
+        assert_eq!(file_uri_to_path("ftp://example.com/file.txt"), None);
+    }
+
+    #[test]
+    fn parse_file_uri_ignores_comments() {
+        let input = "# comment line\nfile:///home/user/doc.txt\n# another comment\n";
+        let result = parse_uri_list(input);
+        assert_eq!(result, vec!["/home/user/doc.txt".to_string()]);
+    }
+
+    #[test]
+    fn parse_uri_list_multiple() {
+        let input = "file:///home/user/a.txt\nfile:///home/user/b.pdf\n";
+        let result = parse_uri_list(input);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0], "/home/user/a.txt");
+        assert_eq!(result[1], "/home/user/b.pdf");
+    }
+
+    #[test]
+    fn parse_uri_list_mixed() {
+        let input = "# comment\nfile:///home/user/doc.txt\nhttps://example.com\n\n";
+        let result = parse_uri_list(input);
+        assert_eq!(result, vec!["/home/user/doc.txt".to_string()]);
     }
 
     #[test]

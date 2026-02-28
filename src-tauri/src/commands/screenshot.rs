@@ -5,13 +5,16 @@ use tauri::Manager;
 /// Screenshot capture core logic (shared by global hotkey callback and IPC command).
 #[cfg(target_os = "macos")]
 fn do_capture(app: &AppHandle) {
-    let path = format!(
-        "/tmp/ocv-screenshot-{}.png",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis()
-    );
+    let path = std::env::temp_dir()
+        .join(format!(
+            "ocv-screenshot-{}.png",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis()
+        ))
+        .to_string_lossy()
+        .into_owned();
     log::debug!("[screenshot] starting capture: {}", path);
 
     let status = std::process::Command::new("screencapture")

@@ -12,6 +12,7 @@ use agent::pty::new_pty_map;
 use agent::spawn_locks::SpawnLocks;
 use agent::stream::new_process_map;
 use api_client::executor::new_permission_map;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use storage::events::EventWriter;
 use tauri::tray::TrayIconEvent;
@@ -38,6 +39,10 @@ pub fn run() {
     // Global cancellation token — shared with all session actors for graceful shutdown
     let cancel_token = CancellationToken::new();
     let cancel_for_exit = cancel_token.clone();
+
+    // Shared flag: true if system tray was successfully created
+    let tray_ok = Arc::new(AtomicBool::new(false));
+    let tray_ok_for_event = tray_ok.clone();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -168,13 +173,22 @@ pub fn run() {
             commands::cli_sync::sync_cli_session,
             commands::updates::check_for_updates,
         ])
-        .setup(|app| {
+        .setup(move |app| {
             // Start team file watcher for ~/.claude/teams/ and ~/.claude/tasks/
             let cancel = app.state::<CancellationToken>().inner().clone();
             hooks::team_watcher::start_team_watcher(app.handle().clone(), cancel);
 
             // System tray — hide-to-tray on close, left-click to show
-            setup_tray(app)?;
+            // Non-fatal: if tray library is unavailable (e.g. some Linux desktops),
+            // the app still works but window close = quit instead of hide-to-tray.
+            match setup_tray(app) {
+                Ok(_) => {
+                    tray_ok.store(true, Ordering::Relaxed);
+                }
+                Err(e) => {
+                    log::warn!("[app] tray unavailable: {e}, window close = quit");
+                }
+            }
 
             // Global shortcut plugin — must be registered inside setup() with a handler
             // so the event dispatch loop is properly initialized
@@ -199,10 +213,15 @@ pub fn run() {
         .on_window_event(move |window, event| {
             match event {
                 tauri::WindowEvent::CloseRequested { api, .. } => {
-                    // Hide to tray instead of quitting
-                    let _ = window.hide();
-                    api.prevent_close();
-                    log::debug!("[app] window hidden to tray");
+                    if tray_ok_for_event.load(Ordering::Relaxed) {
+                        // Hide to tray instead of quitting
+                        let _ = window.hide();
+                        api.prevent_close();
+                        log::debug!("[app] window hidden to tray");
+                    } else {
+                        log::debug!("[app] tray unavailable, allowing close (app will quit)");
+                        // Don't call prevent_close → normal quit
+                    }
                 }
                 tauri::WindowEvent::Destroyed => {
                     // Safety fallback: cancel actors if window is truly destroyed (e.g. app.exit())

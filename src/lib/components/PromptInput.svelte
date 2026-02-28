@@ -32,6 +32,7 @@
   import type { SlashCommandGroups } from "$lib/utils/slash-commands";
   import type { MessageKey } from "$lib/i18n/types";
   import { dbg, dbgWarn } from "$lib/utils/debug";
+  import { IS_MAC } from "$lib/utils/platform";
   import { t } from "$lib/i18n/index.svelte";
   import { formatPasteSize } from "$lib/utils/format";
   import {
@@ -1793,28 +1794,30 @@
             />
           </svg>
         </button>
-        <!-- Screenshot capture button (macOS only) -->
-        <button
-          class="flex h-7 w-7 items-center justify-center rounded-lg text-muted-foreground/60 hover:text-foreground hover:bg-accent transition-colors disabled:opacity-30"
-          onclick={() => api.captureScreenshot()}
-          disabled={pendingAttachments.length >= 8}
-          title={t("prompt_screenshot")}
-        >
-          <svg
-            class="h-4 w-4"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2"
-            stroke-linecap="round"
-            stroke-linejoin="round"
+        {#if IS_MAC}
+          <!-- Screenshot capture button (macOS only) -->
+          <button
+            class="flex h-7 w-7 items-center justify-center rounded-lg text-muted-foreground/60 hover:text-foreground hover:bg-accent transition-colors disabled:opacity-30"
+            onclick={() => api.captureScreenshot()}
+            disabled={pendingAttachments.length >= 8}
+            title={t("prompt_screenshot")}
           >
-            <path
-              d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"
-            />
-            <circle cx="12" cy="13" r="3" />
-          </svg>
-        </button>
+            <svg
+              class="h-4 w-4"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path
+                d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"
+              />
+              <circle cx="12" cy="13" r="3" />
+            </svg>
+          </button>
+        {/if}
 
         {#if running && onInterrupt}
           {#if canSend}

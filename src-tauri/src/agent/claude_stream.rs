@@ -116,6 +116,9 @@ fn extra_path_dirs() -> Vec<PathBuf> {
             home.join(".fnm").join("current").join("bin"),
             home.join(".local").join("share").join("mise").join("shims"),
             home.join(".asdf").join("shims"),
+            // Linuxbrew paths (user-local and system-wide)
+            home.join(".linuxbrew").join("bin"),
+            PathBuf::from("/home/linuxbrew/.linuxbrew/bin"),
             PathBuf::from("/opt/homebrew/bin"),
             PathBuf::from("/usr/local/bin"),
         ]);
@@ -154,21 +157,43 @@ pub fn augmented_path() -> String {
         .unwrap_or(current_path)
 }
 
-/// Cross-platform binary lookup. Uses `where` on Windows, `which` on Unix.
+/// Cross-platform binary lookup.
+/// - Windows: uses `where` command.
+/// - Unix: pure Rust PATH traversal (avoids dependency on `which` binary,
+///   which is not pre-installed on all Linux distros).
 pub fn which_binary(name: &str) -> Option<String> {
-    let cmd = if cfg!(windows) { "where" } else { "which" };
-    let output = std::process::Command::new(cmd)
-        .arg(name)
-        .env("PATH", augmented_path())
-        .output()
-        .ok()?;
-    if output.status.success() {
-        let out = String::from_utf8_lossy(&output.stdout);
-        out.lines()
-            .map(|l| l.trim())
-            .find(|l| !l.is_empty())
-            .map(|l| l.to_string())
-    } else {
+    #[cfg(windows)]
+    {
+        let output = std::process::Command::new("where")
+            .arg(name)
+            .env("PATH", augmented_path())
+            .output()
+            .ok()?;
+        if output.status.success() {
+            let out = String::from_utf8_lossy(&output.stdout);
+            out.lines()
+                .map(|l| l.trim())
+                .find(|l| !l.is_empty())
+                .map(|l| l.to_string())
+        } else {
+            None
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let path_str = augmented_path();
+        let path_os = std::ffi::OsString::from(&path_str);
+        for dir in std::env::split_paths(&path_os) {
+            let candidate = dir.join(name);
+            if candidate.is_file() {
+                if let Ok(meta) = std::fs::metadata(&candidate) {
+                    if meta.permissions().mode() & 0o111 != 0 {
+                        return Some(candidate.to_string_lossy().into_owned());
+                    }
+                }
+            }
+        }
         None
     }
 }

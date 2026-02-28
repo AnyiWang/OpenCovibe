@@ -1,11 +1,9 @@
 import * as api from "$lib/api";
 import { dbg, dbgWarn } from "$lib/utils/debug";
 import type { KeyBinding, KeyBindingOverride } from "$lib/types";
+import { IS_MAC } from "$lib/utils/platform";
 
 // ── Platform detection ──
-
-const IS_MAC =
-  typeof navigator !== "undefined" && /Mac|iPhone|iPad|iPod/.test(navigator.platform ?? "");
 
 /** Physical Ctrl key → "Ctrl" on macOS, "Cmd" on other platforms
  *  (because normalizeKeyEvent maps non-mac Ctrl to "Cmd") */
@@ -58,16 +56,21 @@ export const APP_DEFAULTS: KeyBinding[] = [
     editable: true,
     source: "app",
   },
-  {
-    command: "app:screenshot",
-    label: "Capture Screenshot",
-    // SYNC: default also in src-tauri/src/commands/screenshot.rs init_screenshot_hotkey
-    key: "Cmd+Ctrl+S",
-    context: "global",
-    editable: true,
-    source: "app",
-    osGlobal: true,
-  },
+  // Screenshot only on macOS (backend uses screencapture)
+  ...(IS_MAC
+    ? [
+        {
+          command: "app:screenshot" as const,
+          label: "Capture Screenshot",
+          // SYNC: default also in src-tauri/src/commands/screenshot.rs init_screenshot_hotkey
+          key: "Cmd+Ctrl+S",
+          context: "global" as const,
+          editable: true,
+          source: "app" as const,
+          osGlobal: true,
+        },
+      ]
+    : []),
   {
     command: "chat:interrupt",
     label: "Interrupt Session",

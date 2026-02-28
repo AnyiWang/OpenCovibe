@@ -3,7 +3,7 @@
 # OpenCovibe Desktop — Development Environment Setup
 #
 # Detects missing dependencies, installs them, and prepares the project.
-# macOS only. Run: chmod +x scripts/setup.sh && ./scripts/setup.sh
+# Supports macOS and Linux. Run: chmod +x scripts/setup.sh && ./scripts/setup.sh
 #
 # Options:
 #   --yes    Skip all confirmation prompts (auto-accept)
@@ -169,18 +169,217 @@ require_or_exit() {
 }
 
 # ---------------------------------------------------------------------------
+# Platform-specific setup functions
+# ---------------------------------------------------------------------------
+
+setup_xcode() {
+  header "Step 1: Xcode CLI Tools"
+
+  xcode_ok=false
+  if xcode-select -p &>/dev/null; then
+    if clang --version &>/dev/null && git --version &>/dev/null; then
+      xcode_ok=true
+      ok "Xcode CLI Tools already installed"
+    else
+      info "Xcode CLI Tools path exists but tools are broken (possible OS upgrade issue)"
+    fi
+  fi
+
+  if ! $xcode_ok; then
+    if [ "$xcode_ok" = false ] && ! xcode-select -p &>/dev/null; then
+      info "Xcode CLI Tools not found"
+    fi
+
+    has_gui=false
+    if [ -n "$DISPLAY" ] || command -v open &>/dev/null; then
+      has_gui=true
+    fi
+
+    if ! $has_gui; then
+      fail "Xcode CLI Tools are required but no GUI is available (SSH session?)."
+      dim "  Please install on the machine directly:"
+      dim "    xcode-select --install"
+      dim "  Then re-run this script."
+      exit 1
+    fi
+
+    if confirm "Install Xcode CLI Tools?"; then
+      if xcode-select -p &>/dev/null; then
+        sudo xcode-select --reset 2>/dev/null
+      fi
+      xcode-select --install 2>/dev/null
+      info "Waiting for Xcode CLI Tools installation (this opens a system dialog)..."
+
+      elapsed=0
+      while ! (xcode-select -p &>/dev/null && clang --version &>/dev/null); do
+        if [ $elapsed -ge 300 ]; then
+          fail "Timed out waiting for Xcode CLI Tools. Please install manually and re-run."
+          exit 1
+        fi
+        sleep 5
+        elapsed=$((elapsed + 5))
+      done
+
+      ok "Xcode CLI Tools installed"
+    else
+      require_or_exit "Xcode CLI Tools"
+    fi
+  fi
+}
+
+setup_homebrew() {
+  header "Step 2: Homebrew"
+
+  if command -v brew &>/dev/null; then
+    ok "Homebrew already installed"
+    dim "  $(brew --version | head -1)"
+  else
+    info "Homebrew not found"
+
+    if confirm "Install Homebrew?"; then
+      info "Installing Homebrew (sudo password may be required)..."
+      /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+
+      if [ $? -ne 0 ]; then
+        fail "Homebrew installation failed"
+        exit 1
+      fi
+
+      if [ -x /opt/homebrew/bin/brew ]; then
+        eval "$(/opt/homebrew/bin/brew shellenv)"
+      elif [ -x /usr/local/bin/brew ]; then
+        eval "$(/usr/local/bin/brew shellenv)"
+      fi
+
+      if command -v brew &>/dev/null; then
+        ok "Homebrew installed"
+        dim "  $(brew --version | head -1)"
+        INSTALLED_BREW=true
+      else
+        fail "Homebrew installed but not found in PATH. Please restart your terminal and re-run."
+        exit 1
+      fi
+    else
+      require_or_exit "Homebrew"
+    fi
+  fi
+
+  # Fix stale headers in /usr/local/include that break Rust/ObjC builds.
+  if [ -f /usr/local/include/Block.h ] && head -20 /usr/local/include/Block.h 2>/dev/null | grep -q "lzma"; then
+    info "Removing stale /usr/local/include/Block.h (lzma remnant conflicting with system header)..."
+    rm -f /usr/local/include/Block.h 2>/dev/null || sudo rm -f /usr/local/include/Block.h
+    if [ $? -eq 0 ]; then
+      ok "Stale Block.h removed"
+    else
+      fail "Could not remove /usr/local/include/Block.h — run: sudo rm /usr/local/include/Block.h"
+    fi
+  fi
+}
+
+setup_linux_deps() {
+  header "Step 1: Linux System Dependencies"
+
+  # Detect package manager
+  local pkg_mgr=""
+  local install_cmd=""
+
+  if command -v apt-get &>/dev/null; then
+    pkg_mgr="apt"
+    install_cmd="sudo apt-get install -y"
+  elif command -v dnf &>/dev/null; then
+    pkg_mgr="dnf"
+    install_cmd="sudo dnf install -y"
+  elif command -v pacman &>/dev/null; then
+    pkg_mgr="pacman"
+    install_cmd="sudo pacman -S --noconfirm"
+  else
+    fail "No supported package manager found (need apt, dnf, or pacman)"
+    exit 1
+  fi
+
+  ok "Package manager: ${pkg_mgr}"
+
+  # Define packages per distro family
+  local packages=""
+  case "$pkg_mgr" in
+    apt)
+      packages="libwebkit2gtk-4.1-dev libgtk-3-dev libssl-dev pkg-config build-essential curl wget git"
+      # Try ayatana first, fall back to legacy appindicator
+      if apt-cache show libayatana-appindicator3-dev &>/dev/null 2>&1; then
+        packages="$packages libayatana-appindicator3-dev"
+      elif apt-cache show libappindicator3-dev &>/dev/null 2>&1; then
+        packages="$packages libappindicator3-dev"
+      fi
+      ;;
+    dnf)
+      packages="webkit2gtk4.1-devel gtk3-devel openssl-devel pkg-config gcc gcc-c++ curl wget git"
+      packages="$packages libappindicator-gtk3-devel"
+      ;;
+    pacman)
+      packages="webkit2gtk-4.1 gtk3 openssl pkgconf base-devel curl wget git"
+      packages="$packages libayatana-appindicator"
+      ;;
+  esac
+
+  if confirm "Install system dependencies via ${pkg_mgr}? (${packages})"; then
+    # Update package index for apt
+    if [ "$pkg_mgr" = "apt" ]; then
+      info "Updating package index..."
+      sudo apt-get update -y
+    fi
+
+    info "Installing system dependencies..."
+    $install_cmd $packages
+    if [ $? -ne 0 ]; then
+      fail "Some packages failed to install"
+      dim "  You may need to install them manually."
+    else
+      ok "System dependencies installed"
+    fi
+  else
+    dim "  Skipped. Make sure Tauri build dependencies are installed."
+  fi
+
+  # Clipboard tools (xclip or wl-clipboard)
+  if ! command -v xclip &>/dev/null && ! command -v xsel &>/dev/null && ! command -v wl-paste &>/dev/null; then
+    info "No clipboard tool found (xclip, xsel, or wl-paste)"
+    local clip_pkg=""
+    case "$pkg_mgr" in
+      apt)    clip_pkg="xclip" ;;
+      dnf)    clip_pkg="xclip" ;;
+      pacman) clip_pkg="xclip" ;;
+    esac
+    if confirm "Install ${clip_pkg} for clipboard support?"; then
+      $install_cmd $clip_pkg
+      ok "Clipboard tool installed"
+    else
+      dim "  Skipped. Clipboard paste-from-files won't work without xclip/xsel/wl-paste."
+    fi
+  else
+    ok "Clipboard tool available"
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # Step 0: Platform & environment checks
 # ---------------------------------------------------------------------------
 
 printf "\n${BRAND}${BOLD}  OpenCovibe Desktop — Development Setup${NC}\n\n"
 
-if [ "$(uname -s)" != "Darwin" ]; then
-  fail "This script only supports macOS. Detected: $(uname -s)"
-  dim "  Linux and Windows support may be added in the future."
-  exit 1
-fi
-
-ok "macOS detected $(DIM=$(sw_vers -productVersion))"
+OS=$(uname -s)
+case "$OS" in
+  Darwin)
+    ok "macOS detected $(sw_vers -productVersion 2>/dev/null || echo '')"
+    ;;
+  Linux)
+    ok "Linux detected ($(uname -r))"
+    ;;
+  *)
+    fail "Unsupported OS: $OS"
+    dim "  Only macOS and Linux are supported."
+    exit 1
+    ;;
+esac
 
 # Pull latest code if inside a git repo
 if git -C "$PROJECT_DIR" rev-parse --is-inside-work-tree &>/dev/null; then
@@ -202,129 +401,33 @@ if git -C "$PROJECT_DIR" rev-parse --is-inside-work-tree &>/dev/null; then
 fi
 
 # Check available disk space (need ~10GB for all tools + first Rust build)
-available_gb=$(df -g "$HOME" 2>/dev/null | awk 'NR==2 {print $4}')
+if [ "$OS" = "Darwin" ]; then
+  available_gb=$(df -g "$HOME" 2>/dev/null | awk 'NR==2 {print $4}')
+else
+  # Linux: df outputs in 1K blocks by default; convert to GB
+  available_gb=$(df --output=avail "$HOME" 2>/dev/null | awk 'NR==2 {printf "%d", $1/1048576}')
+fi
 if [ -n "$available_gb" ] && [ "$available_gb" -lt 10 ] 2>/dev/null; then
   fail "Low disk space: ${available_gb}GB available, ~10GB recommended."
-  dim "  Xcode CLI Tools (~1.2GB) + Rust toolchain (~1.5GB) + node_modules + first build cache."
+  dim "  Build tools + Rust toolchain (~1.5GB) + node_modules + first build cache."
   if ! confirm "Continue anyway?"; then
     exit 1
   fi
 fi
 
 # ---------------------------------------------------------------------------
-# Step 1: Xcode Command Line Tools
+# Steps 1-2: Platform-specific dependencies (Xcode+Homebrew on macOS, system packages on Linux)
 # ---------------------------------------------------------------------------
 
-header "Step 1: Xcode CLI Tools"
-
-xcode_ok=false
-if xcode-select -p &>/dev/null; then
-  # Validate that the tools actually work (path can exist but tools be broken after OS upgrade)
-  if clang --version &>/dev/null && git --version &>/dev/null; then
-    xcode_ok=true
-    ok "Xcode CLI Tools already installed"
-  else
-    info "Xcode CLI Tools path exists but tools are broken (possible OS upgrade issue)"
-  fi
-fi
-
-if ! $xcode_ok; then
-  if [ "$xcode_ok" = false ] && ! xcode-select -p &>/dev/null; then
-    info "Xcode CLI Tools not found"
-  fi
-
-  # Check if we can show a GUI dialog
-  has_gui=false
-  if [ -n "$DISPLAY" ] || command -v open &>/dev/null; then
-    has_gui=true
-  fi
-
-  if ! $has_gui; then
-    fail "Xcode CLI Tools are required but no GUI is available (SSH session?)."
-    dim "  Please install on the machine directly:"
-    dim "    xcode-select --install"
-    dim "  Then re-run this script."
-    exit 1
-  fi
-
-  if confirm "Install Xcode CLI Tools?"; then
-    # Reset if path exists but tools are broken
-    if xcode-select -p &>/dev/null; then
-      sudo xcode-select --reset 2>/dev/null
-    fi
-    xcode-select --install 2>/dev/null
-    info "Waiting for Xcode CLI Tools installation (this opens a system dialog)..."
-
-    # Poll until installed or timeout (300s)
-    elapsed=0
-    while ! (xcode-select -p &>/dev/null && clang --version &>/dev/null); do
-      if [ $elapsed -ge 300 ]; then
-        fail "Timed out waiting for Xcode CLI Tools. Please install manually and re-run."
-        exit 1
-      fi
-      sleep 5
-      elapsed=$((elapsed + 5))
-    done
-
-    ok "Xcode CLI Tools installed"
-  else
-    require_or_exit "Xcode CLI Tools"
-  fi
-fi
-
-# ---------------------------------------------------------------------------
-# Step 2: Homebrew
-# ---------------------------------------------------------------------------
-
-header "Step 2: Homebrew"
-
-if command -v brew &>/dev/null; then
-  ok "Homebrew already installed"
-  dim "  $(brew --version | head -1)"
-else
-  info "Homebrew not found"
-
-  if confirm "Install Homebrew?"; then
-    info "Installing Homebrew (sudo password may be required)..."
-    /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-
-    if [ $? -ne 0 ]; then
-      fail "Homebrew installation failed"
-      exit 1
-    fi
-
-    # Add brew to PATH for this session
-    if [ -x /opt/homebrew/bin/brew ]; then
-      eval "$(/opt/homebrew/bin/brew shellenv)"
-    elif [ -x /usr/local/bin/brew ]; then
-      eval "$(/usr/local/bin/brew shellenv)"
-    fi
-
-    if command -v brew &>/dev/null; then
-      ok "Homebrew installed"
-      dim "  $(brew --version | head -1)"
-      INSTALLED_BREW=true
-    else
-      fail "Homebrew installed but not found in PATH. Please restart your terminal and re-run."
-      exit 1
-    fi
-  else
-    require_or_exit "Homebrew"
-  fi
-fi
-
-# Fix stale headers in /usr/local/include that break Rust/ObjC builds.
-# Old xz installs can leave a Block.h with lzma content that shadows the
-# system Block.h (Objective-C blocks), causing mac-notification-sys to fail.
-if [ -f /usr/local/include/Block.h ] && head -20 /usr/local/include/Block.h 2>/dev/null | grep -q "lzma"; then
-  info "Removing stale /usr/local/include/Block.h (lzma remnant conflicting with system header)..."
-  rm -f /usr/local/include/Block.h 2>/dev/null || sudo rm -f /usr/local/include/Block.h
-  if [ $? -eq 0 ]; then
-    ok "Stale Block.h removed"
-  else
-    fail "Could not remove /usr/local/include/Block.h — run: sudo rm /usr/local/include/Block.h"
-  fi
-fi
+case "$OS" in
+  Darwin)
+    setup_xcode
+    setup_homebrew
+    ;;
+  Linux)
+    setup_linux_deps
+    ;;
+esac
 
 # ---------------------------------------------------------------------------
 # Step 3: Node.js >= 20
@@ -373,7 +476,7 @@ if command -v node &>/dev/null; then
       else
         require_or_exit "Node.js >= ${NODE_MIN}"
       fi
-    elif confirm "Upgrade Node.js via Homebrew?"; then
+    elif [ "$OS" = "Darwin" ] && confirm "Upgrade Node.js via Homebrew?"; then
       info "Installing Node.js..."
       brew_install node
       if [ $? -ne 0 ]; then
@@ -390,6 +493,19 @@ if command -v node &>/dev/null; then
         exit 1
       fi
       ok "Node.js installed (v${node_ver})"
+    elif [ "$OS" = "Linux" ] && confirm "Install Node.js via nvm?"; then
+      info "Installing nvm and Node.js ${NODE_MIN}..."
+      curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
+      export NVM_DIR="${HOME}/.nvm"
+      [ -s "$NVM_DIR/nvm.sh" ] && source "$NVM_DIR/nvm.sh"
+      nvm install "$NODE_MIN" && nvm use "$NODE_MIN" && nvm alias default "$NODE_MIN"
+      node_ver=$(node --version | sed 's/^v//')
+      if version_gte "$node_ver" "$NODE_MIN"; then
+        ok "Node.js installed via nvm (v${node_ver})"
+      else
+        fail "Node.js installation via nvm failed"
+        exit 1
+      fi
     else
       require_or_exit "Node.js >= ${NODE_MIN}"
     fi
@@ -397,7 +513,7 @@ if command -v node &>/dev/null; then
 else
   info "Node.js not found"
 
-  if confirm "Install Node.js via Homebrew?"; then
+  if [ "$OS" = "Darwin" ] && confirm "Install Node.js via Homebrew?"; then
     info "Installing Node.js..."
     brew_install node
     if [ $? -ne 0 ]; then
@@ -406,6 +522,14 @@ else
     fi
     brew link --overwrite node 2>/dev/null
     ensure_brew_node_in_path
+    node_ver=$(node --version | sed 's/^v//')
+    ok "Node.js installed (v${node_ver})"
+  elif [ "$OS" = "Linux" ] && confirm "Install Node.js via nvm?"; then
+    info "Installing nvm and Node.js ${NODE_MIN}..."
+    curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
+    export NVM_DIR="${HOME}/.nvm"
+    [ -s "$NVM_DIR/nvm.sh" ] && source "$NVM_DIR/nvm.sh"
+    nvm install "$NODE_MIN" && nvm use "$NODE_MIN" && nvm alias default "$NODE_MIN"
     node_ver=$(node --version | sed 's/^v//')
     ok "Node.js installed (v${node_ver})"
   else

@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/nicegui/nicegui/main/.github/schemas/tauri-v2.json",
   "productName": "OpenCovibe",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "identifier": "com.opencovibe.desktop",
   "build": {
     "frontendDist": "../build",
@@ -48,7 +48,12 @@
       "deb": {
         "depends": [
           "libwebkit2gtk-4.1-0",
-          "libgtk-3-0"
+          "libgtk-3-0",
+          "libayatana-appindicator3-1 | libappindicator3-1",
+          "xclip | xsel"
+        ],
+        "recommends": [
+          "wl-clipboard"
         ]
       }
     },
