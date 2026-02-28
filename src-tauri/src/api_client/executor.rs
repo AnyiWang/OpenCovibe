@@ -638,7 +638,7 @@ async fn execute_tool(tool_name: &str, input: &Value, cwd: &str) -> Value {
 /// Resolve a potentially relative path against the working directory,
 /// with canonicalization and cwd containment check.
 fn resolve_path(path: &str, cwd: &str) -> Result<String, String> {
-    let resolved = if path.starts_with('/') {
+    let resolved = if std::path::Path::new(path).is_absolute() {
         std::path::PathBuf::from(path)
     } else if path.starts_with('~') {
         let home = crate::storage::home_dir().unwrap_or_default();

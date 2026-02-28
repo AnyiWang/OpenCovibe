@@ -19,17 +19,10 @@ pub async fn check_agent_cli(agent: String) -> Result<CliCheckResult, String> {
     log::debug!("[diagnostics] check_agent_cli: agent={}", agent);
     let aug_path = augmented_path();
 
-    // Check if binary exists (use augmented PATH for GUI-launched processes)
-    let which = Command::new("which")
-        .arg(binary)
-        .env("PATH", &aug_path)
-        .output();
-    let (found, path) = match which {
-        Ok(output) if output.status.success() => {
-            let p = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            (true, Some(p))
-        }
-        _ => (false, None),
+    // Check if binary exists (cross-platform: uses `where` on Windows, `which` on Unix)
+    let (found, path) = match crate::agent::claude_stream::which_binary(binary) {
+        Some(p) => (true, Some(p)),
+        None => (false, None),
     };
 
     // Get version if found
@@ -141,7 +134,9 @@ pub async fn test_remote_host(
     // Step 2: CLI check (15s timeout)
     let claude_bin = remote_claude_path.as_deref().unwrap_or("claude");
     let escaped_bin = shell_escape(claude_bin);
-    let check_cmd_str = format!("which {} && {} --version", escaped_bin, escaped_bin);
+    // `command -v` is POSIX-portable (works on Linux, macOS, and most BSDs).
+    // `which` is not guaranteed on all systems and behaves inconsistently.
+    let check_cmd_str = format!("command -v {} && {} --version", escaped_bin, escaped_bin);
 
     let mut cli_cmd = TokioCommand::new("ssh");
     cli_cmd.args(["-o", "BatchMode=yes", "-o", "ConnectTimeout=10"]);
@@ -319,16 +314,9 @@ pub async fn run_diagnostics(cwd: String) -> Result<DiagnosticsReport, String> {
 
 async fn check_cli_inner() -> CliDiagnostics {
     let aug_path = augmented_path();
-    let (found, path) = match Command::new("which")
-        .arg("claude")
-        .env("PATH", &aug_path)
-        .output()
-    {
-        Ok(output) if output.status.success() => {
-            let p = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            (true, Some(p))
-        }
-        _ => (false, None),
+    let (found, path) = match crate::agent::claude_stream::which_binary("claude") {
+        Some(p) => (true, Some(p)),
+        None => (false, None),
     };
 
     let version = if found {
@@ -1028,13 +1016,7 @@ pub async fn get_cli_dist_tags() -> Result<CliDistTags, String> {
 pub fn check_ssh_key() -> Result<SshKeyInfo, String> {
     let candidates = [("~/.ssh/id_ed25519", "ed25519"), ("~/.ssh/id_rsa", "rsa")];
 
-    let aug_path = augmented_path();
-    let ssh_copy_id_available = Command::new("which")
-        .arg("ssh-copy-id")
-        .env("PATH", &aug_path)
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false);
+    let ssh_copy_id_available = crate::agent::claude_stream::which_binary("ssh-copy-id").is_some();
 
     log::debug!(
         "[diagnostics] check_ssh_key: ssh_copy_id_available={}",

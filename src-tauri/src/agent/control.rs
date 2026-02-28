@@ -48,7 +48,7 @@ pub async fn get_cli_info(cache: &CliInfoCache, force: bool) -> Result<CliInfo, 
     let claude_bin = resolve_claude_path();
     log::debug!("[control] resolved claude binary: {}", claude_bin);
 
-    if claude_bin == "claude" && !which_exists("claude") {
+    if claude_bin == "claude" && crate::agent::claude_stream::which_binary("claude").is_none() {
         return Err(CliInfoError {
             code: "cli_not_found".to_string(),
             message: "Claude CLI binary not found".to_string(),
@@ -308,16 +308,4 @@ pub fn fallback_cli_info() -> CliInfo {
         current_model: read_claude_settings_model(),
         fetched_at: now_iso(),
     }
-}
-
-/// Check if a binary exists in PATH
-fn which_exists(name: &str) -> bool {
-    let path_env = augmented_path();
-    for dir in path_env.split(':') {
-        let candidate = std::path::Path::new(dir).join(name);
-        if candidate.exists() {
-            return true;
-        }
-    }
-    false
 }

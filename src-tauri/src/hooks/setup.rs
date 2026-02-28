@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 pub fn cleanup_hook_bridge() {
     let bridge_path = crate::storage::data_dir().join("hook-bridge.mjs");
     let settings_path = crate::storage::home_dir()
-        .ok_or_else(|| std::env::VarError::NotPresent)
+        .ok_or(std::env::VarError::NotPresent)
         .map(|h| PathBuf::from(h).join(".claude").join("settings.json"));
 
     match settings_path {
@@ -289,6 +289,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn write_failure_keeps_script() {
         use std::os::unix::fs::PermissionsExt;
 

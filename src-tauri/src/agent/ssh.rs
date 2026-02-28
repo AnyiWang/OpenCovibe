@@ -27,7 +27,9 @@ fn shell_escape_path(s: &str) -> String {
 pub fn expand_local_tilde(path: &str) -> String {
     if let Some(rest) = path.strip_prefix("~/") {
         if let Some(home) = crate::storage::home_dir() {
-            return format!("{}/{}", home, rest);
+            let mut p = std::path::PathBuf::from(&home);
+            p.push(rest);
+            return p.to_string_lossy().into_owned();
         }
     }
     path.to_string()

@@ -27,7 +27,7 @@ fn validate_file_path(path: &str, extra_allowed: Option<&str>) -> Result<PathBuf
             if parent.as_os_str().is_empty() {
                 // Relative path with no parent dir component — use cwd
                 Ok(std::env::current_dir()
-                    .unwrap_or_else(|_| PathBuf::from("/"))
+                    .unwrap_or_else(|_| std::env::temp_dir())
                     .join(requested.file_name().unwrap_or_default()))
             } else {
                 std::fs::canonicalize(parent)
@@ -129,9 +129,16 @@ pub fn read_task_output(path: String) -> Result<String, String> {
 
     // Prefix check: must be in temp directory (PathBuf::starts_with is path-level, not string-level)
     let temp_dir =
-        std::fs::canonicalize(std::env::temp_dir()).unwrap_or_else(|_| PathBuf::from("/tmp"));
-    let private_tmp = PathBuf::from("/private/tmp");
-    if !canonical.starts_with(&temp_dir) && !canonical.starts_with(&private_tmp) {
+        std::fs::canonicalize(std::env::temp_dir()).unwrap_or_else(|_| std::env::temp_dir());
+    #[cfg(target_os = "macos")]
+    let extra_temp = Some(PathBuf::from("/private/tmp"));
+    #[cfg(not(target_os = "macos"))]
+    let extra_temp: Option<PathBuf> = None;
+    if !canonical.starts_with(&temp_dir)
+        && !extra_temp
+            .as_ref()
+            .is_some_and(|t| canonical.starts_with(t))
+    {
         log::warn!(
             "[files] read_task_output denied (not in temp): {}",
             canonical.display()

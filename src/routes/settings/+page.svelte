@@ -32,6 +32,7 @@
     getDebugFilter,
   } from "$lib/utils/debug";
   import { dbg, dbgWarn, redactSensitive } from "$lib/utils/debug";
+  import { splitPath } from "$lib/utils/format";
   import { t, LOCALE_REGISTRY, currentLocale, switchLocale } from "$lib/i18n/index.svelte";
 
   // ── Tab state ──
@@ -779,7 +780,7 @@
       .then((p) => p.homeDir())
       .then((home) => {
         // Extract username from home dir path (e.g. /Users/alice/ → alice)
-        const parts = home.replace(/\/+$/, "").split("/");
+        const parts = splitPath(home.replace(/[/\\]+$/, ""));
         currentUsername = parts[parts.length - 1] || "";
         return api.readTextFile(`${home}.claude/keybindings.json`);
       })
@@ -1963,9 +1964,7 @@
               <input
                 type="text"
                 bind:value={remoteFormRemoteCwd}
-                placeholder={currentUsername
-                  ? `/Users/${currentUsername}/projects`
-                  : "/home/user/projects"}
+                placeholder={currentUsername ? "~/projects" : "~/projects"}
                 class="w-full text-sm px-2 py-1.5 rounded border border-input bg-background"
               />
             </label>

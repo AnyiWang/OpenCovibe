@@ -2,6 +2,7 @@
   import type { BusToolItem, TimelineEntry, PermissionSuggestion } from "$lib/types";
   import type { TaskNotificationItem } from "$lib/stores/session-store.svelte";
   import { getToolColor } from "$lib/utils/tool-colors";
+  import { fileName as pathFileName, isAbsolutePath } from "$lib/utils/format";
   import {
     extractOutputText,
     friendlyToolName,
@@ -152,9 +153,7 @@
 
   // Detect if detail looks like an absolute file path (truncate from the front)
   // Plan labels are not paths — skip RTL and path truncation for them.
-  let isPathLikeDetail = $derived(
-    !planLabel && (detail.startsWith("/") || detail.startsWith("~/")),
-  );
+  let isPathLikeDetail = $derived(!planLabel && isAbsolutePath(detail));
 
   // For Bash commands, show description (preferred) or truncated command (fallback)
   let bashDescription = $derived.by(() => {
@@ -1608,7 +1607,7 @@
                   navigator.clipboard.writeText(taskNotification!.output_file!);
                 }}
               >
-                {taskNotification.output_file.split("/").pop()}
+                {pathFileName(taskNotification.output_file)}
               </button>
             {/if}
           </div>

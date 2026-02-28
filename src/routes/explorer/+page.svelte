@@ -1,6 +1,7 @@
 <script lang="ts">
   import { getGitDiff, readTextFile, writeTextFile } from "$lib/api";
   import { dbg } from "$lib/utils/debug";
+  import { fileName as pathFileName } from "$lib/utils/format";
   import { t } from "$lib/i18n/index.svelte";
   import { onMount } from "svelte";
   import CodeEditor from "$lib/components/CodeEditor.svelte";
@@ -147,7 +148,7 @@
   }
 
   function fileName(path: string): string {
-    return path.split("/").pop() ?? path;
+    return pathFileName(path);
   }
 
   // ── Lifecycle ──

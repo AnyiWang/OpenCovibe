@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { FileEntry } from "$lib/types";
+  import { splitPath } from "$lib/utils/format";
   import { t } from "$lib/i18n/index.svelte";
 
   let {
@@ -11,7 +12,7 @@
   } = $props();
 
   function shortPath(p: string): string {
-    const parts = p.split("/");
+    const parts = splitPath(p);
     return parts.length > 2 ? "\u2026/" + parts.slice(-2).join("/") : p;
   }
 

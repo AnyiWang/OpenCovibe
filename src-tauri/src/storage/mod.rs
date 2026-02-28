@@ -41,11 +41,7 @@ pub fn home_dir() -> Option<String> {
             if !pw.is_null() {
                 let dir = (*pw).pw_dir;
                 if !dir.is_null() {
-                    Some(
-                        std::ffi::CStr::from_ptr(dir)
-                            .to_string_lossy()
-                            .into_owned(),
-                    )
+                    Some(std::ffi::CStr::from_ptr(dir).to_string_lossy().into_owned())
                 } else {
                     None
                 }

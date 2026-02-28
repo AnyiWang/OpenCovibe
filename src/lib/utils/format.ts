@@ -36,10 +36,27 @@ export function formatPasteSize(lines: number, chars: number): string {
   return `${chars} chars`;
 }
 
+/** Split a file path by both / and \ separators (cross-platform). */
+export function splitPath(p: string): string[] {
+  return p.split(/[/\\]/);
+}
+
+/** Extract filename from a path (cross-platform). */
+export function fileName(p: string): string {
+  return splitPath(p).pop() ?? p;
+}
+
+/** Check if a path looks like an absolute path (Unix, Windows drive, or UNC). */
+export function isAbsolutePath(p: string): boolean {
+  return (
+    p.startsWith("/") || p.startsWith("~/") || /^[A-Za-z]:[/\\]/.test(p) || p.startsWith("\\\\")
+  );
+}
+
 /** Short display label for a cwd path — last directory segment. */
 export function cwdDisplayLabel(cwd: string): string {
   if (!cwd || cwd === "/") return "/";
-  const parts = cwd.replace(/\/+$/, "").split("/").filter(Boolean);
+  const parts = splitPath(cwd.replace(/[/\\]+$/, "")).filter(Boolean);
   return parts[parts.length - 1] || "/";
 }
 

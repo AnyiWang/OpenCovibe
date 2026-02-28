@@ -2,6 +2,7 @@
   import type { HookEvent, ContextSnapshot, SessionInfoData, FileEntry } from "$lib/types";
   import type { TimelineEntry, BusToolItem, TurnUsage } from "$lib/stores/types";
   import { getToolColor } from "$lib/utils/tool-colors";
+  import { splitPath } from "$lib/utils/format";
   import { dbg } from "$lib/utils/debug";
   import { t } from "$lib/i18n/index.svelte";
   import ContextHistoryPanel from "$lib/components/ContextHistoryPanel.svelte";
@@ -61,7 +62,7 @@
 
   function shortPath(v: unknown): string {
     if (!v || typeof v !== "string") return "";
-    const parts = v.split("/");
+    const parts = splitPath(v);
     return parts.length > 2 ? "\u2026/" + parts.slice(-2).join("/") : v;
   }
 

@@ -19,6 +19,7 @@
   import { languages } from "@codemirror/language-data";
   import { oneDark } from "@codemirror/theme-one-dark";
   import { dbg } from "$lib/utils/debug";
+  import { fileName } from "$lib/utils/format";
 
   let {
     content = $bindable(""),
@@ -75,7 +76,7 @@
    *  2. Fall back to filename/extension mapping for dotfiles and config files.
    *  Returns a promise — language modules are loaded on demand. */
   async function loadLanguage(path: string) {
-    const filename = path.split("/").pop() ?? path;
+    const filename = fileName(path);
 
     // Primary: language-data auto-detection
     let desc = LanguageDescription.matchFilename(languages, filename);

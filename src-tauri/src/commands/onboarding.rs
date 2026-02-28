@@ -45,19 +45,22 @@ pub async fn detect_install_methods() -> Result<Vec<InstallMethod>, String> {
 
     let mut methods = Vec::new();
 
-    // 1. Homebrew — macOS/Linux (recommended when available)
-    let has_brew = which_binary("brew").await;
-    methods.push(InstallMethod {
-        id: "brew".into(),
-        name: "Homebrew".into(),
-        command: "brew install claude-code".into(),
-        available: has_brew,
-        unavailable_reason: if has_brew {
-            None
-        } else {
-            Some("Homebrew not installed".into())
-        },
-    });
+    // 1. Homebrew — macOS/Linux only (not relevant on Windows)
+    #[cfg(not(windows))]
+    {
+        let has_brew = which_binary("brew");
+        methods.push(InstallMethod {
+            id: "brew".into(),
+            name: "Homebrew".into(),
+            command: "brew install claude-code".into(),
+            available: has_brew,
+            unavailable_reason: if has_brew {
+                None
+            } else {
+                Some("Homebrew not installed".into())
+            },
+        });
+    }
 
     // 2. npm — requires Node.js 18+
     let has_npm = check_npm_available().await;
@@ -73,19 +76,22 @@ pub async fn detect_install_methods() -> Result<Vec<InstallMethod>, String> {
         },
     });
 
-    // 3. Native install (curl script) — nearly all Unix systems have curl
-    let has_curl = which_binary("curl").await;
-    methods.push(InstallMethod {
-        id: "native".into(),
-        name: "Native Install (curl)".into(),
-        command: "curl -fsSL https://claude.ai/install.sh | bash".into(),
-        available: has_curl,
-        unavailable_reason: if has_curl {
-            None
-        } else {
-            Some("curl not found".into())
-        },
-    });
+    // 3. Native install (curl script) — Unix only (curl | bash)
+    #[cfg(not(windows))]
+    {
+        let has_curl = which_binary("curl");
+        methods.push(InstallMethod {
+            id: "native".into(),
+            name: "Native Install (curl)".into(),
+            command: "curl -fsSL https://claude.ai/install.sh | bash".into(),
+            available: has_curl,
+            unavailable_reason: if has_curl {
+                None
+            } else {
+                Some("curl not found".into())
+            },
+        });
+    }
 
     log::debug!(
         "[onboarding] install methods: {:?}",
@@ -281,6 +287,7 @@ pub(crate) fn detect_cli_api_key(
 /// Parse shell config files to find `export VAR_NAME=value`.
 /// Handles: `export VAR=val`, `export VAR="val"`, `export VAR='val'`.
 /// Skips commented lines. Returns (value, file_path) of the first match.
+#[cfg(unix)]
 fn read_env_from_shell_config(var_name: &str) -> Option<(String, String)> {
     let home = crate::storage::home_dir()?;
     let config_files = [
@@ -315,10 +322,15 @@ fn read_env_from_shell_config(var_name: &str) -> Option<(String, String)> {
     None
 }
 
+#[cfg(windows)]
+fn read_env_from_shell_config(_var_name: &str) -> Option<(String, String)> {
+    None
+}
+
 /// Check CLI OAuth status via subprocess. Used by onboarding wizard (slower but gets account email).
 pub(crate) async fn check_cli_oauth() -> (bool, Option<String>) {
     let claude_bin = claude_stream::resolve_claude_path();
-    if claude_bin != "claude" || which_binary("claude").await {
+    if claude_bin != "claude" || which_binary("claude") {
         match tokio::time::timeout(
             std::time::Duration::from_secs(10),
             Command::new(&claude_bin)
@@ -506,22 +518,14 @@ fn sanitize_progress_line(raw: &str) -> Option<String> {
     }
 }
 
-/// Check if a binary is available on PATH.
-async fn which_binary(name: &str) -> bool {
-    Command::new("which")
-        .arg(name)
-        .env("PATH", claude_stream::augmented_path())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .await
-        .map(|s| s.success())
-        .unwrap_or(false)
+/// Check if a binary is available on PATH (cross-platform).
+fn which_binary(name: &str) -> bool {
+    claude_stream::which_binary(name).is_some()
 }
 
 /// Check if npm is available and Node.js version >= 18.
 async fn check_npm_available() -> bool {
-    if !which_binary("npm").await {
+    if !which_binary("npm") {
         return false;
     }
     // Check node version

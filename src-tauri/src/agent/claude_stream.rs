@@ -7,88 +7,169 @@
 use crate::agent::adapter;
 use crate::models::RemoteHost;
 use serde_json::Value;
+use std::path::PathBuf;
 use tokio::process::Command;
 use tokio::time::Duration;
 
-/// Build a PATH that includes common binary locations
-pub fn augmented_path() -> String {
-    let home = crate::storage::home_dir().unwrap_or_default();
-    let current_path = std::env::var("PATH").unwrap_or_default();
-    let extra_dirs = [
-        format!("{}/.local/bin", home),
-        format!("{}/.cargo/bin", home),
-        // Node version managers
-        format!("{}/.nvm/versions/node", home),      // nvm
-        format!("{}/.volta/bin", home),              // volta
-        format!("{}/.fnm/current/bin", home),        // fnm (current symlink)
-        format!("{}/.local/share/mise/shims", home), // mise
-        format!("{}/.asdf/shims", home),             // asdf
-        "/opt/homebrew/bin".to_string(),
-        "/usr/local/bin".to_string(),
-    ];
-    let path_entries: Vec<&str> = current_path.split(':').collect();
-    let mut parts: Vec<String> = Vec::new();
-    for d in &extra_dirs {
-        if !path_entries.contains(&d.as_str()) {
-            // For nvm, prefer the default alias, then fall back to highest version
-            if d.contains(".nvm/versions/node") {
-                // Check nvm default alias first (symlink at ~/.nvm/alias/default)
-                let alias_path = format!("{}/.nvm/alias/default", home);
-                let default_ver = std::fs::read_to_string(&alias_path)
-                    .ok()
-                    .map(|s| s.trim().to_string());
-                if let Some(ref ver) = default_ver {
-                    // nvm alias can be "20" or "v20.20.0" — find matching dir
-                    if let Ok(entries) = std::fs::read_dir(d) {
-                        let mut found = false;
-                        for entry in entries.flatten() {
-                            let name = entry.file_name().to_string_lossy().to_string();
-                            if name
-                                .trim_start_matches('v')
-                                .starts_with(ver.trim_start_matches('v'))
-                            {
-                                let bin = entry.path().join("bin");
-                                if bin.exists() {
-                                    parts.push(bin.to_string_lossy().to_string());
-                                    found = true;
-                                    break;
-                                }
-                            }
-                        }
-                        if found {
-                            // Skip the fallback below
-                        } else {
-                            // Default alias didn't match, fall through to highest version
-                            let default_ver = None::<String>;
-                            let _ = default_ver; // suppress unused warning
-                        }
+/// Collect extra directories to prepend to PATH (platform-specific).
+/// Returns empty dirs when home is unavailable to avoid relative-path mis-hits.
+fn extra_path_dirs() -> Vec<PathBuf> {
+    let home = match crate::storage::home_dir() {
+        Some(h) if !h.is_empty() => PathBuf::from(h),
+        _ => {
+            log::debug!("[claude_stream] home_dir unavailable, skipping home-based PATH dirs");
+            #[cfg(not(windows))]
+            return vec![
+                PathBuf::from("/opt/homebrew/bin"),
+                PathBuf::from("/usr/local/bin"),
+            ];
+            #[cfg(windows)]
+            return {
+                let mut dirs = Vec::new();
+                if let Ok(d) = std::env::var("APPDATA") {
+                    if !d.is_empty() {
+                        dirs.push(PathBuf::from(&d).join("npm"));
                     }
                 }
-                // Fallback: add highest version (sort by version descending)
-                if !parts.iter().any(|p| p.contains(".nvm/versions/node")) {
-                    if let Ok(entries) = std::fs::read_dir(d) {
-                        let mut version_dirs: Vec<_> = entries
-                            .flatten()
-                            .filter(|e| e.path().join("bin").exists())
-                            .collect();
-                        // Sort by directory name descending (v20 > v17)
-                        version_dirs.sort_by_key(|b| std::cmp::Reverse(b.file_name()));
-                        if let Some(entry) = version_dirs.first() {
-                            let bin = entry.path().join("bin");
-                            parts.push(bin.to_string_lossy().to_string());
-                        }
+                if let Ok(d) = std::env::var("LOCALAPPDATA") {
+                    if !d.is_empty() {
+                        dirs.push(PathBuf::from(&d).join("npm"));
                     }
                 }
-            } else if std::path::Path::new(d).exists() {
-                parts.push(d.clone());
+                dirs
+            };
+        }
+    };
+
+    #[cfg(windows)]
+    {
+        let mut dirs = Vec::new();
+        if let Ok(d) = std::env::var("APPDATA") {
+            if !d.is_empty() {
+                dirs.push(PathBuf::from(&d).join("npm"));
             }
         }
+        if let Ok(d) = std::env::var("LOCALAPPDATA") {
+            if !d.is_empty() {
+                dirs.push(PathBuf::from(&d).join("npm"));
+            }
+        }
+        dirs.extend([
+            home.join(".npm-global").join("bin"),
+            home.join(".claude").join("bin"),
+            home.join(".local").join("bin"),
+            home.join(".cargo").join("bin"),
+            home.join(".nvm").join("current").join("bin"),
+            home.join(".volta").join("bin"),
+            home.join(".fnm").join("current").join("bin"),
+        ]);
+        dirs
     }
-    if parts.is_empty() {
-        current_path
+    #[cfg(not(windows))]
+    {
+        let nvm_dir = home.join(".nvm").join("versions").join("node");
+
+        let mut dirs = vec![
+            home.join(".local").join("bin"),
+            home.join(".cargo").join("bin"),
+        ];
+
+        // nvm: prefer the default alias, then fall back to highest version
+        let mut nvm_resolved = false;
+        let alias_path = home.join(".nvm").join("alias").join("default");
+        if let Ok(alias_content) = std::fs::read_to_string(&alias_path) {
+            let ver = alias_content.trim().to_string();
+            if !ver.is_empty() {
+                if let Ok(entries) = std::fs::read_dir(&nvm_dir) {
+                    for entry in entries.flatten() {
+                        let name = entry.file_name().to_string_lossy().to_string();
+                        if name
+                            .trim_start_matches('v')
+                            .starts_with(ver.trim_start_matches('v'))
+                        {
+                            let bin = entry.path().join("bin");
+                            if bin.exists() {
+                                dirs.push(bin);
+                                nvm_resolved = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if !nvm_resolved {
+            if let Ok(entries) = std::fs::read_dir(&nvm_dir) {
+                let mut version_dirs: Vec<_> = entries
+                    .flatten()
+                    .filter(|e| e.path().join("bin").exists())
+                    .collect();
+                version_dirs.sort_by_key(|b| std::cmp::Reverse(b.file_name()));
+                if let Some(entry) = version_dirs.first() {
+                    dirs.push(entry.path().join("bin"));
+                }
+            }
+        }
+
+        dirs.extend([
+            home.join(".volta").join("bin"),
+            home.join(".fnm").join("current").join("bin"),
+            home.join(".local").join("share").join("mise").join("shims"),
+            home.join(".asdf").join("shims"),
+            PathBuf::from("/opt/homebrew/bin"),
+            PathBuf::from("/usr/local/bin"),
+        ]);
+
+        dirs
+    }
+}
+
+/// Build a PATH that includes common binary locations (cross-platform).
+pub fn augmented_path() -> String {
+    let extra = extra_path_dirs();
+    let current_path = std::env::var("PATH").unwrap_or_default();
+    let existing: Vec<PathBuf> = std::env::split_paths(&current_path).collect();
+
+    #[cfg(windows)]
+    let eq = |a: &PathBuf, b: &PathBuf| {
+        a.to_string_lossy()
+            .eq_ignore_ascii_case(&b.to_string_lossy())
+    };
+    #[cfg(not(windows))]
+    let eq = |a: &PathBuf, b: &PathBuf| a == b;
+
+    let mut parts: Vec<PathBuf> = Vec::new();
+    for dir in extra {
+        if dir.is_dir()
+            && !parts.iter().any(|p| eq(p, &dir))
+            && !existing.iter().any(|e| eq(e, &dir))
+        {
+            parts.push(dir);
+        }
+    }
+    parts.extend(existing);
+
+    std::env::join_paths(&parts)
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or(current_path)
+}
+
+/// Cross-platform binary lookup. Uses `where` on Windows, `which` on Unix.
+pub fn which_binary(name: &str) -> Option<String> {
+    let cmd = if cfg!(windows) { "where" } else { "which" };
+    let output = std::process::Command::new(cmd)
+        .arg(name)
+        .env("PATH", augmented_path())
+        .output()
+        .ok()?;
+    if output.status.success() {
+        let out = String::from_utf8_lossy(&output.stdout);
+        out.lines()
+            .map(|l| l.trim())
+            .find(|l| !l.is_empty())
+            .map(|l| l.to_string())
     } else {
-        parts.push(current_path);
-        parts.join(":")
+        None
     }
 }
 
@@ -293,16 +374,55 @@ pub(crate) fn resolve_claude_path() -> String {
     if let Some(ref path) = *cached {
         return path.clone();
     }
-    let home = crate::storage::home_dir().unwrap_or_default();
-    let candidates = [
-        format!("{}/.local/bin/claude", home),
-        "/usr/local/bin/claude".to_string(),
-    ];
+    let home = crate::storage::home_dir()
+        .filter(|h| !h.is_empty())
+        .map(PathBuf::from);
+
+    #[cfg(windows)]
+    let candidates = {
+        let mut bases = Vec::new();
+        if let Ok(d) = std::env::var("APPDATA") {
+            if !d.is_empty() {
+                bases.push(PathBuf::from(&d).join("npm"));
+            }
+        }
+        if let Ok(d) = std::env::var("LOCALAPPDATA") {
+            if !d.is_empty() {
+                bases.push(PathBuf::from(&d).join("npm"));
+            }
+        }
+        if let Some(ref h) = home {
+            bases.push(h.join(".claude").join("bin"));
+            bases.push(h.join(".local").join("bin"));
+        }
+        let names = ["claude.cmd", "claude.exe", "claude.bat", "claude"];
+        let mut cands = Vec::new();
+        for base in &bases {
+            for name in &names {
+                cands.push(base.join(name));
+            }
+        }
+        cands
+    };
+    #[cfg(not(windows))]
+    let candidates = {
+        let mut cands = Vec::new();
+        if let Some(ref h) = home {
+            cands.push(h.join(".local").join("bin").join("claude"));
+        }
+        cands.push(PathBuf::from("/usr/local/bin/claude"));
+        cands
+    };
+
     for c in &candidates {
-        if std::path::Path::new(c).exists() {
-            log::debug!("[claude_stream] resolved claude binary (cached): {}", c);
-            *cached = Some(c.clone());
-            return c.clone();
+        if c.exists() {
+            let path_str = c.to_string_lossy().to_string();
+            log::debug!(
+                "[claude_stream] resolved claude binary (cached): {}",
+                path_str
+            );
+            *cached = Some(path_str.clone());
+            return path_str;
         }
     }
     log::debug!(

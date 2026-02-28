@@ -209,7 +209,9 @@
           <h2 class="text-base font-semibold text-foreground">{t("cliSync_title")}</h2>
           <p class="mt-0.5 text-xs text-muted-foreground">
             {#if isShowAll}
-              {t("cliSync_allProjects")} &middot; {t("cliSync_found", { count: String(sessions.length) })}
+              {t("cliSync_allProjects")} &middot; {t("cliSync_found", {
+                count: String(sessions.length),
+              })}
             {:else}
               {cwd} &middot; {t("cliSync_found", { count: String(sessions.length) })}
             {/if}
@@ -220,8 +222,12 @@
           onclick={onclose}
           aria-label="Close"
         >
-          <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-            ><path d="M18 6 6 18M6 6l12 12" /></svg
+          <svg
+            class="h-5 w-5"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"><path d="M18 6 6 18M6 6l12 12" /></svg
           >
         </button>
       </div>

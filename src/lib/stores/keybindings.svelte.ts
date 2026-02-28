@@ -265,24 +265,43 @@ export function normalizeKeyEvent(e: KeyboardEvent): string {
 export function formatKeyDisplay(key: string): string {
   if (!key || key === "disabled") return "";
 
-  const symbolMap: Record<string, string> = {
-    Cmd: "⌘",
-    Ctrl: "⌃",
-    Alt: "⌥",
-    Shift: "⇧",
-    Meta: "⊞",
-    Enter: "↵",
-    Escape: "⎋",
-    Tab: "⇥",
-    Backspace: "⌫",
-    Delete: "⌦",
-    Space: "␣",
-  };
+  if (IS_MAC) {
+    const macSymbols: Record<string, string> = {
+      Cmd: "⌘",
+      Ctrl: "⌃",
+      Alt: "⌥",
+      Shift: "⇧",
+      Meta: "⊞",
+      Enter: "↵",
+      Escape: "⎋",
+      Tab: "⇥",
+      Backspace: "⌫",
+      Delete: "⌦",
+      Space: "␣",
+    };
+    return key
+      .split("+")
+      .map((p) => macSymbols[p] ?? p)
+      .join("");
+  }
 
-  return key
-    .split("+")
-    .map((part) => symbolMap[part] ?? part)
-    .join("");
+  // Windows / Linux: readable text joined with "+"
+  const textMap: Record<string, string> = {
+    Cmd: "Ctrl",
+    Alt: "Alt",
+    Shift: "Shift",
+    Meta: "Win",
+    Enter: "Enter",
+    Escape: "Esc",
+    Tab: "Tab",
+    Backspace: "Backspace",
+    Delete: "Delete",
+    Space: "Space",
+  };
+  const mapped = key.split("+").map((p) => textMap[p] ?? p);
+  // De-duplicate consecutive modifiers (e.g. Cmd+Ctrl → Ctrl+Ctrl → Ctrl)
+  const deduped = mapped.filter((v, i, a) => i === 0 || v !== a[i - 1]);
+  return deduped.join("+");
 }
 
 // ── Input target detection ──

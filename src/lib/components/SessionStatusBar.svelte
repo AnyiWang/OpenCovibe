@@ -134,7 +134,10 @@
   let cwdShort = $derived.by(() => {
     const val = cwd || run?.cwd || "";
     if (!val || val === "/") return "";
-    const home = val.replace(/^\/Users\/[^/]+/, "~");
+    const home = val
+      .replace(/^\/Users\/[^/]+/, "~")
+      .replace(/^\/home\/[^/]+/, "~")
+      .replace(/^[A-Za-z]:[/\\](?:Users|users)[/\\][^/\\]+/, "~");
     return home.length > 30 ? "..." + home.slice(-27) : home;
   });
 
