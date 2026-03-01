@@ -60,6 +60,13 @@
 
   // ── Helpers ──
 
+  // WebKit (Tauri WKWebView on macOS) has unreliable content-visibility:auto re-layout.
+  // Disable the optimization on all WebKit engines to ensure correct rendering.
+  const isWebKit =
+    typeof navigator !== "undefined" &&
+    /AppleWebKit/.test(navigator.userAgent) &&
+    !/(Chrome|Chromium|Edg|OPR)/.test(navigator.userAgent);
+
   // ── Layout context ──
   const toggleLayoutSidebar = getContext<() => void>("toggleSidebar");
   const keybindingStore = getContext<KeybindingStore>("keybindings");
@@ -401,6 +408,12 @@
     if (gen !== progressiveGen) return;
     renderLimit = Infinity;
     dbg("chat", "loadRun complete", { timeline: filteredTimeline.length, gen });
+
+    // Scroll to bottom after DOM update — ensures content-visibility triggers re-layout
+    await tick();
+    requestAnimationFrame(() => {
+      if (chatAreaRef) chatAreaRef.scrollTop = chatAreaRef.scrollHeight;
+    });
   }
 
   let isExpandingTimeline = $derived(false);
@@ -1034,7 +1047,7 @@
   // Auto-scroll chat
   $effect(() => {
     if (store.useStreamSession && chatAreaRef) {
-      const _ = store.timeline.length + store.streamingText.length;
+      const _ = store.timeline.length + store.streamingText.length + (store.run?.id ?? "");
       if (isExpandingTimeline) return; // progressive expansion handles its own scrolling
       requestAnimationFrame(() => {
         if (chatAreaRef) {
@@ -2564,7 +2577,11 @@
                 </div>
               {/if}
               {#each visibleTimeline as entry, i (entry.id)}
-                <div style="content-visibility:auto;contain-intrinsic-size:auto 100px">
+                <div
+                  style={isWebKit
+                    ? ""
+                    : "content-visibility:auto;contain-intrinsic-size:auto 100px"}
+                >
                   {#if usageAnnotations.has(i)}
                     {@const tu = usageAnnotations.get(i)}
                     {#if tu}
