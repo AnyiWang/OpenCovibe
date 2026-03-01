@@ -1,5 +1,7 @@
 use tauri::AppHandle;
+#[cfg(target_os = "macos")]
 use tauri::Emitter;
+#[cfg(target_os = "macos")]
 use tauri::Manager;
 
 /// Screenshot capture core logic (shared by global hotkey callback and IPC command).
@@ -67,6 +69,8 @@ pub fn handle_global_shortcut(app: &AppHandle) {
         let app = app.clone();
         std::thread::spawn(move || do_capture(&app));
     }
+    #[cfg(not(target_os = "macos"))]
+    let _ = app;
 }
 
 /// IPC: manually trigger screenshot (frontend button / non-macOS detection entry).
@@ -74,8 +78,9 @@ pub fn handle_global_shortcut(app: &AppHandle) {
 pub async fn capture_screenshot(app: AppHandle) -> Result<(), String> {
     #[cfg(not(target_os = "macos"))]
     {
+        let _ = app;
         log::warn!("[screenshot] not supported on this platform");
-        return Err("Screenshot capture is only supported on macOS".into());
+        Err("Screenshot capture is only supported on macOS".into())
     }
 
     #[cfg(target_os = "macos")]
@@ -102,8 +107,8 @@ pub fn update_screenshot_hotkey(app: AppHandle, hotkey: Option<String>) -> Resul
 pub fn init_screenshot_hotkey(app: &AppHandle) {
     #[cfg(not(target_os = "macos"))]
     {
+        let _ = app;
         log::debug!("[screenshot] skipping init (not macOS)");
-        return;
     }
 
     #[cfg(target_os = "macos")]
