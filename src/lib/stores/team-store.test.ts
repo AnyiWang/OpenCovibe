@@ -11,6 +11,7 @@ vi.mock("$lib/api", () => ({
   getTeamConfig: vi.fn(),
   listTeamTasks: vi.fn(),
   getTeamInbox: vi.fn(),
+  getAllTeamInboxes: vi.fn().mockResolvedValue([]),
 }));
 
 vi.mock("$lib/utils/debug", () => ({
@@ -199,6 +200,44 @@ describe("TeamStore", () => {
       // loadTeams should be skipped (within cooldown window)
       await store.loadTeams();
       expect(api.listTeams).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("forceRefresh", () => {
+    it("bypasses cooldown and refreshes teams", async () => {
+      const mockTeams = [
+        { name: "t1", description: "", member_count: 1, task_count: 0, created_at: 0 },
+      ];
+      vi.mocked(api.listTeams).mockResolvedValue(mockTeams);
+
+      // Set cooldown
+      store.handleTeamUpdate({ team_name: "t", change: "created" });
+      vi.mocked(api.listTeams).mockClear();
+
+      // forceRefresh should ignore cooldown
+      vi.mocked(api.listTeams).mockResolvedValue(mockTeams);
+      await store.forceRefresh();
+      expect(api.listTeams).toHaveBeenCalledOnce();
+      expect(store.teams).toEqual(mockTeams);
+    });
+
+    it("also refreshes selectedTeam when set", async () => {
+      vi.mocked(api.listTeams).mockResolvedValue([]);
+      vi.mocked(api.getTeamConfig).mockResolvedValue({
+        name: "my-team",
+        description: "",
+        createdAt: 0,
+        leadAgentId: "",
+        leadSessionId: "",
+        members: [],
+      });
+      vi.mocked(api.listTeamTasks).mockResolvedValue([]);
+
+      store.selectedTeam = "my-team";
+      await store.forceRefresh();
+
+      expect(api.getTeamConfig).toHaveBeenCalledWith("my-team");
+      expect(api.listTeamTasks).toHaveBeenCalledWith("my-team");
     });
   });
 });

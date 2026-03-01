@@ -33,7 +33,7 @@
   import type { PlatformCredential } from "$lib/types";
   import { TeamStore } from "$lib/stores/team-store.svelte";
   import { KeybindingStore } from "$lib/stores/keybindings.svelte";
-  import { getEventMiddleware } from "$lib/stores";
+  import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import {
     t,
     LOCALE_REGISTRY,
@@ -367,11 +367,82 @@
     // Poll for runs every 60s (fallback only — primary updates via ocv:runs-changed event)
     const interval = setInterval(loadRuns, 60000);
 
-    // Team store: wire into middleware + initial load + poll fallback (60s)
-    const middleware = getEventMiddleware();
-    middleware.setTeamStore(teamStore);
+    // Team store: initial load + poll fallback (60s)
     teamStore.loadTeams();
-    const teamPollInterval = setInterval(() => teamStore.loadTeams(), 60000);
+    const teamPollInterval = setInterval(() => {
+      teamStore.loadTeams();
+      if (teamStore.selectedTeam) teamStore.selectTeam(teamStore.selectedTeam);
+    }, 60000);
+
+    // Team/task event listeners — app-level lifecycle, independent of chat page
+    type TeamUpdatePayload = { team_name: string; change: string };
+    type TaskUpdatePayload = { team_name: string; task_id: string; change: string };
+
+    let destroyed = false;
+    let unlistenTeam: UnlistenFn | undefined;
+    let unlistenTask: UnlistenFn | undefined;
+    const retryTimers: ReturnType<typeof setTimeout>[] = [];
+
+    // 首次+重试成功后都补偿同步（debounce 300ms）
+    let resyncTimer: ReturnType<typeof setTimeout> | undefined;
+    function scheduleResync() {
+      if (resyncTimer) clearTimeout(resyncTimer);
+      resyncTimer = setTimeout(() => {
+        if (!destroyed) teamStore.forceRefresh();
+      }, 300);
+    }
+
+    function registerTeamListener<T>(
+      name: string,
+      handler: (event: { payload: T }) => void,
+      assign: (fn: UnlistenFn) => void,
+    ) {
+      function tryListen(attempt: number) {
+        listen<T>(name, handler)
+          .then((fn) => {
+            if (destroyed) {
+              fn();
+              return;
+            }
+            assign(fn);
+            scheduleResync();
+          })
+          .catch((e) => {
+            if (destroyed) return;
+            if (attempt < 2) {
+              const delay = (attempt + 1) * 2000; // 2s, 4s
+              dbgWarn(
+                "layout",
+                `${name} listen failed (attempt ${attempt + 1}/3), retry in ${delay}ms`,
+                e,
+              );
+              const t = setTimeout(() => tryListen(attempt + 1), delay);
+              retryTimers.push(t);
+            } else {
+              dbgWarn("layout", `${name} listen failed after 3 attempts, falling back to poll`, e);
+            }
+          });
+      }
+      tryListen(0);
+    }
+
+    registerTeamListener<TeamUpdatePayload>(
+      "team-update",
+      (event) => {
+        dbg("layout", "team-update", event.payload);
+        teamStore.handleTeamUpdate(event.payload);
+      },
+      (fn) => (unlistenTeam = fn),
+    );
+
+    registerTeamListener<TaskUpdatePayload>(
+      "task-update",
+      (event) => {
+        dbg("layout", "task-update", event.payload);
+        teamStore.handleTaskUpdate(event.payload);
+      },
+      (fn) => (unlistenTask = fn),
+    );
 
     // Keybinding store: load overrides + CLI bindings, register app-level callbacks
     keybindingStore.loadOverrides();
@@ -415,7 +486,11 @@
       clearInterval(interval);
       clearInterval(teamPollInterval);
       if (debounceTimer) clearTimeout(debounceTimer);
-      middleware.setTeamStore(null);
+      destroyed = true;
+      unlistenTeam?.();
+      unlistenTask?.();
+      retryTimers.forEach(clearTimeout);
+      if (resyncTimer) clearTimeout(resyncTimer);
       keybindingStore.unregisterCallback("app:toggleSidebar");
       keybindingStore.unregisterCallback("app:commandPalette");
       keybindingStore.unregisterCallback("app:newChat");

@@ -75,9 +75,9 @@ describe("EventMiddleware", () => {
   // ── Lifecycle ──
 
   describe("lifecycle", () => {
-    it("registers all 10 listeners on start()", async () => {
+    it("registers all 8 listeners on start()", async () => {
       await mw.start();
-      expect(_listeners.size).toBe(10);
+      expect(_listeners.size).toBe(8);
       expect(_listeners.has("bus-event")).toBe(true);
       expect(_listeners.has("pty-output")).toBe(true);
       expect(_listeners.has("pty-exit")).toBe(true);
@@ -86,8 +86,6 @@ describe("EventMiddleware", () => {
       expect(_listeners.has("run-event")).toBe(true);
       expect(_listeners.has("hook-event")).toBe(true);
       expect(_listeners.has("hook-usage")).toBe(true);
-      expect(_listeners.has("team-update")).toBe(true);
-      expect(_listeners.has("task-update")).toBe(true);
     });
 
     it("is idempotent — second start() is a no-op", async () => {
@@ -368,8 +366,8 @@ describe("EventMiddleware", () => {
 
       await mw.start();
 
-      // Should have 9 listeners (10 - 1 failed)
-      expect(_listeners.size).toBe(9);
+      // Should have 7 listeners (8 - 1 failed)
+      expect(_listeners.size).toBe(7);
       expect(dbgWarn).toHaveBeenCalledWith(
         "middleware",
         expect.stringContaining("failed to register listener"),

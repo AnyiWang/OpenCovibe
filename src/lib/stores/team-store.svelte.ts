@@ -53,6 +53,18 @@ export class TeamStore {
     }
   }
 
+  /** Force-refresh teams + selected team state. Bypasses cooldown.
+   *  Used by layout listener recovery to fill gaps from missed events. */
+  async forceRefresh(): Promise<void> {
+    dbg("teams", "forceRefresh");
+    try {
+      this.teams = await api.listTeams();
+      if (this.selectedTeam) await this.selectTeam(this.selectedTeam);
+    } catch (e) {
+      dbgWarn("teams", "forceRefresh error", e);
+    }
+  }
+
   /** Select a team and fetch its config + tasks + all inboxes. Always fetches fresh data. */
   async selectTeam(name: string): Promise<void> {
     this.selectedTeam = name;
