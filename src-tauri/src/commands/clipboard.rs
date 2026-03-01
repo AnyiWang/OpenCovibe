@@ -80,6 +80,7 @@ fn mime_from_extension(ext: &str) -> &'static str {
 
 /// Build ClipboardFileInfo entries from an iterator of file paths.
 /// Shared logic for macOS and Linux clipboard reading.
+#[cfg(not(windows))]
 fn paths_to_clipboard_infos(paths: impl Iterator<Item = String>) -> Vec<ClipboardFileInfo> {
     let mut results = Vec::new();
     for path_str in paths {

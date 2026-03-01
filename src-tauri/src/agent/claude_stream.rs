@@ -14,6 +14,7 @@ use tokio::time::Duration;
 /// Resolve an nvm alias recursively (e.g., default → lts/jod → 22).
 /// Returns the terminal version string (e.g., "22", "v22.22.0") or None.
 /// Handles chains like: default → lts/jod → 22, or default → node (unresolvable → None).
+#[cfg(not(windows))]
 fn resolve_nvm_alias(home: &std::path::Path, alias_name: &str, max_depth: u8) -> Option<String> {
     if max_depth == 0 {
         return None;
