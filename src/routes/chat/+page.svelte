@@ -28,6 +28,7 @@
     TimelineEntry,
   } from "$lib/types";
   import { PLATFORM_PRESETS, findCredential } from "$lib/utils/platform-presets";
+  import { IS_WEBKIT } from "$lib/utils/platform";
   import XTerminal from "$lib/components/XTerminal.svelte";
   import ChatMessage from "$lib/components/ChatMessage.svelte";
   import InlineToolCard from "$lib/components/InlineToolCard.svelte";
@@ -59,13 +60,6 @@
   import { buildDoctorReport } from "$lib/utils/doctor";
 
   // ── Helpers ──
-
-  // WebKit (Tauri WKWebView on macOS) has unreliable content-visibility:auto re-layout.
-  // Disable the optimization on all WebKit engines to ensure correct rendering.
-  const isWebKit =
-    typeof navigator !== "undefined" &&
-    /AppleWebKit/.test(navigator.userAgent) &&
-    !/(Chrome|Chromium|Edg|OPR)/.test(navigator.userAgent);
 
   // ── Layout context ──
   const toggleLayoutSidebar = getContext<() => void>("toggleSidebar");
@@ -1047,7 +1041,10 @@
   // Auto-scroll chat
   $effect(() => {
     if (store.useStreamSession && chatAreaRef) {
-      const _ = store.timeline.length + store.streamingText.length + (store.run?.id ?? "");
+      // Svelte 5 auto-tracks these reads as effect dependencies
+      const _tl = store.timeline.length;
+      const _st = store.streamingText.length;
+      const _rid = store.run?.id;
       if (isExpandingTimeline) return; // progressive expansion handles its own scrolling
       requestAnimationFrame(() => {
         if (chatAreaRef) {
@@ -2577,11 +2574,7 @@
                 </div>
               {/if}
               {#each visibleTimeline as entry, i (entry.id)}
-                <div
-                  style={isWebKit
-                    ? ""
-                    : "content-visibility:auto;contain-intrinsic-size:auto 100px"}
-                >
+                <div class:cv-auto={!IS_WEBKIT}>
                   {#if usageAnnotations.has(i)}
                     {@const tu = usageAnnotations.get(i)}
                     {#if tu}

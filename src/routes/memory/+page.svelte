@@ -92,9 +92,9 @@
   // Resolve globalPath dynamically from user home directory
   onMount(async () => {
     try {
-      const { homeDir } = await import("@tauri-apps/api/path");
+      const { homeDir, join } = await import("@tauri-apps/api/path");
       const home = await homeDir();
-      globalPath = `${home}.claude/CLAUDE.md`;
+      globalPath = await join(home, ".claude", "CLAUDE.md");
     } catch {
       // Fallback: leave empty, global tab will show empty state
     }
