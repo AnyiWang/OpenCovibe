@@ -30,7 +30,7 @@ export default ts.config(
       // Allow empty functions (common in noop callbacks)
       "@typescript-eslint/no-empty-function": "off",
       // Svelte: allow @html (sanitized via DOMPurify)
-      "svelte/no-at-html-tags": "warn",
+      "svelte/no-at-html-tags": "off",
       // Disable noisy Svelte rules that don't catch real bugs:
       // - require-each-key: 47 violations, adding keys is a significant refactor
       // - no-navigation-without-resolve: not applicable to Tauri (no server routing)

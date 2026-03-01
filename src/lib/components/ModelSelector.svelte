@@ -5,11 +5,11 @@
 
   let {
     value = $bindable(""),
-    agent = "claude",
+    _agent = "claude",
     onchange,
   }: {
     value: string;
-    agent?: string;
+    _agent?: string;
     onchange?: (model: string) => void;
   } = $props();
 

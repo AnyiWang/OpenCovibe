@@ -427,12 +427,6 @@
     }
   }
 
-  function submitMultiSelect() {
-    const selected = Object.keys(multiChecked).filter((k) => multiChecked[k]);
-    if (selected.length === 0) return;
-    handleAnswer(selected.join(", "));
-  }
-
   function handleAskPermissionAllow(answer: string) {
     if (submitting || !onPermissionRespond || !tool.permission_request_id) return;
     if (hasMultipleQuestions) {

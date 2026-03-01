@@ -136,7 +136,7 @@
         const r = await searchMcpRegistry(q, 30);
         results = r.servers;
         dbg("mcp-discover", "search results", { query: q, count: r.servers.length });
-      } catch (e) {
+      } catch {
         showToast(t("mcp_searchFailed"), "error");
       } finally {
         searching = false;
