@@ -369,10 +369,7 @@
 
     // Team store: initial load + poll fallback (60s)
     teamStore.loadTeams();
-    const teamPollInterval = setInterval(() => {
-      teamStore.loadTeams();
-      if (teamStore.selectedTeam) teamStore.selectTeam(teamStore.selectedTeam);
-    }, 60000);
+    const teamPollInterval = setInterval(() => teamStore.loadTeams(), 60000);
 
     // Team/task event listeners — app-level lifecycle, independent of chat page
     type TeamUpdatePayload = { team_name: string; change: string };

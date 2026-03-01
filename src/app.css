@@ -587,6 +587,12 @@
   border-bottom: 1px solid hsl(var(--border) / 0.5);
 }
 
+/* Content-visibility optimization (disabled on WebKit via IS_WEBKIT) */
+.cv-auto {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 100px;
+}
+
 /* Scrollbar-hide utility (for horizontal pill rows) */
 .scrollbar-hide {
   -ms-overflow-style: none;
