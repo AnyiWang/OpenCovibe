@@ -158,35 +158,35 @@ describe("normalizeKeyEvent", () => {
 
 describe("formatKeyDisplay", () => {
   it("formats Cmd as symbol", () => {
-    expect(formatKeyDisplay("Cmd+B")).toBe("⌘B");
+    expect(formatKeyDisplay("Cmd+B")).toBe(IS_MAC ? "⌘B" : "Ctrl+B");
   });
 
   it("formats Shift as symbol", () => {
-    expect(formatKeyDisplay("Shift+Tab")).toBe("⇧⇥");
+    expect(formatKeyDisplay("Shift+Tab")).toBe(IS_MAC ? "⇧⇥" : "Shift+Tab");
   });
 
   it("formats Alt as symbol", () => {
-    expect(formatKeyDisplay("Alt+P")).toBe("⌥P");
+    expect(formatKeyDisplay("Alt+P")).toBe(IS_MAC ? "⌥P" : "Alt+P");
   });
 
   it("formats Ctrl as symbol", () => {
-    expect(formatKeyDisplay("Ctrl+C")).toBe("⌃C");
+    expect(formatKeyDisplay("Ctrl+C")).toBe(IS_MAC ? "⌃C" : "Ctrl+C");
   });
 
   it("formats Enter as symbol", () => {
-    expect(formatKeyDisplay("Enter")).toBe("↵");
+    expect(formatKeyDisplay("Enter")).toBe(IS_MAC ? "↵" : "Enter");
   });
 
   it("formats Escape as symbol", () => {
-    expect(formatKeyDisplay("Escape")).toBe("⎋");
+    expect(formatKeyDisplay("Escape")).toBe(IS_MAC ? "⎋" : "Esc");
   });
 
   it("formats Cmd+Shift+B", () => {
-    expect(formatKeyDisplay("Cmd+Shift+B")).toBe("⌘⇧B");
+    expect(formatKeyDisplay("Cmd+Shift+B")).toBe(IS_MAC ? "⌘⇧B" : "Ctrl+Shift+B");
   });
 
   it("formats Cmd+Enter", () => {
-    expect(formatKeyDisplay("Cmd+Enter")).toBe("⌘↵");
+    expect(formatKeyDisplay("Cmd+Enter")).toBe(IS_MAC ? "⌘↵" : "Ctrl+Enter");
   });
 
   it("returns empty for empty/disabled keys", () => {
