@@ -989,7 +989,17 @@ export type HookEventType =
   | "Notification"
   | "Stop"
   | "SubagentStop"
-  | "SubagentTool";
+  | "SubagentTool"
+  | "SubagentStart"
+  | "SessionStart"
+  | "SessionEnd"
+  | "PermissionRequest"
+  | "Setup"
+  | "ConfigChange"
+  | "TeammateIdle"
+  | "TaskCompleted"
+  | "WorktreeCreate"
+  | "WorktreeRemove";
 
 export interface HookHandler {
   type: "command" | "prompt";
