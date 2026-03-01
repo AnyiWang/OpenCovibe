@@ -1,7 +1,7 @@
 /**
  * EventMiddleware: unified Tauri event listener management.
  *
- * - Registers all 10 Tauri event listeners once
+ * - Registers all 8 Tauri event listeners once
  * - Routes events by run_id to the subscribed SessionStore
  * - Microbatches bus-events (16ms) to reduce reactive updates
  * - PTY/Pipe events go through handler callbacks (DOM-bound)
@@ -10,7 +10,6 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { dbg, dbgWarn } from "$lib/utils/debug";
 import type { BusEvent, HookEvent } from "$lib/types";
 import type { SessionStore } from "./session-store.svelte";
-import type { TeamStore } from "./team-store.svelte";
 
 // ── Handler interfaces (page-level DOM callbacks) ──
 
@@ -40,7 +39,6 @@ export class EventMiddleware {
   private _ptyHandler: PtyHandler | null = null;
   private _pipeHandler: PipeHandler | null = null;
   private _runEventHandler: RunEventHandler | null = null;
-  private _teamStore: TeamStore | null = null;
 
   // Microbatch buffer for bus events
   private _batchBuffer = new Map<string, BusEvent[]>();
@@ -127,18 +125,6 @@ export class EventMiddleware {
       },
     );
 
-    // 9. Team file watcher events
-    await reg<{ team_name: string; change: string }>("team-update", (event) => {
-      dbg("middleware", "team-update", event.payload);
-      this._teamStore?.handleTeamUpdate(event.payload);
-    });
-
-    // 10. Task file watcher events
-    await reg<{ team_name: string; task_id: string; change: string }>("task-update", (event) => {
-      dbg("middleware", "task-update", event.payload);
-      this._teamStore?.handleTaskUpdate(event.payload);
-    });
-
     dbg("middleware", "all listeners registered:", ul.length);
   }
 
@@ -209,10 +195,6 @@ export class EventMiddleware {
 
   setRunEventHandler(handler: RunEventHandler | null): void {
     this._runEventHandler = handler;
-  }
-
-  setTeamStore(store: TeamStore | null): void {
-    this._teamStore = store;
   }
 
   // ── Internal ──
