@@ -25,7 +25,7 @@
   let globalPath = $state("");
 
   let projectCwd = $state(
-    typeof window !== "undefined" ? localStorage.getItem("ocv:project-cwd") ?? "" : "",
+    typeof window !== "undefined" ? (localStorage.getItem("ocv:project-cwd") ?? "") : "",
   );
 
   let currentPath = $derived.by(() => {
@@ -114,7 +114,7 @@
 
   // Warn before navigating away with unsaved changes
   beforeNavigate(({ cancel }) => {
-    if (isDirty && !confirm(t('memory_discardConfirm'))) {
+    if (isDirty && !confirm(t("memory_discardConfirm"))) {
       cancel();
     }
   });
@@ -170,7 +170,7 @@
         stroke-linecap="round"
         stroke-linejoin="round"><path d="M20 6 9 17l-5-5" /></svg
       >
-      {t('memory_saved')}
+      {t("memory_saved")}
     </div>
   </div>
 {/if}
@@ -181,7 +181,8 @@
     <div class="flex items-center gap-3 min-w-0">
       <span class="text-sm font-medium truncate">{pageTitle}</span>
       {#if isDirty}
-        <span class="h-2 w-2 rounded-full bg-primary shrink-0" title={t('memory_unsavedChanges')}></span>
+        <span class="h-2 w-2 rounded-full bg-primary shrink-0" title={t("memory_unsavedChanges")}
+        ></span>
       {/if}
       {#if currentPath}
         <span
@@ -212,7 +213,7 @@
                 d="m15 5 4 4"
               /></svg
             >
-            {t('common_edit')}
+            {t("common_edit")}
           </button>
           <button
             class="flex items-center gap-1 rounded px-2 py-0.5 text-[11px] font-medium transition-colors
@@ -235,7 +236,7 @@
                 r="3"
               /></svg
             >
-            {t('common_preview')}
+            {t("common_preview")}
           </button>
         </div>
       {/if}
@@ -251,7 +252,7 @@
           : 'text-muted-foreground hover:text-foreground'}"
         onclick={() => (tab = "project")}
       >
-        {t('memory_tabProject')}
+        {t("memory_tabProject")}
       </button>
       <button
         class="px-4 py-2 text-sm transition-colors {tab === 'global'
@@ -259,7 +260,7 @@
           : 'text-muted-foreground hover:text-foreground'}"
         onclick={() => (tab = "global")}
       >
-        {t('memory_tabGlobal')}
+        {t("memory_tabGlobal")}
       </button>
     </div>
   {/if}
@@ -277,7 +278,7 @@
           d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"
         /></svg
       >
-      <p class="text-sm text-muted-foreground">{t('memory_setProjectFirst')}</p>
+      <p class="text-sm text-muted-foreground">{t("memory_setProjectFirst")}</p>
     </div>
   {:else if loading}
     <div class="flex flex-1 items-center justify-center">
@@ -290,7 +291,7 @@
       {#if content}
         <MarkdownContent text={content} />
       {:else}
-        <p class="text-sm text-muted-foreground italic">{t('memory_noContent')}</p>
+        <p class="text-sm text-muted-foreground italic">{t("memory_noContent")}</p>
       {/if}
     </div>
   {:else}
@@ -311,12 +312,12 @@
     <div class="flex items-center gap-3 border-t px-4 py-2 shrink-0">
       <Button onclick={save} loading={saving}>
         {#snippet children()}
-          {t('common_save')}
+          {t("common_save")}
         {/snippet}
       </Button>
       <Button variant="outline" onclick={loadContent}>
         {#snippet children()}
-          {t('memory_reload')}
+          {t("memory_reload")}
         {/snippet}
       </Button>
     </div>
