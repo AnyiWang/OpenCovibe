@@ -1,6 +1,6 @@
 [package]
 name = "OpenCovibe"
-version = "0.1.11"
+version = "0.1.12"
 edition = "2021"
 description = "Local-first desktop app for AI-assisted vibe coding"
 license = "Apache-2.0"

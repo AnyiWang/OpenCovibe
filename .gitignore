@@ -46,7 +46,7 @@ src-tauri/target */
 # Claude Code (local dev context)
 CLAUDE.md
 AGENTS.md
-memory/
+/memory/
 .claude/
 
 # Git hooks (local only)
