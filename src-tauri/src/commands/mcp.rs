@@ -61,6 +61,23 @@ pub async fn remove_mcp_server(
 }
 
 #[tauri::command]
+pub fn toggle_mcp_server_config(
+    name: String,
+    enabled: bool,
+    scope: String,
+    cwd: Option<String>,
+) -> Result<PluginOperationResult, String> {
+    log::debug!(
+        "[mcp] toggle_mcp_server_config: name={}, enabled={}, scope={}, cwd={:?}",
+        name,
+        enabled,
+        scope,
+        cwd
+    );
+    crate::storage::mcp_registry::toggle_server_config(&name, enabled, &scope, cwd.as_deref())
+}
+
+#[tauri::command]
 pub async fn check_mcp_registry_health() -> Result<ProviderHealth, String> {
     log::debug!("[mcp] check_mcp_registry_health");
     Ok(crate::storage::mcp_registry::health_check().await)

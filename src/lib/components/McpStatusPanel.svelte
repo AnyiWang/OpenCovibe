@@ -20,8 +20,10 @@
   } = $props();
 
   let loading = $state(false);
+  let togglingServer = $state<string | null>(null);
   let servers = $state<McpServerInfo[]>([]);
   let error = $state("");
+  let successMsg = $state("");
 
   // Sync from prop when it changes
   $effect(() => {
@@ -65,18 +67,35 @@
   }
 
   async function toggle(serverName: string, currentlyEnabled: boolean) {
-    if (!sessionAlive) return;
-    loading = true;
+    togglingServer = serverName;
     error = "";
+    successMsg = "";
+    const newEnabled = !currentlyEnabled;
+
+    // Find server scope (default to "user")
+    const scope = "user";
+
     try {
-      dbg("mcp", "toggle", { runId, serverName, enabled: !currentlyEnabled });
-      await api.toggleMcpServer(runId, serverName, !currentlyEnabled);
-      await refresh();
+      dbg("mcp", "toggle via config", { serverName, enabled: newEnabled, scope });
+      const result = await api.toggleMcpServerConfig(serverName, newEnabled, scope);
+      if (result.success) {
+        // Update local state immediately
+        servers = servers.map((s) =>
+          s.name === serverName
+            ? { ...s, status: newEnabled ? "pending" : "disabled" }
+            : s,
+        );
+        onServersUpdate?.(servers);
+        successMsg = result.message;
+        setTimeout(() => (successMsg = ""), 3000);
+      } else {
+        error = result.message;
+      }
     } catch (e) {
-      dbgWarn("mcp", "toggle failed", e);
+      dbgWarn("mcp", "toggle config failed", e);
       error = String(e);
     } finally {
-      loading = false;
+      togglingServer = null;
     }
   }
 </script>
@@ -151,30 +170,42 @@
           </div>
 
           <!-- Actions -->
-          {#if sessionAlive}
-            <div class="flex items-center gap-1 shrink-0">
-              {#if server.status === "failed" || server.status === "needs-auth"}
-                <button
-                  class="rounded px-1.5 py-0.5 text-[10px] font-medium text-foreground/70 hover:text-foreground hover:bg-accent border border-border/50 transition-colors disabled:opacity-50"
-                  disabled={loading}
-                  onclick={() => reconnect(server.name)}>{t("mcp_reconnect")}</button
-                >
-              {/if}
+          <div class="flex items-center gap-1 shrink-0">
+            {#if sessionAlive && (server.status === "failed" || server.status === "needs-auth")}
               <button
-                class="rounded px-1.5 py-0.5 text-[10px] font-medium transition-colors disabled:opacity-50 {server.status ===
-                'disabled'
-                  ? 'text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/10 border border-emerald-500/30'
-                  : 'text-foreground/70 hover:text-foreground hover:bg-accent border border-border/50'}"
+                class="rounded px-1.5 py-0.5 text-[10px] font-medium text-foreground/70 hover:text-foreground hover:bg-accent border border-border/50 transition-colors disabled:opacity-50"
                 disabled={loading}
-                onclick={() => toggle(server.name, server.status !== "disabled")}
-                >{server.status === "disabled" ? t("mcp_enable") : t("mcp_disable")}</button
+                onclick={() => reconnect(server.name)}>{t("mcp_reconnect")}</button
               >
-            </div>
-          {/if}
+            {/if}
+            <button
+              class="rounded px-1.5 py-0.5 text-[10px] font-medium transition-colors disabled:opacity-50 {server.status ===
+              'disabled'
+                ? 'text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/10 border border-emerald-500/30'
+                : 'text-foreground/70 hover:text-foreground hover:bg-accent border border-border/50'}"
+              disabled={togglingServer === server.name}
+              onclick={() => toggle(server.name, server.status !== "disabled")}
+            >
+              {#if togglingServer === server.name}
+                <span class="flex items-center gap-1">
+                  <span class="h-2.5 w-2.5 border border-current/30 border-t-current rounded-full animate-spin"></span>
+                </span>
+              {:else}
+                {server.status === "disabled" ? t("mcp_enable") : t("mcp_disable")}
+              {/if}
+            </button>
+          </div>
         </div>
       {/each}
     {/if}
   </div>
+
+  <!-- Success message -->
+  {#if successMsg}
+    <div class="px-3 py-2 border-t border-emerald-500/20 bg-emerald-500/5 text-xs text-emerald-600 dark:text-emerald-400">
+      {successMsg}
+    </div>
+  {/if}
 
   <!-- Error -->
   {#if error}

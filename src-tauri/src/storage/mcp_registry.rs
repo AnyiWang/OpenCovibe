@@ -668,6 +668,94 @@ pub async fn remove_server(
     }
 }
 
+/// Toggle an MCP server's disabled state by modifying the config file directly.
+/// Claude CLI does not support toggle via the stream-json control protocol,
+/// so we set/remove `"disabled": true` in the config JSON.
+pub fn toggle_server_config(
+    name: &str,
+    enabled: bool,
+    scope: &str,
+    cwd: Option<&str>,
+) -> Result<PluginOperationResult, String> {
+    let home = crate::storage::dirs_next()
+        .ok_or_else(|| "Could not determine home directory".to_string())?;
+
+    // Determine which config file and JSON path to modify
+    let (config_path, json_path) = match scope {
+        "local" => {
+            let cwd_str = cwd
+                .filter(|s| !s.is_empty())
+                .ok_or("Local scope requires a working directory")?;
+            (home.join(".claude.json"), Some(cwd_str.to_string()))
+        }
+        "user" => (home.join(".claude.json"), None),
+        "project" => {
+            let cwd_str = cwd
+                .filter(|s| !s.is_empty())
+                .ok_or("Project scope requires a working directory")?;
+            (
+                std::path::PathBuf::from(cwd_str).join(".mcp.json"),
+                None,
+            )
+        }
+        _ => return Err(format!("Unknown scope: {}", scope)),
+    };
+
+    let content = std::fs::read_to_string(&config_path)
+        .map_err(|e| format!("Failed to read {}: {}", config_path.display(), e))?;
+    let mut root: serde_json::Value = serde_json::from_str(&content)
+        .map_err(|e| format!("Failed to parse {}: {}", config_path.display(), e))?;
+
+    // Navigate to the correct mcpServers object
+    let servers = if let Some(ref cwd_str) = json_path {
+        // local scope: projects[cwd].mcpServers
+        root.pointer_mut(&format!("/projects/{}/mcpServers", cwd_str.replace('~', "~0").replace('/', "~1")))
+    } else if scope == "project" {
+        // project scope: mcpServers in .mcp.json (may be top-level or nested)
+        if root.get("mcpServers").is_some() {
+            root.get_mut("mcpServers")
+        } else {
+            Some(&mut root)
+        }
+    } else {
+        // user scope: top-level mcpServers
+        root.get_mut("mcpServers")
+    };
+
+    let servers = servers
+        .and_then(|v| v.as_object_mut())
+        .ok_or_else(|| format!("mcpServers not found in {}", config_path.display()))?;
+
+    let server = servers
+        .get_mut(name)
+        .and_then(|v| v.as_object_mut())
+        .ok_or_else(|| format!("MCP server '{}' not found", name))?;
+
+    if enabled {
+        server.remove("disabled");
+    } else {
+        server.insert("disabled".to_string(), serde_json::Value::Bool(true));
+    }
+
+    let output = serde_json::to_string_pretty(&root)
+        .map_err(|e| format!("Failed to serialize config: {}", e))?;
+    std::fs::write(&config_path, output)
+        .map_err(|e| format!("Failed to write {}: {}", config_path.display(), e))?;
+
+    let action = if enabled { "Enabled" } else { "Disabled" };
+    log::debug!(
+        "[mcp_registry] toggle_server_config: {} '{}' in {}",
+        action,
+        name,
+        config_path.display()
+    );
+
+    Ok(PluginOperationResult {
+        success: true,
+        message: format!("{} MCP server '{}'", action, name),
+    })
+}
+
 // ── Validators ──
 
 /// Convert a registry name to a CLI-friendly local name.

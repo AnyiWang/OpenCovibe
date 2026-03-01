@@ -522,6 +522,21 @@ export async function toggleMcpServer(runId: string, serverName: string, enabled
   return sendSessionControl(runId, "toggle_mcp_server", { server_name: serverName, enabled });
 }
 
+export async function toggleMcpServerConfig(
+  serverName: string,
+  enabled: boolean,
+  scope: string,
+  cwd?: string,
+): Promise<{ success: boolean; message: string }> {
+  dbg("api", "toggleMcpServerConfig", { serverName, enabled, scope, cwd });
+  return invoke("toggle_mcp_server_config", {
+    name: serverName,
+    enabled,
+    scope,
+    cwd: cwd ?? null,
+  });
+}
+
 export async function rewindFiles(runId: string, files?: string[]) {
   return sendSessionControl(runId, "rewind_files", files ? { files } : undefined);
 }
