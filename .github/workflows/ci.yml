@@ -28,10 +28,22 @@ jobs:
         run: npx svelte-kit sync
 
       - name: Lint
-        run: npm run lint
+        run: |
+          if ! npm run lint; then
+            echo ""
+            echo "::error::ESLint check failed. Run locally to auto-fix:"
+            echo "  npx eslint --fix src/"
+            exit 1
+          fi
 
       - name: Format check
-        run: npm run format:check
+        run: |
+          if ! npm run format:check; then
+            echo ""
+            echo "::error::Prettier format check failed. Run locally to fix:"
+            echo "  npx prettier --write ."
+            exit 1
+          fi
 
       - name: i18n check
         run: npm run i18n:check
@@ -72,7 +84,13 @@ jobs:
           workspaces: src-tauri
 
       - name: Format check
-        run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
+        run: |
+          if ! cargo fmt --manifest-path src-tauri/Cargo.toml --check; then
+            echo ""
+            echo "::error::Rust format check failed. Run locally to fix:"
+            echo "  cargo fmt --manifest-path src-tauri/Cargo.toml"
+            exit 1
+          fi
 
       - name: Clippy
         run: cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
