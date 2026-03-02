@@ -225,7 +225,6 @@ export async function getGitStatus(cwd: string): Promise<string> {
   return invoke<string>("get_git_status", { cwd });
 }
 
-
 // Export
 export async function exportConversation(runId: string): Promise<string> {
   dbg("api", "exportConversation", runId);
