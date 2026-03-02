@@ -3105,21 +3105,21 @@
       <!-- Scroll-to-bottom floating button -->
       {#if !isNearBottom && store.useStreamSession && !welcomeVisible}
         <button
-          class="absolute bottom-4 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1.5 rounded-full border border-border/60 bg-background/90 backdrop-blur-sm px-3 py-1.5 text-xs text-foreground/80 shadow-lg hover:bg-accent hover:text-foreground transition-all duration-150"
+          class="absolute bottom-4 left-1/2 -translate-x-1/2 z-10 flex items-center justify-center w-9 h-9 rounded-full border border-border/60 bg-background/90 backdrop-blur-sm text-foreground/70 shadow-lg hover:bg-accent hover:text-foreground transition-all duration-150"
           onclick={scrollToBottom}
+          title={t("chat_scrollToBottom") ?? "Scroll to bottom"}
         >
           <svg
-            class="h-3.5 w-3.5"
+            class="h-4 w-4"
             viewBox="0 0 24 24"
             fill="none"
             stroke="currentColor"
-            stroke-width="2"
+            stroke-width="2.5"
             stroke-linecap="round"
             stroke-linejoin="round"
           >
-            <path d="M12 5v14M19 12l-7 7-7-7" />
+            <path d="m6 9 6 6 6-6" />
           </svg>
-          {t("chat_scrollToBottom") ?? "Scroll to bottom"}
         </button>
       {/if}
     </div>
