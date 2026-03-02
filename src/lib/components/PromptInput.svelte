@@ -1156,9 +1156,10 @@
     const text = e.clipboardData?.getData("text/plain");
 
     if (!text) {
-      // Empty text — likely Finder file paste (macOS puts file URLs, not text)
+      // Empty text — likely Finder file paste (macOS puts file URLs, not text),
+      // OR the webview didn't populate clipboardData (common in Tauri/WebKit).
       e.preventDefault();
-      tryNativeClipboardPaste();
+      handleEmptyClipboardPaste();
       return;
     }
 
@@ -1205,6 +1206,39 @@
       promise,
       new Promise<never>((_, reject) => setTimeout(() => reject(new Error("timeout")), ms)),
     ]);
+  }
+
+  async function handleEmptyClipboardPaste() {
+    // clipboardData was empty — try native file paste first, then Clipboard API text
+    try {
+      const files = await withTimeout(api.getClipboardFiles(), 250);
+      if (files.length > 0) {
+        dbg("prompt", "empty-clipboard-file-paste", { count: files.length });
+        await processClipboardPaths(files);
+        return;
+      }
+    } catch {
+      // File check failed — continue to text fallback
+    }
+    // No files found — try reading text via Clipboard API (handles Tauri/WebKit
+    // cases where clipboardData.getData returns empty but clipboard has text)
+    try {
+      const clipText = await navigator.clipboard.readText();
+      if (!clipText) return;
+      dbg("prompt", "clipboard-api-text-fallback", { len: clipText.length });
+      const start = textareaEl?.selectionStart ?? inputText.length;
+      const end = textareaEl?.selectionEnd ?? start;
+      inputText = inputText.slice(0, start) + clipText + inputText.slice(end);
+      requestAnimationFrame(() => {
+        autoResize();
+        if (textareaEl) {
+          const newPos = start + clipText.length;
+          textareaEl.selectionStart = textareaEl.selectionEnd = newPos;
+        }
+      });
+    } catch {
+      dbg("prompt", "clipboard-api-fallback-failed");
+    }
   }
 
   async function tryNativeClipboardPaste(snapshot?: string, cursorPos?: number) {
