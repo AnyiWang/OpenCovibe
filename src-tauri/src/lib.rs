@@ -149,6 +149,7 @@ pub fn run() {
             commands::mcp::list_configured_mcp_servers,
             commands::mcp::add_mcp_server,
             commands::mcp::remove_mcp_server,
+            commands::mcp::toggle_mcp_server_config,
             commands::mcp::check_mcp_registry_health,
             commands::mcp::search_mcp_registry,
             commands::cli_config::get_cli_config,
