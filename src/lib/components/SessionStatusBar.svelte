@@ -146,7 +146,7 @@
   let gitBranch = $state("");
 
   $effect(() => {
-    const dir = cwd || run?.cwd || "";
+    const dir = cwd || run?.cwd || localStorage.getItem("ocv:project-cwd") || "";
     if (!dir) {
       gitBranch = "";
       return;
