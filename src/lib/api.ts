@@ -225,15 +225,6 @@ export async function getGitStatus(cwd: string): Promise<string> {
   return invoke<string>("get_git_status", { cwd });
 }
 
-export async function getGitBranches(cwd: string): Promise<string[]> {
-  dbg("api", "getGitBranches", cwd);
-  return invoke<string[]>("get_git_branches", { cwd });
-}
-
-export async function gitCheckout(cwd: string, branch: string): Promise<string> {
-  dbg("api", "gitCheckout", { cwd, branch });
-  return invoke<string>("git_checkout", { cwd, branch });
-}
 
 // Export
 export async function exportConversation(runId: string): Promise<string> {

@@ -80,8 +80,6 @@ pub fn run() {
             commands::git::get_git_summary,
             commands::git::get_git_diff,
             commands::git::get_git_status,
-            commands::git::get_git_branches,
-            commands::git::git_checkout,
             commands::export::export_conversation,
             commands::files::read_text_file,
             commands::files::write_text_file,
