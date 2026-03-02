@@ -3105,7 +3105,7 @@
       <!-- Scroll-to-bottom floating button -->
       {#if !isNearBottom && store.useStreamSession && !welcomeVisible}
         <button
-          class="absolute bottom-4 left-1/2 -translate-x-1/2 z-10 flex items-center justify-center w-9 h-9 rounded-full border border-border/60 bg-background/90 backdrop-blur-sm text-foreground/70 shadow-lg hover:bg-accent hover:text-foreground transition-all duration-150"
+          class="absolute bottom-4 left-1/2 -translate-x-1/2 z-10 flex items-center justify-center w-9 h-9 rounded-full border border-primary/50 bg-primary/20 backdrop-blur-sm text-primary shadow-lg hover:bg-primary hover:text-primary-foreground transition-all duration-150"
           onclick={scrollToBottom}
           title={t("chat_scrollToBottom") ?? "Scroll to bottom"}
         >
