@@ -19,36 +19,74 @@
   let isImage = $derived(mimeType.startsWith("image/"));
 </script>
 
-<div class="flex items-center gap-2 rounded-md border px-2 py-1 text-xs {isImage
-  ? 'border-purple-200 dark:border-purple-800 bg-purple-50 dark:bg-purple-950/50 text-purple-700 dark:text-purple-300'
-  : isDoc
-    ? 'border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-950/50 text-red-700 dark:text-red-300'
-    : 'border-border bg-muted/50'}">
+<div
+  class="flex items-center gap-2 rounded-md border px-2 py-1 text-xs {isImage
+    ? 'border-purple-200 dark:border-purple-800 bg-purple-50 dark:bg-purple-950/50 text-purple-700 dark:text-purple-300'
+    : isDoc
+      ? 'border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-950/50 text-red-700 dark:text-red-300'
+      : 'border-border bg-muted/50'}"
+>
   {#if isImage}
     <!-- Image icon -->
-    <svg class="h-3.5 w-3.5 text-purple-400 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <svg
+      class="h-3.5 w-3.5 text-purple-400 shrink-0"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="2"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    >
       <rect width="18" height="18" x="3" y="3" rx="2" ry="2" />
       <circle cx="9" cy="9" r="2" />
       <path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21" />
     </svg>
   {:else if isDoc}
     <!-- Document icon for PDF -->
-    <svg class="h-3.5 w-3.5 text-red-400 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <svg
+      class="h-3.5 w-3.5 text-red-400 shrink-0"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="2"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    >
       <path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z" />
       <path d="M14 2v4a2 2 0 0 0 2 2h4" />
       <path d="M10 9H8" /><path d="M16 13H8" /><path d="M16 17H8" />
     </svg>
   {:else}
     <!-- Paperclip icon for other -->
-    <svg class="h-3.5 w-3.5 text-muted-foreground shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-      <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+    <svg
+      class="h-3.5 w-3.5 text-muted-foreground shrink-0"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="2"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    >
+      <path
+        d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"
+      />
     </svg>
   {/if}
   <span class="truncate max-w-[120px]">{name}</span>
-  <span class="{isImage ? 'text-purple-400 dark:text-purple-500' : isDoc ? 'text-red-400 dark:text-red-500' : 'text-muted-foreground'}">{formatBytes(size)}</span>
+  <span
+    class={isImage
+      ? "text-purple-400 dark:text-purple-500"
+      : isDoc
+        ? "text-red-400 dark:text-red-500"
+        : "text-muted-foreground"}>{formatBytes(size)}</span
+  >
   {#if onremove}
     <button
-      class="ml-auto {isImage ? 'text-purple-400 hover:text-purple-600' : isDoc ? 'text-red-400 hover:text-red-600' : 'text-muted-foreground hover:text-foreground'}"
+      class="ml-auto {isImage
+        ? 'text-purple-400 hover:text-purple-600'
+        : isDoc
+          ? 'text-red-400 hover:text-red-600'
+          : 'text-muted-foreground hover:text-foreground'}"
       onclick={onremove}
       aria-label={t("common_removeAttachment")}
     >
