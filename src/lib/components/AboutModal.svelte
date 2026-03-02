@@ -55,7 +55,9 @@
         return;
       }
       if (!info.hasUpdate) {
-        window.alert(t("appUpdate_upToDate", { version: info.currentVersion || appVersion || "-" }));
+        window.alert(
+          t("appUpdate_upToDate", { version: info.currentVersion || appVersion || "-" }),
+        );
         return;
       }
       if (!info.downloadUrl) {
