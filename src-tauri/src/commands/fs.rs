@@ -1,3 +1,4 @@
+use base64::Engine;
 use crate::models::{DirEntry, DirListing};
 
 const EXCLUDED_DIRS: &[&str] = &[
@@ -74,7 +75,9 @@ const MAX_DRAG_FILE_SIZE: u64 = 100 * 1024 * 1024;
 #[tauri::command]
 pub fn read_file_base64(path: String) -> Result<(String, String), String> {
     let p = std::path::Path::new(&path);
-    let meta = p.metadata().map_err(|e| format!("Cannot stat {}: {}", path, e))?;
+    let meta = p
+        .metadata()
+        .map_err(|e| format!("Cannot stat {}: {}", path, e))?;
 
     // Enforce 100MB business limit
     if meta.len() > MAX_DRAG_FILE_SIZE {
