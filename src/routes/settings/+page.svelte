@@ -85,6 +85,8 @@
 
   // CLI Auth state
   let authOverview = $state<import("$lib/types").AuthOverview | null>(null);
+  let cliLoginLoading = $state(false);
+  let cliLoginError = $state("");
 
   // Derive merged platform list (static presets + dynamic custom endpoints)
   let platformList = $derived(buildPlatformList(platformCredentials));
@@ -990,20 +992,54 @@
                     </span>
                   </div>
                 {:else}
-                  <div class="flex items-center gap-2">
-                    <span class="h-2 w-2 rounded-full bg-muted-foreground/40"></span>
-                    <span class="text-xs text-muted-foreground">{t("auth_notLoggedIn")}</span>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onclick={() =>
-                        api.runClaudeLogin().then(() => {
+                  <div class="flex flex-col gap-2">
+                    <div class="flex items-center gap-2">
+                      <span class="h-2 w-2 rounded-full bg-muted-foreground/40"></span>
+                      <span class="text-xs text-muted-foreground">{t("auth_notLoggedIn")}</span>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={cliLoginLoading}
+                        onclick={() => {
+                          cliLoginLoading = true;
+                          cliLoginError = "";
                           api
-                            .getAuthOverview()
-                            .then((ov) => (authOverview = ov))
-                            .catch(() => {});
-                        })}>{t("settings_auth_cliLoginBtn")}</Button
-                    >
+                            .runClaudeLogin()
+                            .then((success) => {
+                              if (success) {
+                                api
+                                  .getAuthOverview()
+                                  .then((ov) => (authOverview = ov))
+                                  .catch(() => {});
+                              } else {
+                                cliLoginError = t("setup_loginFailed");
+                              }
+                            })
+                            .catch((e) => {
+                              cliLoginError = String(e);
+                            })
+                            .finally(() => {
+                              cliLoginLoading = false;
+                            });
+                        }}
+                      >
+                        {#if cliLoginLoading}
+                          <span class="flex items-center gap-1.5">
+                            <span
+                              class="h-3 w-3 border border-foreground/30 border-t-foreground rounded-full animate-spin"
+                            ></span>
+                            {t("settings_auth_cliLoginBtn")}
+                          </span>
+                        {:else}
+                          {t("settings_auth_cliLoginBtn")}
+                        {/if}
+                      </Button>
+                    </div>
+                    {#if cliLoginError}
+                      <div class="rounded border border-red-500/30 bg-red-500/5 px-2 py-1">
+                        <p class="text-xs text-red-500">{cliLoginError}</p>
+                      </div>
+                    {/if}
                   </div>
                 {/if}
               </div>

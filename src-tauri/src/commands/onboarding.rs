@@ -153,10 +153,8 @@ pub async fn get_auth_overview() -> Result<AuthOverview, String> {
     let user_settings = storage::settings::get_user_settings();
     let auth_mode = user_settings.auth_mode.clone();
 
-    // 2. CLI OAuth login — not detectable without subprocess, default to false.
-    //    (Onboarding wizard uses check_cli_oauth() subprocess for accurate status.)
-    let cli_login_available = false;
-    let cli_login_account: Option<String> = None;
+    // 2. CLI OAuth login — check via subprocess (same as onboarding wizard).
+    let (cli_login_available, cli_login_account) = check_cli_oauth().await;
 
     // 3. Check CLI API Key from multiple sources (first non-empty wins):
     //    a) ~/.claude/settings.json "apiKey"
@@ -345,10 +343,9 @@ pub(crate) async fn check_cli_oauth() -> (bool, Option<String>) {
         {
             Ok(Ok(output)) if output.status.success() => {
                 let stdout = String::from_utf8_lossy(&output.stdout);
-                let account = stdout
-                    .lines()
-                    .find(|l| l.contains('@'))
-                    .map(|l| l.trim().to_string());
+                let account = serde_json::from_str::<serde_json::Value>(&stdout)
+                    .ok()
+                    .and_then(|v| v.get("email")?.as_str().map(|s| s.to_string()));
                 (true, account)
             }
             _ => (false, None),
