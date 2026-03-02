@@ -5,6 +5,7 @@
   import type { TurnUsage } from "$lib/stores/types";
   import { dbg } from "$lib/utils/debug";
   import { getCliModels } from "$lib/stores/cli-info.svelte";
+  import { getGitSummary } from "$lib/api";
   import { t } from "$lib/i18n/index.svelte";
   import { fmtNumber } from "$lib/i18n/format";
 
@@ -139,6 +140,24 @@
       .replace(/^\/home\/[^/]+/, "~")
       .replace(/^[A-Za-z]:[/\\](?:Users|users)[/\\][^/\\]+/, "~");
     return home.length > 30 ? "..." + home.slice(-27) : home;
+  });
+
+  // ── Git branch (fetched from cwd) ──
+  let gitBranch = $state("");
+
+  $effect(() => {
+    const dir = cwd || run?.cwd || "";
+    if (!dir) {
+      gitBranch = "";
+      return;
+    }
+    getGitSummary(dir)
+      .then((summary) => {
+        gitBranch = summary.branch || "";
+      })
+      .catch(() => {
+        gitBranch = "";
+      });
   });
 
   let sessionIdShort = $derived(run?.session_id ? run.session_id.slice(0, 8) : "");
@@ -789,6 +808,28 @@
             class="text-foreground/30 hover:text-foreground/60 transition-colors"
             title={t("statusbar_cliVersionTitle", { version: cliVersion ?? "" })}
             onclick={() => goto("/release-notes")}>v{cliVersion}</button
+          >
+        {/if}
+
+        {#if gitBranch}
+          <span
+            class="shrink-0 truncate max-w-[180px] rounded px-1.5 py-0.5 text-[10px] font-medium bg-purple-500/15 text-purple-400"
+            title={gitBranch}
+          >
+            <svg
+              class="inline-block w-3 h-3 -mt-px mr-0.5"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <line x1="6" y1="3" x2="6" y2="15" />
+              <circle cx="18" cy="6" r="3" />
+              <circle cx="6" cy="18" r="3" />
+              <path d="M18 9a9 9 0 0 1-9 9" />
+            </svg>{gitBranch}</span
           >
         {/if}
       </div>
