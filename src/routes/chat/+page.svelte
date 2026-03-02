@@ -2058,9 +2058,10 @@
         promptRef.insertPaths(dirPaths);
       }
 
-      // Files → read via Rust and forward to PromptInput
+      // Files → read via Rust, fallback to path insertion for large/failed files
       if (filePaths.length > 0) {
         const files: File[] = [];
+        const fallbackPaths: string[] = [];
         for (const fp of filePaths) {
           try {
             const [base64, mime] = await api.readFileBase64(fp);
@@ -2070,11 +2071,15 @@
             const name = fp.split("/").pop() || fp;
             files.push(new File([bytes], name, { type: mime }));
           } catch {
-            dbgWarn("chat", "drag-drop read failed", fp);
+            // Large or unreadable files → insert path like folders
+            fallbackPaths.push(fp);
           }
         }
         if (files.length > 0) {
           promptRef.addFiles(files);
+        }
+        if (fallbackPaths.length > 0) {
+          promptRef.insertPaths(fallbackPaths);
         }
       }
     }).then((u) => unlisteners.push(u));
