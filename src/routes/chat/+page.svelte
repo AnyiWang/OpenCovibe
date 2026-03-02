@@ -78,6 +78,7 @@
   let pendingMessage = $state<{ text: string; attachments: Attachment[] } | null>(null);
   let sidebarCollapsed = $state(false);
   let chatAreaRef: HTMLDivElement | undefined = $state();
+  let isNearBottom = $state(true);
   let agentSettings = $state<AgentSettings | null>(null);
   let resuming = $state(false);
   /** Suppress "Session ended" flash during tool approval restart cycle. */
@@ -1038,7 +1039,22 @@
     };
   });
 
-  // Auto-scroll chat
+  // Track whether user is near the bottom of the chat area
+  function handleChatScroll() {
+    if (!chatAreaRef) return;
+    const threshold = 100;
+    isNearBottom =
+      chatAreaRef.scrollHeight - chatAreaRef.scrollTop - chatAreaRef.clientHeight < threshold;
+  }
+
+  function scrollToBottom() {
+    if (chatAreaRef) {
+      chatAreaRef.scrollTop = chatAreaRef.scrollHeight;
+      isNearBottom = true;
+    }
+  }
+
+  // Auto-scroll chat (only when user is near bottom)
   $effect(() => {
     if (store.useStreamSession && chatAreaRef) {
       // Svelte 5 auto-tracks these reads as effect dependencies
@@ -1046,6 +1062,7 @@
       const _st = store.streamingText.length;
       const _rid = store.run?.id;
       if (isExpandingTimeline) return; // progressive expansion handles its own scrolling
+      if (!isNearBottom) return; // Don't auto-scroll when user is reading history
       requestAnimationFrame(() => {
         if (chatAreaRef) {
           chatAreaRef.scrollTop = chatAreaRef.scrollHeight;
@@ -2441,7 +2458,12 @@
     <div class="flex-1 overflow-hidden relative">
       {#if store.useStreamSession}
         <!-- API mode: chat messages -->
-        <div class="h-full overflow-y-auto" style="overflow-anchor:auto" bind:this={chatAreaRef}>
+        <div
+          class="h-full overflow-y-auto"
+          style="overflow-anchor:auto"
+          bind:this={chatAreaRef}
+          onscroll={handleChatScroll}
+        >
           {#if welcomeVisible}
             <!-- Welcome state -->
             <div class="flex h-full items-center justify-center">
@@ -3078,6 +3100,27 @@
             </div>
           </div>
         </div>
+      {/if}
+
+      <!-- Scroll-to-bottom floating button -->
+      {#if !isNearBottom && store.useStreamSession && !welcomeVisible}
+        <button
+          class="absolute bottom-4 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1.5 rounded-full border border-border/60 bg-background/90 backdrop-blur-sm px-3 py-1.5 text-xs text-foreground/80 shadow-lg hover:bg-accent hover:text-foreground transition-all duration-150"
+          onclick={scrollToBottom}
+        >
+          <svg
+            class="h-3.5 w-3.5"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <path d="M12 5v14M19 12l-7 7-7-7" />
+          </svg>
+          {t("chat_scrollToBottom") ?? "Scroll to bottom"}
+        </button>
       {/if}
     </div>
 
