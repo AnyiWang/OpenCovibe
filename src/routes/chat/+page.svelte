@@ -2468,9 +2468,7 @@
   </div>
 {/snippet}
 
-<div
-  class="flex h-full overflow-hidden bg-background relative"
->
+<div class="flex h-full overflow-hidden bg-background relative">
   <!-- Page-level drag overlay -->
   {#if pageDragActive}
     <div
