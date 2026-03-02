@@ -1227,5 +1227,9 @@
 
   "appUpdate_available": "A new version ({version}) is available.",
   "appUpdate_download": "Download",
-  "appUpdate_dismiss": "Dismiss"
+  "appUpdate_dismiss": "Dismiss",
+  "appUpdate_manual": "Update to Latest",
+  "appUpdate_checking": "Checking...",
+  "appUpdate_upToDate": "You are already on the latest version (v{version}).",
+  "appUpdate_checkFailed": "Failed to check for updates. Please try again later."
 }

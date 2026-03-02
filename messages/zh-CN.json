@@ -1227,5 +1227,9 @@
 
   "appUpdate_available": "发现新版本（{version}）。",
   "appUpdate_download": "下载",
-  "appUpdate_dismiss": "忽略"
+  "appUpdate_dismiss": "忽略",
+  "appUpdate_manual": "更新到最新版",
+  "appUpdate_checking": "检查中...",
+  "appUpdate_upToDate": "当前已为最新版本（v{version}）。",
+  "appUpdate_checkFailed": "检查更新失败，请稍后重试。"
 }

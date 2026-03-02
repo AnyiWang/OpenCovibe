@@ -77,6 +77,32 @@ fn is_newer(current: &str, latest: &str) -> bool {
     }
 }
 
+fn select_download_url(body: &serde_json::Value) -> String {
+    let html_url = body["html_url"].as_str().unwrap_or("").to_string();
+    let Some(assets) = body["assets"].as_array() else {
+        return html_url;
+    };
+
+    // Prefer direct macOS installer link for one-click download.
+    for asset in assets {
+        let name = asset["name"].as_str().unwrap_or("").to_ascii_lowercase();
+        if name.ends_with(".dmg") {
+            if let Some(url) = asset["browser_download_url"].as_str() {
+                return url.to_string();
+            }
+        }
+    }
+
+    // Fallback: any downloadable asset, then release page.
+    for asset in assets {
+        if let Some(url) = asset["browser_download_url"].as_str() {
+            return url.to_string();
+        }
+    }
+
+    html_url
+}
+
 // ── Tauri command ──
 
 #[tauri::command]
@@ -130,7 +156,7 @@ pub async fn check_for_updates(app: tauri::AppHandle) -> Result<UpdateInfo, Stri
     };
 
     let tag = body["tag_name"].as_str().unwrap_or("");
-    let html_url = body["html_url"].as_str().unwrap_or("");
+    let download_url = select_download_url(&body);
 
     if tag.is_empty() {
         log::warn!("[updates] empty tag_name in response");
@@ -156,7 +182,7 @@ pub async fn check_for_updates(app: tauri::AppHandle) -> Result<UpdateInfo, Stri
         has_update,
         latest_version,
         current_version,
-        download_url: html_url.to_string(),
+        download_url,
     })
 }
 
@@ -165,6 +191,7 @@ pub async fn check_for_updates(app: tauri::AppHandle) -> Result<UpdateInfo, Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn test_normal_upgrade() {
@@ -199,5 +226,29 @@ mod tests {
     #[test]
     fn test_invalid_semver() {
         assert!(!is_newer("abc", "0.1.0"));
+    }
+
+    #[test]
+    fn test_select_download_url_prefers_dmg() {
+        let body = json!({
+            "html_url": "https://github.com/AnyiWang/OpenCovibe/releases/tag/v0.1.14",
+            "assets": [
+                { "name": "OpenCovibe-0.1.14.zip", "browser_download_url": "https://example.com/a.zip" },
+                { "name": "OpenCovibe_0.1.14_universal.dmg", "browser_download_url": "https://example.com/a.dmg" }
+            ]
+        });
+        assert_eq!(select_download_url(&body), "https://example.com/a.dmg");
+    }
+
+    #[test]
+    fn test_select_download_url_falls_back_to_html() {
+        let body = json!({
+            "html_url": "https://github.com/AnyiWang/OpenCovibe/releases/tag/v0.1.14",
+            "assets": []
+        });
+        assert_eq!(
+            select_download_url(&body),
+            "https://github.com/AnyiWang/OpenCovibe/releases/tag/v0.1.14"
+        );
     }
 }
