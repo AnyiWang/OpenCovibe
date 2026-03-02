@@ -67,74 +67,68 @@ pub fn check_is_directory(path: String) -> bool {
     std::path::Path::new(&path).is_dir()
 }
 
-const MAX_DRAG_FILE_SIZE: u64 = 100 * 1024 * 1024; // 100MB
+/// Maximum file size for drag-drop (100 MB)
+/// Business requirement: Prevent OOM on large binary files
+const MAX_DRAG_FILE_SIZE: u64 = 100 * 1024 * 1024;
 
 #[tauri::command]
 pub fn read_file_base64(path: String) -> Result<(String, String), String> {
     let p = std::path::Path::new(&path);
     let meta = p.metadata().map_err(|e| format!("Cannot stat {}: {}", path, e))?;
+
+    // Enforce 100MB business limit
     if meta.len() > MAX_DRAG_FILE_SIZE {
-        return Err(format!("File too large ({} MB, max 100 MB): {}", meta.len() / (1024 * 1024), path));
+        return Err(format!(
+            "File too large ({} MB, max {} MB): {}",
+            meta.len() / (1024 * 1024),
+            MAX_DRAG_FILE_SIZE / (1024 * 1024),
+            path
+        ));
     }
-    let mime = mime_from_ext(p.extension().and_then(|e| e.to_str()).unwrap_or(""));
+
+    // Use mime_guess for comprehensive MIME type detection
+    let mime = mime_guess_from_path(p);
     let bytes = std::fs::read(p).map_err(|e| format!("Failed to read {}: {}", path, e))?;
-    let base64 = base64_encode(&bytes);
+
+    // Use standard base64 library instead of manual implementation
+    let base64 = base64::prelude::BASE64_STANDARD.encode(&bytes);
     Ok((base64, mime))
 }
 
-fn base64_encode(data: &[u8]) -> String {
-    use std::fmt::Write;
-    const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut result = String::with_capacity((data.len() + 2) / 3 * 4);
-    for chunk in data.chunks(3) {
-        let b0 = chunk[0] as u32;
-        let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
-        let b2 = if chunk.len() > 2 { chunk[2] as u32 } else { 0 };
-        let triple = (b0 << 16) | (b1 << 8) | b2;
-        result.push(CHARS[((triple >> 18) & 0x3F) as usize] as char);
-        result.push(CHARS[((triple >> 12) & 0x3F) as usize] as char);
-        if chunk.len() > 1 {
-            result.push(CHARS[((triple >> 6) & 0x3F) as usize] as char);
-        } else {
-            result.push('=');
-        }
-        if chunk.len() > 2 {
-            result.push(CHARS[(triple & 0x3F) as usize] as char);
-        } else {
-            result.push('=');
-        }
-    }
-    result
-}
+/// Detect MIME type from file path with Office format support
+///
+/// Uses mime_guess library for comprehensive type detection,
+/// with manual fallback for Office formats to ensure accuracy.
+fn mime_guess_from_path(path: &std::path::Path) -> String {
+    // First try mime_guess library (covers most formats)
+    if let Some(mime) = mime_guess::from_path(path).first() {
+        let mime_str = mime.to_string();
 
-fn mime_from_ext(ext: &str) -> String {
-    match ext.to_lowercase().as_str() {
-        "png" => "image/png",
-        "jpg" | "jpeg" => "image/jpeg",
-        "gif" => "image/gif",
-        "webp" => "image/webp",
-        "svg" => "image/svg+xml",
-        "pdf" => "application/pdf",
-        "txt" => "text/plain",
-        "md" => "text/markdown",
-        "json" => "application/json",
-        "js" | "mjs" => "text/javascript",
-        "ts" | "mts" => "text/typescript",
-        "html" | "htm" => "text/html",
-        "css" => "text/css",
-        "csv" => "text/csv",
-        "xml" => "text/xml",
-        "yaml" | "yml" => "text/yaml",
-        "toml" => "text/toml",
-        "rs" => "text/x-rust",
-        "py" => "text/x-python",
-        "sh" | "bash" | "zsh" => "text/x-shellscript",
-        "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        "xls" => "application/vnd.ms-excel",
-        "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        "doc" => "application/msword",
-        "pptx" => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-        _ => "application/octet-stream",
+        // mime_guess doesn't cover all Office formats accurately,
+        // so we use explicit mappings for better precision
+        if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+            match ext.to_lowercase().as_str() {
+                // Office formats (explicit for accuracy)
+                "xlsx" => return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet".into(),
+                "xls" => return "application/vnd.ms-excel".into(),
+                "csv" => return "text/csv".into(),
+                "docx" => return "application/vnd.openxmlformats-officedocument.wordprocessingml.document".into(),
+                "doc" => return "application/msword".into(),
+                "docm" => return "application/vnd.ms-word.document.macroEnabled.12".into(),
+                "dotx" => return "application/vnd.openxmlformats-officedocument.wordprocessingml.template".into(),
+                "dotm" => return "application/vnd.ms-word.template.macroEnabled.12".into(),
+                "pptx" => return "application/vnd.openxmlformats-officedocument.presentationml.presentation".into(),
+                "ppt" => return "application/vnd.ms-powerpoint".into(),
+                "pptm" => return "application/vnd.ms-powerpoint.presentation.macroEnabled.12".into(),
+                "potx" => return "application/vnd.openxmlformats-officedocument.presentationml.template".into(),
+                "potm" => return "application/vnd.ms-powerpoint.template.macroEnabled.12".into(),
+                // Fallback to mime_guess for non-Office formats
+                _ => return mime_str,
+            }
+        }
+        return mime_str;
     }
-    .to_string()
+
+    // Ultimate fallback
+    "application/octet-stream".into()
 }
