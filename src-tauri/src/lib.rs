@@ -77,6 +77,8 @@ pub fn run() {
             commands::settings::get_agent_settings,
             commands::settings::update_agent_settings,
             commands::fs::list_directory,
+            commands::fs::check_is_directory,
+            commands::fs::read_file_base64,
             commands::git::get_git_summary,
             commands::git::get_git_diff,
             commands::git::get_git_status,

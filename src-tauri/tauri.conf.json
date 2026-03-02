@@ -20,11 +20,11 @@
         "resizable": true,
         "fullscreen": false,
         "maximized": true,
-        "dragDropEnabled": false
+        "dragDropEnabled": true
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' https://api.anthropic.com https://*.anthropic.com; font-src 'self' data:"
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: data: blob:; connect-src 'self' asset: https://api.anthropic.com https://*.anthropic.com; font-src 'self' data:"
     }
   },
   "bundle": {

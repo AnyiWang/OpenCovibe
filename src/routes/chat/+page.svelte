@@ -2020,29 +2020,49 @@
 
   // Chat keybinding callbacks — registered/unregistered via keybindingStore in onMount below
 
-  // ── Page-level drag-drop (forward to PromptInput) ──
-  let pageDragCounter = $state(0);
-  let pageDragActive = $derived(pageDragCounter > 0);
+  // ── Page-level drag-drop (Tauri native events) ──
+  let pageDragActive = $state(false);
 
-  function handlePageDragEnter(e: DragEvent) {
-    e.preventDefault();
-    pageDragCounter++;
-  }
-  function handlePageDragLeave(e: DragEvent) {
-    e.preventDefault();
-    pageDragCounter--;
-  }
-  function handlePageDragOver(e: DragEvent) {
-    e.preventDefault();
-  }
-  function handlePageDrop(e: DragEvent) {
-    e.preventDefault();
-    pageDragCounter = 0;
-    const files = e.dataTransfer?.files;
-    if (files && promptRef) {
-      promptRef.addFiles(files);
-    }
-  }
+  // Listen for Tauri native drag-drop events (dragDropEnabled: true in tauri.conf.json)
+  $effect(() => {
+    const unlisteners: Array<() => void> = [];
+
+    listen<{ paths: string[] }>("tauri://drag-enter", () => {
+      pageDragActive = true;
+    }).then((u) => unlisteners.push(u));
+
+    listen("tauri://drag-leave", () => {
+      pageDragActive = false;
+    }).then((u) => unlisteners.push(u));
+
+    listen<{ paths: string[] }>("tauri://drag-drop", async (event) => {
+      pageDragActive = false;
+      const paths = event.payload.paths;
+      if (!paths || paths.length === 0 || !promptRef) return;
+
+      // Files → read via Rust and forward to PromptInput
+      const files: File[] = [];
+      for (const fp of paths) {
+        try {
+          const [base64, mime] = await api.readFileBase64(fp);
+          const binary = atob(base64);
+          const bytes = new Uint8Array(binary.length);
+          for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+          const name = fp.split("/").pop() || fp;
+          files.push(new File([bytes], name, { type: mime }));
+        } catch {
+          dbgWarn("chat", "drag-drop read failed", fp);
+        }
+      }
+      if (files.length > 0) {
+        promptRef.addFiles(files);
+      }
+    }).then((u) => unlisteners.push(u));
+
+    return () => {
+      for (const u of unlisteners) u();
+    };
+  });
 
   function toggleSidebar() {
     sidebarCollapsed = !sidebarCollapsed;
@@ -2450,10 +2470,6 @@
 
 <div
   class="flex h-full overflow-hidden bg-background relative"
-  ondragenter={handlePageDragEnter}
-  ondragleave={handlePageDragLeave}
-  ondragover={handlePageDragOver}
-  ondrop={handlePageDrop}
 >
   <!-- Page-level drag overlay -->
   {#if pageDragActive}
