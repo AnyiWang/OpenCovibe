@@ -1003,24 +1003,31 @@
                         onclick={() => {
                           cliLoginLoading = true;
                           cliLoginError = "";
-                          api.runClaudeLogin().then((success) => {
-                            if (success) {
-                              api
-                                .getAuthOverview()
-                                .then((ov) => (authOverview = ov))
-                                .catch(() => {});
-                            } else {
-                              cliLoginError = t("setup_loginFailed");
-                            }
-                          }).catch((e) => {
-                            cliLoginError = String(e);
-                          }).finally(() => {
-                            cliLoginLoading = false;
-                          });
-                        }}>
+                          api
+                            .runClaudeLogin()
+                            .then((success) => {
+                              if (success) {
+                                api
+                                  .getAuthOverview()
+                                  .then((ov) => (authOverview = ov))
+                                  .catch(() => {});
+                              } else {
+                                cliLoginError = t("setup_loginFailed");
+                              }
+                            })
+                            .catch((e) => {
+                              cliLoginError = String(e);
+                            })
+                            .finally(() => {
+                              cliLoginLoading = false;
+                            });
+                        }}
+                      >
                         {#if cliLoginLoading}
                           <span class="flex items-center gap-1.5">
-                            <span class="h-3 w-3 border border-foreground/30 border-t-foreground rounded-full animate-spin"></span>
+                            <span
+                              class="h-3 w-3 border border-foreground/30 border-t-foreground rounded-full animate-spin"
+                            ></span>
                             {t("settings_auth_cliLoginBtn")}
                           </span>
                         {:else}
