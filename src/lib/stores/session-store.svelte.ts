@@ -2548,21 +2548,24 @@ export class SessionStore {
           };
           if (ctx) ctx.tl.push(entry);
           else this.timeline = [...this.timeline, entry];
+          // Reset per-turn token counts so contextUtilization reflects the
+          // compacted state instead of showing stale pre-compact values.
+          // The next usage_update event will supply accurate post-compact numbers.
+          // Only reset on full compaction — micro-compaction keeps the existing
+          // usage so the progress bar does not flash 90%→0%→85%.
+          dbg("store", "compact: reset context usage", { wasMicro: isMicro });
+          this.usage = {
+            ...this.usage,
+            inputTokens: 0,
+            cacheReadTokens: 0,
+            cacheWriteTokens: 0,
+          };
         }
         // Only set lastCompactedAt during live mode — during replay
         // the timestamp would be meaningless (Date.now() ≠ original event time).
         if (!replayOnly) {
           this.lastCompactedAt = Date.now();
         }
-        // Reset per-turn token counts so contextUtilization reflects the
-        // compacted state instead of showing stale pre-compact values.
-        // The next usage_update event will supply accurate post-compact numbers.
-        this.usage = {
-          ...this.usage,
-          inputTokens: 0,
-          cacheReadTokens: 0,
-          cacheWriteTokens: 0,
-        };
         break;
       }
 
