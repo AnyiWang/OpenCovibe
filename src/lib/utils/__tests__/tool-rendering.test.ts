@@ -208,26 +208,16 @@ describe("isToolActive", () => {
 // ── shouldShowSubTimeline ──
 
 describe("shouldShowSubTimeline", () => {
-  it("Task + running → true", () =>
-    expect(shouldShowSubTimeline("Task", "running", true)).toBe(true));
-  it("Task + ask_pending → true", () =>
-    expect(shouldShowSubTimeline("Task", "ask_pending", true)).toBe(true));
-  it("Task + permission_prompt → true", () =>
-    expect(shouldShowSubTimeline("Task", "permission_prompt", true)).toBe(true));
-  it("Task + success → false", () =>
-    expect(shouldShowSubTimeline("Task", "success", true)).toBe(false));
-  it("Task + error → false", () =>
-    expect(shouldShowSubTimeline("Task", "error", true)).toBe(false));
-  it("Task + denied → false", () =>
-    expect(shouldShowSubTimeline("Task", "denied", true)).toBe(false));
-  it("Task + permission_denied → false", () =>
-    expect(shouldShowSubTimeline("Task", "permission_denied", true)).toBe(false));
-  it("Task + no subTimeline → false", () =>
-    expect(shouldShowSubTimeline("Task", "running", false)).toBe(false));
-  it("non-Task + has subTimeline → true", () =>
-    expect(shouldShowSubTimeline("Bash", "success", true)).toBe(true));
-  it("non-Task + no subTimeline → false", () =>
-    expect(shouldShowSubTimeline("Bash", "running", false)).toBe(false));
+  it("running → true", () => expect(shouldShowSubTimeline("running", true)).toBe(true));
+  it("ask_pending → true", () => expect(shouldShowSubTimeline("ask_pending", true)).toBe(true));
+  it("permission_prompt → true", () =>
+    expect(shouldShowSubTimeline("permission_prompt", true)).toBe(true));
+  it("success → false", () => expect(shouldShowSubTimeline("success", true)).toBe(false));
+  it("error → false", () => expect(shouldShowSubTimeline("error", true)).toBe(false));
+  it("denied → false", () => expect(shouldShowSubTimeline("denied", true)).toBe(false));
+  it("permission_denied → false", () =>
+    expect(shouldShowSubTimeline("permission_denied", true)).toBe(false));
+  it("no subTimeline → false", () => expect(shouldShowSubTimeline("running", false)).toBe(false));
 });
 
 // ── aggregateBatchStatus ──

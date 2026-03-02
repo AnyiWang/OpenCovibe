@@ -7,8 +7,8 @@
   import MarkdownContent from "$lib/components/MarkdownContent.svelte";
   import CodeEditor from "$lib/components/CodeEditor.svelte";
   import { t } from "$lib/i18n/index.svelte";
+  import { dbgWarn } from "$lib/utils/debug";
 
-  let tab = $state<"project" | "global">("project");
   let viewMode = $state<"edit" | "preview">("edit");
   let content = $state("");
   let savedContent = $state("");
@@ -18,24 +18,28 @@
   let toastFading = $state(false);
   let error = $state("");
 
-  // Custom file from ?file= query param (overrides tab logic)
+  // The cwd that was active when the current content was loaded.
+  // Used by save() so that switching projects before saving doesn't break permissions.
+  let saveCwd = $state("");
+
+  // Custom file from ?file= query param (overrides sidebar selection)
   let customFile = $derived($page.url.searchParams.get("file") ?? "");
 
-  // Paths
-  let globalPath = $state("");
+  // Selected file path — set by sidebar click or initial auto-select
+  let selectedFile = $state("");
 
   let projectCwd = $state(
     typeof window !== "undefined" ? (localStorage.getItem("ocv:project-cwd") ?? "") : "",
   );
 
-  let currentPath = $derived.by(() => {
-    if (customFile) return customFile;
-    if (tab === "global") return globalPath;
-    return projectCwd ? `${projectCwd}/CLAUDE.md` : "";
-  });
+  let currentPath = $derived(customFile || selectedFile);
 
-  // Page title: show filename for custom file, otherwise "Memory"
-  let pageTitle = $derived(customFile ? (customFile.split("/").pop() ?? "File") : "Memory");
+  // Page title: show filename for custom file, otherwise file label
+  let pageTitle = $derived.by(() => {
+    if (customFile) return customFile.split("/").pop() ?? "File";
+    if (selectedFile) return selectedFile.split("/").pop() ?? "File";
+    return "Memory";
+  });
 
   // Only show preview toggle for markdown files
   let isMarkdown = $derived(currentPath.endsWith(".md"));
@@ -52,9 +56,15 @@
     );
   });
 
-  async function loadContent() {
-    const path = currentPath;
-    if (!path) {
+  // --- Sequence guards for race condition protection ---
+  let loadSeq = 0;
+  let projectChangeSeq = 0;
+  let autoSelectSeq = 0;
+
+  /** Load file content. Pass explicit path to avoid $derived timing issues in event callbacks. */
+  async function loadContentForPath(explicitPath: string) {
+    const seq = ++loadSeq;
+    if (!explicitPath) {
       content = "";
       savedContent = "";
       loading = false;
@@ -63,50 +73,167 @@
     loading = true;
     error = "";
     try {
-      const text = await api.readTextFile(path, projectCwd || undefined);
+      // Use saveCwd if already established (e.g. Reload after cancelled project switch),
+      // fall back to projectCwd for first load or after confirmed project switch.
+      const cwdSnapshot = saveCwd || projectCwd;
+      const text = await api.readTextFile(explicitPath, cwdSnapshot || undefined);
+      if (seq !== loadSeq) return; // stale — discard
       content = text;
       savedContent = text;
+      saveCwd = cwdSnapshot;
     } catch (e) {
+      if (seq !== loadSeq) return;
       const msg = String(e);
-      // File doesn't exist yet — show empty editor (user can create it by saving)
       if (msg.includes("No such file") || msg.includes("not found")) {
         content = "";
         savedContent = "";
+        saveCwd = projectCwd;
       } else {
         content = "";
         savedContent = "";
+        saveCwd = projectCwd;
         error = msg;
       }
     } finally {
-      loading = false;
+      if (seq === loadSeq) loading = false;
     }
   }
 
-  // Reload when tab changes
+  /** Convenience wrapper: load content for the current path. */
+  function loadContent() {
+    loadContentForPath(currentPath);
+  }
+
+  /** Auto-select first existing file from candidates (initial load). */
+  async function autoSelectFirst() {
+    const seq = ++autoSelectSeq;
+    try {
+      const candidates = await api.listMemoryFiles(projectCwd || undefined);
+      if (seq !== autoSelectSeq) return; // stale — discard
+      // Prefer first existing project file
+      const existing = candidates.find((f) => f.exists && f.scope === "project");
+      const fallback = candidates.find((f) => f.exists) ?? candidates[0];
+      const pick = existing ?? fallback;
+      if (pick) {
+        selectedFile = pick.path;
+        // Sync sidebar highlight — but only when not in customFile mode,
+        // otherwise the sidebar would highlight a file the editor isn't showing.
+        if (!customFile) {
+          window.dispatchEvent(
+            new CustomEvent("ocv:memory-file-selected", { detail: { path: pick.path } }),
+          );
+        }
+      }
+    } catch (e) {
+      if (seq !== autoSelectSeq) return;
+      dbgWarn("memory", "autoSelectFirst failed", e);
+    }
+  }
+
+  /** Guard a file switch: confirm dirty state before switching.
+   *  When `exists` is false the file hasn't been created yet — skip the API
+   *  round-trip so the editor doesn't flash a loading spinner. */
+  function guardedFileSwitch(newPath: string, exists = true) {
+    if (newPath === selectedFile) return; // same file — no-op
+    if (isDirty && !confirm(t("memory_discardConfirm"))) return;
+    saveCwd = ""; // reset so next load uses current projectCwd
+    selectedFile = newPath;
+    // Ack sidebar: highlight now confirmed (layout waits for this before updating)
+    window.dispatchEvent(
+      new CustomEvent("ocv:memory-file-selected", { detail: { path: newPath } }),
+    );
+    if (exists) {
+      loadContentForPath(newPath);
+    } else {
+      // New file — set empty content directly, no loading flash
+      ++loadSeq; // cancel any in-flight load
+      content = "";
+      savedContent = "";
+      loading = false;
+      saveCwd = projectCwd;
+    }
+  }
+
+  /** Async variant for project change: refresh candidates -> auto-select -> load. */
+  async function guardedProjectChange(newCwd: string) {
+    // Always sync projectCwd with layout (layout already committed the switch).
+    // This prevents page vs sidebar project mismatch on cancel.
+    projectCwd = newCwd;
+    if (isDirty && !confirm(t("memory_discardConfirm"))) return;
+    // Confirmed — reset saveCwd so loadContentForPath picks up the new projectCwd
+    saveCwd = "";
+    const seq = ++projectChangeSeq;
+    await autoSelectFirst();
+    if (seq !== projectChangeSeq) return;
+    await loadContent();
+  }
+
+  // customFile (query param) changes are SvelteKit navigations —
+  // already guarded by beforeNavigate's dirty confirm.
+  // Use a non-reactive tracker to avoid state_referenced_locally warning.
+  let _customFileInit = false;
+  let _prevCustomFile: string | undefined;
   $effect(() => {
-    // Access currentPath to establish dependency
-    const _path = currentPath;
-    loadContent();
+    const f = customFile;
+    if (!_customFileInit) {
+      // First run — record initial value, let onMount handle initial load
+      _customFileInit = true;
+      _prevCustomFile = f;
+      return;
+    }
+    if (f === _prevCustomFile) return;
+    _prevCustomFile = f;
+    // Cancel any in-flight chains so they don't overwrite
+    ++projectChangeSeq;
+    ++loadSeq;
+    ++autoSelectSeq;
+    if (f) {
+      // Entering customFile mode — load the custom file directly
+      loadContentForPath(f);
+    } else {
+      // Exiting customFile mode — selectedFile may be stale (old project).
+      // Re-select best file for current project, then load its content.
+      autoSelectFirst().then(() => {
+        loadContentForPath(selectedFile);
+      });
+    }
   });
 
-  // Resolve globalPath dynamically from user home directory
+  // Initial load
   onMount(async () => {
-    try {
-      const { homeDir, join } = await import("@tauri-apps/api/path");
-      const home = await homeDir();
-      globalPath = await join(home, ".claude", "CLAUDE.md");
-    } catch {
-      // Fallback: leave empty, global tab will show empty state
+    if (!customFile) {
+      await autoSelectFirst();
     }
+    await loadContent();
+  });
+
+  // Listen for sidebar file selection
+  onMount(() => {
+    function onMemorySelect(e: Event) {
+      const detail = (e as CustomEvent).detail;
+      const path = detail?.path ?? "";
+      if (path) {
+        guardedFileSwitch(path, detail?.exists ?? true);
+      }
+    }
+    window.addEventListener("ocv:memory-select", onMemorySelect);
+    return () => window.removeEventListener("ocv:memory-select", onMemorySelect);
   });
 
   // Sync projectCwd when layout changes it
   onMount(() => {
     function onProjectChanged(e: Event) {
       const cwd = (e as CustomEvent).detail?.cwd ?? "";
-      if (cwd !== projectCwd) {
+      if (cwd === projectCwd) return;
+      if (customFile) {
         projectCwd = cwd;
+        // Fire-and-forget: refresh selectedFile for the new project so it's
+        // correct when user later exits ?file= mode (no dirty check needed
+        // since currentPath uses customFile, not selectedFile).
+        autoSelectFirst();
+        return;
       }
+      guardedProjectChange(cwd);
     }
     window.addEventListener("ocv:project-changed", onProjectChanged);
     return () => window.removeEventListener("ocv:project-changed", onProjectChanged);
@@ -135,8 +262,10 @@
     saving = true;
     error = "";
     try {
-      await api.writeTextFile(path, content, projectCwd || undefined);
+      await api.writeTextFile(path, content, saveCwd || undefined);
       savedContent = content;
+      // Notify layout to refresh candidates (updates exists status in sidebar)
+      window.dispatchEvent(new Event("ocv:memory-file-saved"));
       toastFading = false;
       toastVisible = true;
       setTimeout(() => {
@@ -176,7 +305,7 @@
 {/if}
 
 <div class="flex h-full flex-col">
-  <!-- Header bar -->
+  <!-- Header bar: filename + dirty dot + path + edit/preview toggle -->
   <div class="flex items-center justify-between border-b px-4 py-2 shrink-0">
     <div class="flex items-center gap-3 min-w-0">
       <span class="text-sm font-medium truncate">{pageTitle}</span>
@@ -242,28 +371,6 @@
       {/if}
     </div>
   </div>
-
-  <!-- Tabs (hidden when viewing a custom file) -->
-  {#if !customFile}
-    <div class="flex gap-1 border-b px-4 shrink-0">
-      <button
-        class="px-4 py-2 text-sm transition-colors {tab === 'project'
-          ? 'border-b-2 border-primary font-medium'
-          : 'text-muted-foreground hover:text-foreground'}"
-        onclick={() => (tab = "project")}
-      >
-        {t("memory_tabProject")}
-      </button>
-      <button
-        class="px-4 py-2 text-sm transition-colors {tab === 'global'
-          ? 'border-b-2 border-primary font-medium'
-          : 'text-muted-foreground hover:text-foreground'}"
-        onclick={() => (tab = "global")}
-      >
-        {t("memory_tabGlobal")}
-      </button>
-    </div>
-  {/if}
 
   <!-- Content area -->
   {#if !currentPath}

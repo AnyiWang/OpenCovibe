@@ -84,6 +84,7 @@ pub fn run() {
             commands::files::read_text_file,
             commands::files::write_text_file,
             commands::files::read_task_output,
+            commands::files::list_memory_files,
             commands::stats::get_usage_overview,
             commands::stats::get_global_usage_overview,
             commands::stats::clear_usage_cache,

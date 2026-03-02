@@ -125,12 +125,12 @@
   );
   let expanded = $derived(userExpanded ?? isInputStreaming);
 
-  // SubTimeline visibility: Task tools auto-collapse on terminal state
+  let hasSubTimeline = $derived((subTimeline?.length ?? 0) > 0);
+
+  // SubTimeline visibility: all tools auto-collapse on terminal state, userExpanded overrides
   let showSubTimeline = $derived.by(() => {
-    // Task tools: userExpanded overrides auto behavior
-    if (tool.tool_name === "Task" && userExpanded !== null) return userExpanded;
-    // Non-Task tools: not affected by userExpanded
-    return _shouldShow(tool.tool_name, tool.status, (subTimeline?.length ?? 0) > 0);
+    if (userExpanded !== null && hasSubTimeline) return userExpanded;
+    return _shouldShow(tool.status, hasSubTimeline);
   });
 
   let subToolCount = $derived.by(() => {
@@ -1469,11 +1469,11 @@
         role="button"
         tabindex="0"
         class="w-full text-left rounded-lg border border-border/50 bg-muted/30 px-3 py-2 hover:bg-muted/50 transition-colors group cursor-pointer"
-        onclick={() => (userExpanded = !expanded)}
+        onclick={() => (userExpanded = hasSubTimeline ? !showSubTimeline : !expanded)}
         onkeydown={(e) => {
           if (e.key === "Enter" || e.key === " ") {
             e.preventDefault();
-            userExpanded = !expanded;
+            userExpanded = hasSubTimeline ? !showSubTimeline : !expanded;
           }
         }}
       >
@@ -1529,6 +1529,11 @@
               {:else if tool.status === "running"}
                 <span class="text-xs text-muted-foreground italic">{t("inline_starting")}</span>
               {/if}
+              {#if subToolCount > 0 && !showSubTimeline}
+                <span class="text-[10px] px-1 py-0.5 rounded bg-muted text-muted-foreground">
+                  {t("inline_toolCount", { count: String(subToolCount) })}
+                </span>
+              {/if}
             {/if}
           </div>
 
@@ -1579,7 +1584,9 @@
 
           <!-- Expand chevron -->
           <svg
-            class="h-3 w-3 text-muted-foreground/40 shrink-0 transition-transform {expanded
+            class="h-3 w-3 text-muted-foreground/40 shrink-0 transition-transform {(
+              hasSubTimeline ? showSubTimeline : expanded
+            )
               ? 'rotate-180'
               : ''}"
             viewBox="0 0 24 24"

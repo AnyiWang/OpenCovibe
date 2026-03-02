@@ -1,3 +1,10 @@
+export interface MemoryFileCandidate {
+  path: string;
+  label: string;
+  scope: "project" | "global" | "memory";
+  exists: boolean;
+}
+
 export type RunStatus = "pending" | "running" | "completed" | "failed" | "stopped";
 
 export type RunEventType = "system" | "stdout" | "stderr" | "command" | "user" | "assistant";

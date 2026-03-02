@@ -2,6 +2,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 
+#[derive(Debug, Clone, Serialize)]
+pub struct MemoryFileCandidate {
+    pub path: String,
+    pub label: String,
+    pub scope: String, // "project" | "global" | "memory"
+    pub exists: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum RunStatus {

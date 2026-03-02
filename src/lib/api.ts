@@ -231,6 +231,14 @@ export async function exportConversation(runId: string): Promise<string> {
   return invoke<string>("export_conversation", { runId });
 }
 
+// Memory file candidates
+export async function listMemoryFiles(
+  cwd?: string,
+): Promise<import("./types").MemoryFileCandidate[]> {
+  dbg("api", "listMemoryFiles", { cwd });
+  return invoke<import("./types").MemoryFileCandidate[]>("list_memory_files", { cwd: cwd ?? null });
+}
+
 // Files
 export async function readTextFile(path: string, cwd?: string): Promise<string> {
   dbg("api", "readTextFile", path, { cwd });

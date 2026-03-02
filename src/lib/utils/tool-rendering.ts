@@ -224,15 +224,14 @@ export function isToolActive(status: BusToolItem["status"]): boolean {
   return status === "running" || status === "ask_pending" || status === "permission_prompt";
 }
 
-/** Whether a Task tool's subTimeline should be visible by default (no user override). */
+/** Whether a tool's subTimeline should be visible by default (no user override).
+ *  All tools with subTimelines auto-collapse when in terminal state. */
 export function shouldShowSubTimeline(
-  toolName: string,
   status: BusToolItem["status"],
   hasSubTimeline: boolean,
 ): boolean {
   if (!hasSubTimeline) return false;
-  if (toolName === "Task") return !isToolTerminal(status);
-  return true;
+  return !isToolTerminal(status);
 }
 
 /** Aggregate batch tool statuses in a single pass. */

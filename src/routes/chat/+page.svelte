@@ -83,6 +83,8 @@
   let pendingMessage = $state<{ text: string; attachments: Attachment[] } | null>(null);
   let sidebarCollapsed = $state(false);
   let chatAreaRef: HTMLDivElement | undefined = $state();
+  let isChatAutoScroll = $state(true);
+  let showChatScrollHint = $state(false);
   let agentSettings = $state<AgentSettings | null>(null);
   let resuming = $state(false);
   /** Suppress "Session ended" flash during tool approval restart cycle. */
@@ -1063,20 +1065,36 @@
     };
   });
 
-  // Auto-scroll chat
+  // Auto-scroll chat (only when user is near bottom)
+  let prevTl = 0;
+  let prevSt = 0;
+
   $effect(() => {
     if (store.useStreamSession && chatAreaRef) {
-      // Svelte 5 auto-tracks these reads as effect dependencies
-      const _tl = store.timeline.length;
-      const _st = store.streamingText.length;
+      const tl = store.timeline.length;
+      const st = store.streamingText.length;
       const _rid = store.run?.id;
       if (isExpandingTimeline) return; // progressive expansion handles its own scrolling
-      requestAnimationFrame(() => {
-        if (chatAreaRef) {
-          chatAreaRef.scrollTop = chatAreaRef.scrollHeight;
-        }
-      });
+      const changed = tl !== prevTl || st !== prevSt;
+      prevTl = tl;
+      prevSt = st;
+      if (isChatAutoScroll) {
+        requestAnimationFrame(() => {
+          if (chatAreaRef) chatAreaRef.scrollTop = chatAreaRef.scrollHeight;
+        });
+      } else if (changed) {
+        showChatScrollHint = true;
+      }
     }
+  });
+
+  // Reset scroll state on run change
+  $effect(() => {
+    void store.run?.id;
+    isChatAutoScroll = true;
+    showChatScrollHint = false;
+    prevTl = 0;
+    prevSt = 0;
   });
 
   // Restore model when store.model is empty (e.g. after reset/loadRun):
@@ -1172,12 +1190,35 @@
     api.writePty(store.run.id, b64).catch((e) => dbgWarn("chat", "writePty failed:", e));
   }
 
+  // ── Chat scroll ──
+
+  /** Threshold (px) for "near bottom" detection. Shared concept with TerminalPane. */
+  const SCROLL_BOTTOM_THRESHOLD = 40;
+
+  function handleChatScroll() {
+    if (!chatAreaRef) return;
+    const dist = chatAreaRef.scrollHeight - chatAreaRef.scrollTop - chatAreaRef.clientHeight;
+    isChatAutoScroll = dist < SCROLL_BOTTOM_THRESHOLD;
+    if (isChatAutoScroll) showChatScrollHint = false;
+  }
+
+  function scrollChatToBottom() {
+    if (chatAreaRef) {
+      chatAreaRef.scrollTop = chatAreaRef.scrollHeight;
+      showChatScrollHint = false;
+      isChatAutoScroll = true;
+    }
+  }
+
   // ── Send message ──
 
   async function sendMessage(text: string, attachments: Attachment[]) {
     if (!text.trim()) return;
 
     store.error = "";
+    // Follow to new reply when sending a message
+    isChatAutoScroll = true;
+    showChatScrollHint = false;
 
     // Detect slash command (same check as store timeout skip)
     const isSlash = store.isKnownSlashCommand(text);
@@ -2466,7 +2507,12 @@
     <div class="flex-1 overflow-hidden relative">
       {#if store.useStreamSession}
         <!-- API mode: chat messages -->
-        <div class="h-full overflow-y-auto" style="overflow-anchor:auto" bind:this={chatAreaRef}>
+        <div
+          class="h-full overflow-y-auto"
+          style="overflow-anchor:auto"
+          bind:this={chatAreaRef}
+          onscroll={handleChatScroll}
+        >
           {#if welcomeVisible}
             <!-- Welcome state -->
             <div class="flex h-full items-center justify-center">
@@ -2937,6 +2983,25 @@
             </div>
           {/if}
         </div>
+        {#if showChatScrollHint}
+          <button
+            class="absolute bottom-3 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1.5 rounded-full bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground shadow-lg transition-all duration-200 hover:bg-primary/90 animate-fade-in"
+            onclick={scrollChatToBottom}
+          >
+            {t("chat_newMessages")}
+            <svg
+              class="h-3 w-3"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2.5"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path d="m6 9 6 6 6-6" />
+            </svg>
+          </button>
+        {/if}
       {:else if store.ptySpawned || pendingMessage || (store.run && store.run.status !== "pending")}
         <!-- CLI mode: terminal -->
         <XTerminal

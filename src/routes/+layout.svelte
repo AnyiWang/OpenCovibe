@@ -8,6 +8,7 @@
     getGitSummary,
     listPromptFavorites,
     searchPrompts,
+    listMemoryFiles,
   } from "$lib/api";
   import RunListItem from "$lib/components/RunListItem.svelte";
   import ProjectSelector from "$lib/components/ProjectSelector.svelte";
@@ -23,8 +24,10 @@
     GitSummary,
     PromptFavorite,
     PromptSearchResult,
+    MemoryFileCandidate,
   } from "$lib/types";
   import { cwdDisplayLabel, truncate, relativeTime } from "$lib/utils/format";
+  import { filterVisibleCandidates } from "$lib/utils/memory-helpers";
   import { page } from "$app/stores";
   import { goto, afterNavigate } from "$app/navigation";
   import { onMount, setContext } from "svelte";
@@ -207,6 +210,55 @@
     window.dispatchEvent(new CustomEvent("ocv:explorer-diff", { detail: { path: filePath } }));
   }
 
+  // ── Memory sidebar state (shown when on /memory) ──
+  let memoryCandidates = $state<MemoryFileCandidate[]>([]);
+  let memorySelectedFile = $state("");
+  let memoryScopeExpanded = $state<Record<string, boolean>>({
+    project: true,
+    global: false,
+    memory: false,
+  });
+  let memoryShowCreate = $state<Record<string, boolean>>({
+    project: false,
+    global: false,
+    memory: false,
+  });
+
+  let memoryScopeProject = $derived(memoryCandidates.filter((c) => c.scope === "project"));
+  let memoryScopeGlobal = $derived(memoryCandidates.filter((c) => c.scope === "global"));
+  let memoryScopeMemory = $derived(memoryCandidates.filter((c) => c.scope === "memory"));
+
+  let memoryCandidateSeq = 0;
+
+  async function loadMemoryCandidates() {
+    const seq = ++memoryCandidateSeq;
+    try {
+      const result = await listMemoryFiles(projectCwd || undefined);
+      if (seq !== memoryCandidateSeq) return; // stale — discard
+      memoryCandidates = result;
+      dbg("layout", "memory candidates loaded", {
+        count: result.length,
+        existing: result.filter((f) => f.exists).length,
+      });
+    } catch (e) {
+      if (seq !== memoryCandidateSeq) return;
+      dbgWarn("layout", "memory candidates load error", e);
+      memoryCandidates = [];
+    }
+  }
+
+  function selectMemoryFile(file: MemoryFileCandidate) {
+    // Don't set highlight immediately — page will confirm dirty state first.
+    // If confirmed, page sends ocv:memory-file-selected to ack the switch.
+    window.dispatchEvent(
+      new CustomEvent("ocv:memory-select", { detail: { path: file.path, exists: file.exists } }),
+    );
+  }
+
+  function toggleMemoryScope(scope: string) {
+    memoryScopeExpanded = { ...memoryScopeExpanded, [scope]: !memoryScopeExpanded[scope] };
+  }
+
   // Load tree + git when switching to explorer page or changing project
   $effect(() => {
     const _path = currentPath;
@@ -214,6 +266,22 @@
     if (_path?.startsWith("/explorer") && _cwd) {
       loadRootTree();
       loadGitSummary();
+    }
+  });
+
+  // Load memory candidates when switching to memory page or changing project
+  let _prevMemoryCwd: string | undefined;
+  $effect(() => {
+    const _path = currentPath;
+    const _cwd = projectCwd;
+    if (_path?.startsWith("/memory")) {
+      const cwdChanged = _cwd !== _prevMemoryCwd;
+      const routeEntered = _prevMemoryCwd === undefined;
+      _prevMemoryCwd = _cwd;
+      if (cwdChanged || routeEntered) {
+        memoryShowCreate = { project: false, global: false, memory: false };
+      }
+      loadMemoryCandidates();
     }
   });
 
@@ -470,6 +538,19 @@
     }
     window.addEventListener("ocv:show-wizard", onShowWizard);
 
+    // Memory page signals which file it selected (for sidebar highlight sync)
+    function onMemoryFileSelected(e: Event) {
+      const path = (e as CustomEvent).detail?.path ?? "";
+      if (path) memorySelectedFile = path;
+    }
+    window.addEventListener("ocv:memory-file-selected", onMemoryFileSelected);
+
+    // Memory page signals a file was saved (refresh candidates to update exists status)
+    function onMemoryFileSaved() {
+      if (currentPath?.startsWith("/memory")) loadMemoryCandidates();
+    }
+    window.addEventListener("ocv:memory-file-saved", onMemoryFileSaved);
+
     // Sync projectCwd when chat page picks a folder via dialog
     function handleCwdChanged() {
       const newCwd = localStorage.getItem("ocv:project-cwd");
@@ -495,6 +576,8 @@
       window.removeEventListener("ocv:favorites-changed", onFavoritesChanged);
       window.removeEventListener("ocv:show-wizard", onShowWizard);
       window.removeEventListener("ocv:cwd-changed", handleCwdChanged);
+      window.removeEventListener("ocv:memory-file-selected", onMemoryFileSelected);
+      window.removeEventListener("ocv:memory-file-saved", onMemoryFileSaved);
     };
   });
 
@@ -608,6 +691,7 @@
   let isChatPage = $derived(currentPath === "/chat" || currentPath === "/");
   let isPluginsPage = $derived(currentPath.startsWith("/plugins"));
   let isExplorerPage = $derived(currentPath.startsWith("/explorer"));
+  let isMemoryPage = $derived(currentPath.startsWith("/memory"));
 
   // Plugin sidebar navigation (shown when on /plugins route)
   const pluginSections = [
@@ -1268,6 +1352,225 @@
               {/if}
             {/if}
           {/if}
+        {:else if isMemoryPage}
+          <!-- Memory file tree (replaces Chats/Teams when on /memory) -->
+          <div class="flex-1 overflow-y-auto py-1">
+            <!-- Project scope -->
+            {#if memoryScopeProject.length > 0}
+              <div class="flex items-center">
+                <button
+                  class="flex flex-1 items-center gap-1.5 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70 hover:text-sidebar-foreground transition-colors"
+                  onclick={() => toggleMemoryScope("project")}
+                >
+                  <svg
+                    class="h-3 w-3 shrink-0 transition-transform {memoryScopeExpanded['project']
+                      ? 'rotate-90'
+                      : ''}"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"><path d="m9 18 6-6-6-6" /></svg
+                  >
+                  {t("memory_tabProject")}
+                </button>
+                {#if memoryScopeProject.some((f) => !f.exists)}
+                  <button
+                    class="mr-2 flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground/50 hover:bg-sidebar-accent hover:text-sidebar-foreground transition-colors"
+                    onclick={() => {
+                      const next = !memoryShowCreate["project"];
+                      memoryShowCreate = { ...memoryShowCreate, project: next };
+                      if (next) memoryScopeExpanded = { ...memoryScopeExpanded, project: true };
+                    }}
+                    title={t("memory_createFile")}
+                    aria-label={t("memory_createFile")}
+                    aria-pressed={memoryShowCreate["project"]}
+                    type="button"
+                  >
+                    <svg
+                      class="h-3.5 w-3.5"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"><path d="M12 5v14" /><path d="M5 12h14" /></svg
+                    >
+                  </button>
+                {/if}
+              </div>
+              {#if memoryScopeExpanded["project"]}
+                {#each filterVisibleCandidates(memoryScopeProject, memoryShowCreate["project"], memorySelectedFile) as file}
+                  <button
+                    class="flex w-full items-center gap-1.5 py-1 pl-7 pr-3 text-[11px] transition-colors
+                      {memorySelectedFile === file.path
+                      ? 'bg-sidebar-accent text-sidebar-foreground'
+                      : 'text-muted-foreground hover:bg-sidebar-accent/50 hover:text-sidebar-foreground'}"
+                    onclick={() => selectMemoryFile(file)}
+                    title={file.path}
+                  >
+                    <svg
+                      class="h-3 w-3 shrink-0 {file.exists
+                        ? 'text-blue-400'
+                        : 'text-muted-foreground/40'}"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      ><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z" /><path
+                        d="M14 2v4a2 2 0 0 0 2 2h4"
+                      /></svg
+                    >
+                    <span class="min-w-0 truncate">{file.label}</span>
+                    {#if !file.exists}
+                      <span class="ml-auto text-[9px] text-muted-foreground/50 shrink-0"
+                        >{t("memory_new")}</span
+                      >
+                    {/if}
+                  </button>
+                {/each}
+              {/if}
+            {/if}
+
+            <!-- Global scope -->
+            {#if memoryScopeGlobal.length > 0}
+              <div class="flex items-center">
+                <button
+                  class="flex flex-1 items-center gap-1.5 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70 hover:text-sidebar-foreground transition-colors"
+                  onclick={() => toggleMemoryScope("global")}
+                >
+                  <svg
+                    class="h-3 w-3 shrink-0 transition-transform {memoryScopeExpanded['global']
+                      ? 'rotate-90'
+                      : ''}"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"><path d="m9 18 6-6-6-6" /></svg
+                  >
+                  {t("memory_tabGlobal")}
+                </button>
+                {#if memoryScopeGlobal.some((f) => !f.exists)}
+                  <button
+                    class="mr-2 flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground/50 hover:bg-sidebar-accent hover:text-sidebar-foreground transition-colors"
+                    onclick={() => {
+                      const next = !memoryShowCreate["global"];
+                      memoryShowCreate = { ...memoryShowCreate, global: next };
+                      if (next) memoryScopeExpanded = { ...memoryScopeExpanded, global: true };
+                    }}
+                    title={t("memory_createFile")}
+                    aria-label={t("memory_createFile")}
+                    aria-pressed={memoryShowCreate["global"]}
+                    type="button"
+                  >
+                    <svg
+                      class="h-3.5 w-3.5"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"><path d="M12 5v14" /><path d="M5 12h14" /></svg
+                    >
+                  </button>
+                {/if}
+              </div>
+              {#if memoryScopeExpanded["global"]}
+                {#each filterVisibleCandidates(memoryScopeGlobal, memoryShowCreate["global"], memorySelectedFile) as file}
+                  <button
+                    class="flex w-full items-center gap-1.5 py-1 pl-7 pr-3 text-[11px] transition-colors
+                      {memorySelectedFile === file.path
+                      ? 'bg-sidebar-accent text-sidebar-foreground'
+                      : 'text-muted-foreground hover:bg-sidebar-accent/50 hover:text-sidebar-foreground'}"
+                    onclick={() => selectMemoryFile(file)}
+                    title={file.path}
+                  >
+                    <svg
+                      class="h-3 w-3 shrink-0 {file.exists
+                        ? 'text-blue-400'
+                        : 'text-muted-foreground/40'}"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      ><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z" /><path
+                        d="M14 2v4a2 2 0 0 0 2 2h4"
+                      /></svg
+                    >
+                    <span class="min-w-0 truncate">{file.label}</span>
+                    {#if !file.exists}
+                      <span class="ml-auto text-[9px] text-muted-foreground/50 shrink-0"
+                        >{t("memory_new")}</span
+                      >
+                    {/if}
+                  </button>
+                {/each}
+              {/if}
+            {/if}
+
+            <!-- Auto Memory scope -->
+            {#if memoryScopeMemory.length > 0}
+              <button
+                class="flex w-full items-center gap-1.5 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70 hover:text-sidebar-foreground transition-colors"
+                onclick={() => toggleMemoryScope("memory")}
+              >
+                <svg
+                  class="h-3 w-3 shrink-0 transition-transform {memoryScopeExpanded['memory']
+                    ? 'rotate-90'
+                    : ''}"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"><path d="m9 18 6-6-6-6" /></svg
+                >
+                {t("memory_tabMemory")}
+              </button>
+              {#if memoryScopeExpanded["memory"]}
+                {#each memoryScopeMemory as file}
+                  <button
+                    class="flex w-full items-center gap-1.5 py-1 pl-7 pr-3 text-[11px] transition-colors
+                      {memorySelectedFile === file.path
+                      ? 'bg-sidebar-accent text-sidebar-foreground'
+                      : 'text-muted-foreground hover:bg-sidebar-accent/50 hover:text-sidebar-foreground'}"
+                    onclick={() => selectMemoryFile(file)}
+                    title={file.path}
+                  >
+                    <svg
+                      class="h-3 w-3 shrink-0 text-amber-400"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      ><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z" /><path
+                        d="M14 2v4a2 2 0 0 0 2 2h4"
+                      /></svg
+                    >
+                    <span class="min-w-0 truncate">{file.label}</span>
+                  </button>
+                {/each}
+              {/if}
+            {/if}
+
+            <!-- Empty state -->
+            {#if memoryCandidates.length === 0}
+              <div class="flex items-center justify-center px-3 py-12">
+                <p class="text-xs text-muted-foreground text-center">
+                  {t("memory_setProjectFirst")}
+                </p>
+              </div>
+            {/if}
+          </div>
         {:else}
           <!-- Tab bar -->
           <div class="flex shrink-0 border-b border-sidebar-border">
