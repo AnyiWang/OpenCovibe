@@ -1163,6 +1163,7 @@
   "chat_addDirTitle": "Add directory to workspace",
   "chat_addDirUnsupported": "add-dir is only supported for Claude agent",
   "chat_addDirInvalidPath": "Path contains invalid characters",
+  "chat_scrollToBottom": "Scroll to bottom",
 
   "skillSelector_label": "Skills",
   "skillSelector_empty": "No skills found. Add skills in .claude/skills/ to get started.",

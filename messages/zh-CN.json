@@ -1163,6 +1163,7 @@
   "chat_addDirTitle": "添加目录到工作区",
   "chat_addDirUnsupported": "add-dir 仅支持 Claude agent",
   "chat_addDirInvalidPath": "路径包含无效字符",
+  "chat_scrollToBottom": "滚动到底部",
 
   "skillSelector_label": "技能",
   "skillSelector_empty": "未找到技能，请在 .claude/skills/ 中添加。",

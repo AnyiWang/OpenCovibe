@@ -79,6 +79,7 @@
   let sidebarCollapsed = $state(false);
   let chatAreaRef: HTMLDivElement | undefined = $state();
   let isNearBottom = $state(true);
+  let _scrollRaf = 0;
   let agentSettings = $state<AgentSettings | null>(null);
   let resuming = $state(false);
   /** Suppress "Session ended" flash during tool approval restart cycle. */
@@ -1041,10 +1042,14 @@
 
   // Track whether user is near the bottom of the chat area
   function handleChatScroll() {
-    if (!chatAreaRef) return;
-    const threshold = 100;
-    isNearBottom =
-      chatAreaRef.scrollHeight - chatAreaRef.scrollTop - chatAreaRef.clientHeight < threshold;
+    if (_scrollRaf) return;
+    _scrollRaf = requestAnimationFrame(() => {
+      _scrollRaf = 0;
+      if (!chatAreaRef) return;
+      const threshold = 100;
+      isNearBottom =
+        chatAreaRef.scrollHeight - chatAreaRef.scrollTop - chatAreaRef.clientHeight < threshold;
+    });
   }
 
   function scrollToBottom() {
@@ -3107,7 +3112,7 @@
         <button
           class="absolute bottom-4 left-1/2 -translate-x-1/2 z-10 flex items-center justify-center w-9 h-9 rounded-full border border-primary/50 bg-primary/20 backdrop-blur-sm text-primary shadow-lg hover:bg-primary hover:text-primary-foreground transition-all duration-150"
           onclick={scrollToBottom}
-          title={t("chat_scrollToBottom") ?? "Scroll to bottom"}
+          title={t("chat_scrollToBottom")}
         >
           <svg
             class="h-4 w-4"
