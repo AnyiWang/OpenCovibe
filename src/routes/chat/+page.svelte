@@ -2040,22 +2040,42 @@
       const paths = event.payload.paths;
       if (!paths || paths.length === 0 || !promptRef) return;
 
-      // Files → read via Rust and forward to PromptInput
-      const files: File[] = [];
-      for (const fp of paths) {
-        try {
-          const [base64, mime] = await api.readFileBase64(fp);
-          const binary = atob(base64);
-          const bytes = new Uint8Array(binary.length);
-          for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-          const name = fp.split("/").pop() || fp;
-          files.push(new File([bytes], name, { type: mime }));
-        } catch {
-          dbgWarn("chat", "drag-drop read failed", fp);
+      const dirPaths: string[] = [];
+      const filePaths: string[] = [];
+
+      // Classify each path as directory or file
+      for (const p of paths) {
+        const isDir = await api.checkIsDirectory(p);
+        if (isDir) {
+          dirPaths.push(p);
+        } else {
+          filePaths.push(p);
         }
       }
-      if (files.length > 0) {
-        promptRef.addFiles(files);
+
+      // Directories → insert paths as text in input
+      if (dirPaths.length > 0) {
+        promptRef.insertPaths(dirPaths);
+      }
+
+      // Files → read via Rust and forward to PromptInput
+      if (filePaths.length > 0) {
+        const files: File[] = [];
+        for (const fp of filePaths) {
+          try {
+            const [base64, mime] = await api.readFileBase64(fp);
+            const binary = atob(base64);
+            const bytes = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+            const name = fp.split("/").pop() || fp;
+            files.push(new File([bytes], name, { type: mime }));
+          } catch {
+            dbgWarn("chat", "drag-drop read failed", fp);
+          }
+        }
+        if (files.length > 0) {
+          promptRef.addFiles(files);
+        }
       }
     }).then((u) => unlisteners.push(u));
 

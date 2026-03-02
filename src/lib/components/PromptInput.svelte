@@ -1465,6 +1465,19 @@
     processFiles(files);
   }
 
+  export function insertPaths(paths: string[]) {
+    const pathText = paths.map((p) => `\`${p}\``).join(" ");
+    if (inputText && !inputText.endsWith(" ")) {
+      inputText += " " + pathText;
+    } else {
+      inputText += pathText;
+    }
+    requestAnimationFrame(() => {
+      autoResize();
+      textareaEl?.focus();
+    });
+  }
+
   export function getInputSnapshot(): PromptInputSnapshot {
     return {
       text: inputText,
