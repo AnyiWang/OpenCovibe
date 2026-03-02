@@ -2554,6 +2554,15 @@ export class SessionStore {
         if (!replayOnly) {
           this.lastCompactedAt = Date.now();
         }
+        // Reset per-turn token counts so contextUtilization reflects the
+        // compacted state instead of showing stale pre-compact values.
+        // The next usage_update event will supply accurate post-compact numbers.
+        this.usage = {
+          ...this.usage,
+          inputTokens: 0,
+          cacheReadTokens: 0,
+          cacheWriteTokens: 0,
+        };
         break;
       }
 
