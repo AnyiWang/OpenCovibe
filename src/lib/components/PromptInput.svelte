@@ -10,6 +10,7 @@
     PlatformCredential,
   } from "$lib/types";
   import * as api from "$lib/api";
+  import { getGitSummary, getGitBranches, gitCheckout } from "$lib/api";
   import AgentSelector from "./AgentSelector.svelte";
   import AuthSourceBadge from "./AuthSourceBadge.svelte";
   import SkillSelector from "./SkillSelector.svelte";
@@ -137,6 +138,104 @@
     userHistory?: string[];
     runId?: string;
   } = $props();
+
+  // ── Git branch (fetched from cwd) ──
+  let gitBranch = $state("");
+  let gitBranches = $state<string[]>([]);
+  let branchDropdownOpen = $state(false);
+  let branchBtnEl: HTMLButtonElement | undefined = $state();
+
+  function getGitCwd() {
+    return cwd || localStorage.getItem("ocv:project-cwd") || "";
+  }
+
+  function refreshGitBranch() {
+    const dir = getGitCwd();
+    if (!dir) {
+      gitBranch = "";
+      return;
+    }
+    getGitSummary(dir)
+      .then((summary) => {
+        gitBranch = summary.branch || "";
+      })
+      .catch(() => {
+        gitBranch = "";
+      });
+  }
+
+  // Fetch on cwd change
+  $effect(() => {
+    const _dir = getGitCwd(); // reactive dependency on cwd
+    refreshGitBranch();
+  });
+
+  // Poll every 10s to catch branch changes made by CLI commands
+  $effect(() => {
+    const interval = setInterval(refreshGitBranch, 10_000);
+    return () => clearInterval(interval);
+  });
+
+  async function toggleBranchDropdown() {
+    if (branchDropdownOpen) {
+      branchDropdownOpen = false;
+      return;
+    }
+    const dir = getGitCwd();
+    if (!dir) return;
+    try {
+      gitBranches = await getGitBranches(dir);
+    } catch {
+      gitBranches = [];
+    }
+    branchDropdownOpen = true;
+  }
+
+  async function switchBranch(branch: string) {
+    branchDropdownOpen = false;
+    if (branch === gitBranch) return;
+    const dir = getGitCwd();
+    if (!dir) return;
+    try {
+      await gitCheckout(dir, branch);
+      gitBranch = branch;
+    } catch (err) {
+      console.error("[git-branch] checkout failed", err);
+    }
+  }
+
+  // Close branch dropdown on outside click
+  function handleBranchClickOutside(e: MouseEvent) {
+    if (!branchDropdownOpen) return;
+    if (branchBtnEl?.contains(e.target as Node)) return;
+    branchDropdownOpen = false;
+  }
+
+  onMount(() => {
+    document.addEventListener("click", handleBranchClickOutside);
+    return () => document.removeEventListener("click", handleBranchClickOutside);
+  });
+
+  // ── Branch color (7 rainbow colors based on name hash) ──
+  const BRANCH_COLORS = [
+    { bg: "bg-red-500/15", text: "text-red-400", check: "text-red-400" },
+    { bg: "bg-orange-500/15", text: "text-orange-400", check: "text-orange-400" },
+    { bg: "bg-yellow-500/15", text: "text-yellow-400", check: "text-yellow-400" },
+    { bg: "bg-green-500/15", text: "text-green-400", check: "text-green-400" },
+    { bg: "bg-blue-500/15", text: "text-blue-400", check: "text-blue-400" },
+    { bg: "bg-indigo-500/15", text: "text-indigo-400", check: "text-indigo-400" },
+    { bg: "bg-purple-500/15", text: "text-purple-400", check: "text-purple-400" },
+  ];
+
+  function branchColor(name: string) {
+    let hash = 0;
+    for (let i = 0; i < name.length; i++) {
+      hash = (hash * 31 + name.charCodeAt(i)) | 0;
+    }
+    return BRANCH_COLORS[Math.abs(hash) % BRANCH_COLORS.length];
+  }
+
+  let currentBranchColor = $derived(branchColor(gitBranch));
 
   // ── Permission mode selector ──
   const PERMISSION_MODES = [
@@ -1583,29 +1682,94 @@
     </div>
   {/if}
 
-  <!-- L3: Quick action pills (above input container) -->
-  {#if slashEnabled && quickActions.length > 0}
-    <div class="flex items-center gap-1 px-1 pb-1.5 overflow-x-auto scrollbar-hide">
-      {#each quickActions as cmd (cmd.name)}
-        <button
-          class="shrink-0 rounded-md border border-border/50 px-2 py-0.5 text-[11px]
-            text-muted-foreground/70 hover:text-foreground hover:bg-accent
-            hover:border-border transition-colors whitespace-nowrap"
-          onclick={() => handleQuickAction(cmd)}
-          title={cmd.description}
-        >
-          {t(`quickAction_${cmd.name}` as MessageKey)}
-        </button>
-      {/each}
-      <button
-        class="shrink-0 rounded-md border border-border/50 px-2 py-0.5 text-[11px]
-          text-muted-foreground/70 hover:text-foreground hover:bg-accent
-          hover:border-border transition-colors whitespace-nowrap"
-        onclick={openSlashMenuFromButton}
-        title={t("quickAction_moreTitle")}
-      >
-        {t("quickAction_more")}
-      </button>
+  <!-- L3: Quick action pills + git branch (above input container) -->
+  {#if (slashEnabled && quickActions.length > 0) || gitBranch}
+    <div class="flex items-center gap-1 px-1 pb-1.5">
+      {#if slashEnabled && quickActions.length > 0}
+        <div class="flex items-center gap-1 overflow-x-auto scrollbar-hide">
+          {#each quickActions as cmd (cmd.name)}
+            <button
+              class="shrink-0 rounded-md border border-border/50 px-2 py-0.5 text-[11px]
+                text-muted-foreground/70 hover:text-foreground hover:bg-accent
+                hover:border-border transition-colors whitespace-nowrap"
+              onclick={() => handleQuickAction(cmd)}
+              title={cmd.description}
+            >
+              {t(`quickAction_${cmd.name}` as MessageKey)}
+            </button>
+          {/each}
+          <button
+            class="shrink-0 rounded-md border border-border/50 px-2 py-0.5 text-[11px]
+              text-muted-foreground/70 hover:text-foreground hover:bg-accent
+              hover:border-border transition-colors whitespace-nowrap"
+            onclick={openSlashMenuFromButton}
+            title={t("quickAction_moreTitle")}
+          >
+            {t("quickAction_more")}
+          </button>
+        </div>
+      {/if}
+      {#if gitBranch}
+        <div class="ml-auto shrink-0 relative">
+          <button
+            bind:this={branchBtnEl}
+            class="inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] font-medium {currentBranchColor.bg} {currentBranchColor.text} hover:opacity-80 transition-colors max-w-[200px]"
+            title={gitBranch}
+            onclick={toggleBranchDropdown}
+          >
+            <svg
+              class="w-3 h-3 shrink-0"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <line x1="6" y1="3" x2="6" y2="15" />
+              <circle cx="18" cy="6" r="3" />
+              <circle cx="6" cy="18" r="3" />
+              <path d="M18 9a9 9 0 0 1-9 9" />
+            </svg>
+            <span class="truncate">{gitBranch}</span>
+            <svg
+              class="w-2.5 h-2.5 shrink-0 opacity-60"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"><path d="m6 9 6 6 6-6" /></svg
+            >
+          </button>
+          {#if branchDropdownOpen}
+            <div
+              class="absolute bottom-full right-0 mb-1 w-max min-w-[180px] max-w-[320px] max-h-[240px] overflow-y-auto rounded-md border bg-background shadow-lg z-50"
+            >
+              <div class="p-1">
+                {#each gitBranches as b}
+                  {@const bColor = branchColor(b)}
+                  <button
+                    class="flex w-full items-center gap-2 rounded-sm px-3 py-1.5 text-xs hover:bg-accent transition-colors {b ===
+                    gitBranch
+                      ? 'bg-accent font-medium'
+                      : ''}"
+                    onclick={() => switchBranch(b)}
+                  >
+                    <span
+                      class="inline-block w-2 h-2 rounded-full shrink-0 {bColor.bg} {b === gitBranch
+                        ? 'ring-1 ring-current ' + bColor.text
+                        : ''}"
+                    ></span>
+                    <span class="truncate text-foreground">{b}</span>
+                  </button>
+                {/each}
+                {#if gitBranches.length === 0}
+                  <span class="block px-3 py-1.5 text-xs text-muted-foreground">No branches</span>
+                {/if}
+              </div>
+            </div>
+          {/if}
+        </div>
+      {/if}
     </div>
   {/if}
 

@@ -181,3 +181,38 @@ pub async fn get_git_status(cwd: String) -> Result<String, String> {
     }
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
+
+#[tauri::command]
+pub async fn get_git_branches(cwd: String) -> Result<Vec<String>, String> {
+    log::debug!("[git] get_git_branches: cwd={}", cwd);
+    let output = Command::new("git")
+        .current_dir(&cwd)
+        .args(["branch", "--format=%(refname:short)"])
+        .output()
+        .map_err(|e| format!("Failed to run git branch: {}", e))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("git branch failed: {}", stderr));
+    }
+    let branches = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect();
+    Ok(branches)
+}
+
+#[tauri::command]
+pub async fn git_checkout(cwd: String, branch: String) -> Result<String, String> {
+    log::debug!("[git] git_checkout: cwd={}, branch={}", cwd, branch);
+    let output = Command::new("git")
+        .current_dir(&cwd)
+        .args(["checkout", &branch])
+        .output()
+        .map_err(|e| format!("Failed to run git checkout: {}", e))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("git checkout failed: {}", stderr));
+    }
+    Ok(String::from_utf8_lossy(&output.stderr).trim().to_string())
+}
