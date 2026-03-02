@@ -410,6 +410,7 @@ export interface McpServerInfo {
   name: string;
   status: string;
   server_type?: string;
+  scope?: string;
   error?: string;
 }
 

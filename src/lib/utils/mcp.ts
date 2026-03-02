@@ -42,6 +42,7 @@ export function parseServersFromResponse(response: Record<string, unknown>): Mcp
       name: String(s.name ?? "unknown"),
       status: String(s.status ?? "pending"),
       server_type: (s.type as string | undefined) ?? (s.server_type as string | undefined),
+      scope: s.scope as string | undefined,
       error: s.error as string | undefined,
     }));
   }

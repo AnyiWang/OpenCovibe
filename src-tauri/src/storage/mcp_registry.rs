@@ -693,10 +693,7 @@ pub fn toggle_server_config(
             let cwd_str = cwd
                 .filter(|s| !s.is_empty())
                 .ok_or("Project scope requires a working directory")?;
-            (
-                std::path::PathBuf::from(cwd_str).join(".mcp.json"),
-                None,
-            )
+            (std::path::PathBuf::from(cwd_str).join(".mcp.json"), None)
         }
         _ => return Err(format!("Unknown scope: {}", scope)),
     };
@@ -709,7 +706,10 @@ pub fn toggle_server_config(
     // Navigate to the correct mcpServers object
     let servers = if let Some(ref cwd_str) = json_path {
         // local scope: projects[cwd].mcpServers
-        root.pointer_mut(&format!("/projects/{}/mcpServers", cwd_str.replace('~', "~0").replace('/', "~1")))
+        root.pointer_mut(&format!(
+            "/projects/{}/mcpServers",
+            cwd_str.replace('~', "~0").replace('/', "~1")
+        ))
     } else if scope == "project" {
         // project scope: mcpServers in .mcp.json (may be top-level or nested)
         if root.get("mcpServers").is_some() {

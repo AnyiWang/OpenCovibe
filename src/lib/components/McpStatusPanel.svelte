@@ -72,8 +72,8 @@
     successMsg = "";
     const newEnabled = !currentlyEnabled;
 
-    // Find server scope (default to "user")
-    const scope = "user";
+    const server = servers.find((s) => s.name === serverName);
+    const scope = server?.scope ?? "user";
 
     try {
       dbg("mcp", "toggle via config", { serverName, enabled: newEnabled, scope });
@@ -81,9 +81,7 @@
       if (result.success) {
         // Update local state immediately
         servers = servers.map((s) =>
-          s.name === serverName
-            ? { ...s, status: newEnabled ? "pending" : "disabled" }
-            : s,
+          s.name === serverName ? { ...s, status: newEnabled ? "pending" : "disabled" } : s,
         );
         onServersUpdate?.(servers);
         successMsg = result.message;
@@ -188,7 +186,9 @@
             >
               {#if togglingServer === server.name}
                 <span class="flex items-center gap-1">
-                  <span class="h-2.5 w-2.5 border border-current/30 border-t-current rounded-full animate-spin"></span>
+                  <span
+                    class="h-2.5 w-2.5 border border-current/30 border-t-current rounded-full animate-spin"
+                  ></span>
                 </span>
               {:else}
                 {server.status === "disabled" ? t("mcp_enable") : t("mcp_disable")}
@@ -202,7 +202,9 @@
 
   <!-- Success message -->
   {#if successMsg}
-    <div class="px-3 py-2 border-t border-emerald-500/20 bg-emerald-500/5 text-xs text-emerald-600 dark:text-emerald-400">
+    <div
+      class="px-3 py-2 border-t border-emerald-500/20 bg-emerald-500/5 text-xs text-emerald-600 dark:text-emerald-400"
+    >
       {successMsg}
     </div>
   {/if}
