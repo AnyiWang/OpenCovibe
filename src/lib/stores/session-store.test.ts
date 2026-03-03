@@ -1107,6 +1107,19 @@ describe("SessionStore reducer", () => {
 
       expect(store.phase).toBe("idle");
     });
+
+    it("resets context usage tokens after full compaction", () => {
+      store.run = makeRun("run-cb-1");
+      store.phase = "running";
+      // Apply events up to and including compact_boundary (index 5), stopping
+      // before the post-compact usage_update so we can observe the reset.
+      const upToCompact = (compactBoundaryEvents as BusEvent[]).slice(0, 6);
+      store.applyEventBatch(upToCompact);
+
+      expect(store.usage.inputTokens).toBe(0);
+      expect(store.usage.cacheReadTokens).toBe(0);
+      expect(store.usage.cacheWriteTokens).toBe(0);
+    });
   });
 
   // ── getResumeWarning ──

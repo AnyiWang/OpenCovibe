@@ -2553,13 +2553,11 @@ export class SessionStore {
           // The next usage_update event will supply accurate post-compact numbers.
           // Only reset on full compaction — micro-compaction keeps the existing
           // usage so the progress bar does not flash 90%→0%→85%.
-          dbg("store", "compact: reset context usage", { wasMicro: isMicro });
-          this.usage = {
-            ...this.usage,
-            inputTokens: 0,
-            cacheReadTokens: 0,
-            cacheWriteTokens: 0,
-          };
+          dbg("store", "compact: reset context usage", { preTokens: ev.pre_tokens });
+          const prev = ctx ? ctx.usage : this.usage;
+          const reset = { ...prev, inputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
+          if (ctx) ctx.usage = reset;
+          else this.usage = reset;
         }
         // Only set lastCompactedAt during live mode — during replay
         // the timestamp would be meaningless (Date.now() ≠ original event time).
