@@ -734,6 +734,22 @@ pub async fn approve_session_tool(
         tool_name
     );
 
+    // Tools that must never be permanently allowed — they require per-use approval.
+    // ExitPlanMode: plan approval gate; adding it to allowedTools silently bypasses
+    // the CLI's requiresUserInteraction check, permanently auto-approving plans.
+    const NEVER_ALLOW_TOOLS: &[&str] = &["ExitPlanMode", "EnterPlanMode"];
+
+    if NEVER_ALLOW_TOOLS.contains(&tool_name.as_str()) {
+        log::warn!(
+            "[session] approve_session_tool: refusing to permanently allow '{}' (requires per-use approval)",
+            tool_name
+        );
+        return Err(format!(
+            "'{}' cannot be permanently allowed — it requires approval each time",
+            tool_name
+        ));
+    }
+
     // 1. Read run metadata
     let meta =
         storage::runs::get_run(&run_id).ok_or_else(|| format!("Run {} not found", run_id))?;

@@ -36,8 +36,8 @@
 
   // Page title: show filename for custom file, otherwise file label
   let pageTitle = $derived.by(() => {
-    if (customFile) return customFile.split("/").pop() ?? "File";
-    if (selectedFile) return selectedFile.split("/").pop() ?? "File";
+    if (customFile) return customFile.split(/[/\\]/).pop() ?? "File";
+    if (selectedFile) return selectedFile.split(/[/\\]/).pop() ?? "File";
     return "Memory";
   });
 

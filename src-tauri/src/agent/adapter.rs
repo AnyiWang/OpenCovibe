@@ -176,10 +176,32 @@ pub fn build_settings_args(settings: &AdapterSettings, print_mode: bool) -> Vec<
         }
     }
 
-    // Allowed tools
-    if !settings.allowed_tools.is_empty() {
+    // Allowed tools (filter out tools that require per-use approval)
+    const NEVER_ALLOW_TOOLS: &[&str] = &["ExitPlanMode", "EnterPlanMode"];
+    let filtered_tools: Vec<&String> = settings
+        .allowed_tools
+        .iter()
+        .filter(|t| {
+            if NEVER_ALLOW_TOOLS.contains(&t.as_str()) {
+                log::warn!(
+                    "[adapter] filtered '{}' from --allowedTools (requires per-use approval)",
+                    t
+                );
+                false
+            } else {
+                true
+            }
+        })
+        .collect();
+    if !filtered_tools.is_empty() {
         args.push("--allowedTools".into());
-        args.push(settings.allowed_tools.join(","));
+        args.push(
+            filtered_tools
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<&str>>()
+                .join(","),
+        );
     }
 
     // Disallowed tools

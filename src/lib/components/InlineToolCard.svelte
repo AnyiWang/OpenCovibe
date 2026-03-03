@@ -7,6 +7,7 @@
     extractOutputText,
     friendlyToolName,
     planFileName,
+    isPlanFilePath,
     extractTaskToolMeta,
     shouldShowSubTimeline as _shouldShow,
   } from "$lib/utils/tool-rendering";
@@ -24,6 +25,8 @@
     onPermissionRespond,
     onExitPlanClearContext,
     taskNotifications,
+    planContent,
+    latestPlanTool,
   }: {
     tool: BusToolItem;
     subTimeline?: TimelineEntry[];
@@ -46,6 +49,10 @@
     onExitPlanClearContext?: () => void;
     /** Background task notifications map (keyed by task_id, matched via tool_use_id). */
     taskNotifications?: Map<string, TaskNotificationItem>;
+    /** Plan content to display inline (for ExitPlanMode cards). */
+    planContent?: { content: string; fileName: string } | null;
+    /** Whether this is the latest plan tool card (for auto-expand). */
+    latestPlanTool?: boolean;
   } = $props();
 
   // Look up the task notification for this specific Task tool
@@ -123,7 +130,8 @@
       Object.keys(tool.input).length > 0 &&
       (tool as Record<string, unknown>)._inputJsonAccum != null,
   );
-  let expanded = $derived(userExpanded ?? isInputStreaming);
+  let isPlan = $derived(isPlanFilePath(String(tool.input?.file_path ?? tool.input?.path ?? "")));
+  let expanded = $derived(userExpanded ?? ((isPlan && latestPlanTool) || isInputStreaming));
 
   let hasSubTimeline = $derived((subTimeline?.length ?? 0) > 0);
 
@@ -1175,6 +1183,35 @@
 
         <p class="text-xs text-muted-foreground mb-3">{t("plan_approvalDesc")}</p>
 
+        {#if planContent}
+          <div class="mb-3 rounded-lg border border-indigo-500/15 bg-background/50 overflow-hidden">
+            <div
+              class="flex items-center gap-1.5 px-3 py-1.5 border-b border-indigo-500/10 bg-indigo-500/5"
+            >
+              <svg
+                class="h-3 w-3 text-indigo-400"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                <polyline points="14 2 14 8 20 8" />
+              </svg>
+              <span class="text-[11px] font-medium text-indigo-300">{planContent.fileName}</span>
+            </div>
+            <div class="px-4 py-3 overflow-y-auto max-h-96 prose-chat">
+              <MarkdownContent text={planContent.content} />
+            </div>
+          </div>
+        {:else if planContent === null && tool.tool_name === "ExitPlanMode"}
+          <p class="mb-3 text-[11px] text-muted-foreground/70 italic">
+            {t("plan_cannotRebuild")}
+          </p>
+        {/if}
+
         <!-- allowedPrompts (from tool.input, set during tool_start) -->
         {#if tool.input?.allowedPrompts && Array.isArray(tool.input.allowedPrompts) && tool.input.allowedPrompts.length > 0}
           <div class="mb-3 rounded border border-indigo-500/10 bg-indigo-500/5 px-2.5 py-2">
@@ -1678,6 +1715,31 @@
           {/if}
         {/if}
       </div>
+      <!-- ExitPlanMode success: inline plan content below compact card -->
+      {#if planContent && tool.tool_name === "ExitPlanMode" && tool.status === "success"}
+        <div class="mt-2 rounded-lg border border-indigo-500/15 bg-background/50 overflow-hidden">
+          <div
+            class="flex items-center gap-1.5 px-3 py-1.5 border-b border-indigo-500/10 bg-indigo-500/5"
+          >
+            <svg
+              class="h-3 w-3 text-indigo-400"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+              <polyline points="14 2 14 8 20 8" />
+            </svg>
+            <span class="text-[11px] font-medium text-indigo-300">{planContent.fileName}</span>
+          </div>
+          <div class="px-4 py-3 overflow-y-auto max-h-96 prose-chat">
+            <MarkdownContent text={planContent.content} />
+          </div>
+        </div>
+      {/if}
     {/if}
     <!-- Subagent subTimeline: nested entries from child agents -->
     {#if showSubTimeline}

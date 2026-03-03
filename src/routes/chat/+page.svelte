@@ -30,7 +30,12 @@
   } from "$lib/types";
   import { PLATFORM_PRESETS, findCredential } from "$lib/utils/platform-presets";
   import { IS_WEBKIT } from "$lib/utils/platform";
-  import { detectBatchGroups } from "$lib/utils/tool-rendering";
+  import {
+    detectBatchGroups,
+    isPlanFilePath,
+    planFileName,
+    extractPlanContent,
+  } from "$lib/utils/tool-rendering";
 
   const EMPTY_BATCH_MAP = new Map();
   import XTerminal from "$lib/components/XTerminal.svelte";
@@ -510,10 +515,11 @@
   let forkElapsed = $state(0);
 
   // ── Thinking timer + panel ──
-  let thinkingStartedAt = $state<number | null>(null);
   let thinkingElapsed = $state(0);
   let thinkingExpanded = $state(true);
   let spinnerVerb = $state(randomSpinnerVerb());
+  /** Plain flag (not $state) — avoids $effect dependency cycle with thinkingElapsed. */
+  let thinkingVerbPicked = false;
   /** Debounced visibility — prevents spinner flash on fast CLI commands (/context, /cost). */
   let thinkingVisible = $state(false);
 
@@ -542,25 +548,31 @@
 
   $effect(() => {
     if (store.isThinking) {
-      if (!thinkingStartedAt) {
-        thinkingStartedAt = Date.now();
+      // Use store.thinkingStartMs as the authoritative start time.
+      // During replay it holds the original event timestamp, so the timer
+      // survives session switches without resetting to 0.
+      const base = store.thinkingStartMs || Date.now();
+      if (!thinkingVerbPicked) {
         spinnerVerb = randomSpinnerVerb();
+        thinkingVerbPicked = true;
       }
       // Debounce: only show spinner after 300ms to avoid flash on fast commands
       const showTimer = setTimeout(() => {
         thinkingVisible = true;
       }, 300);
+      // Immediately compute elapsed (don't wait 1s for first update)
+      thinkingElapsed = Math.max(0, Math.floor((Date.now() - base) / 1000));
       const interval = setInterval(() => {
-        thinkingElapsed = Math.floor((Date.now() - thinkingStartedAt!) / 1000);
+        thinkingElapsed = Math.max(0, Math.floor((Date.now() - base) / 1000));
       }, 1000);
       return () => {
         clearTimeout(showTimer);
         clearInterval(interval);
       };
     } else {
-      thinkingStartedAt = null;
       thinkingElapsed = 0;
       thinkingVisible = false;
+      thinkingVerbPicked = false;
     }
   });
 
@@ -2140,6 +2152,56 @@
     }
   }
 
+  // O(1) lookup: timeline entry id → index
+  let timelineIdIndex = $derived.by(() => {
+    const map = new Map<string, number>();
+    for (let i = 0; i < store.timeline.length; i++) {
+      map.set(store.timeline[i].id, i);
+    }
+    return map;
+  });
+
+  // Latest plan tool card's tool_use_id (for auto-expand)
+  let latestPlanToolId = $derived.by(() => {
+    for (let i = store.timeline.length - 1; i >= 0; i--) {
+      const e = store.timeline[i];
+      if (e.kind !== "tool" || !e.tool) continue;
+      const fp = String(e.tool.input?.file_path ?? e.tool.input?.path ?? "");
+      if ((e.tool.tool_name === "Write" || e.tool.tool_name === "Edit") && isPlanFilePath(fp)) {
+        return e.tool.tool_use_id;
+      }
+    }
+    return null;
+  });
+
+  function getPlanContentForExitPlan(
+    entryId: string,
+  ): { content: string; fileName: string } | null {
+    const idx = timelineIdIndex.get(entryId);
+    if (idx == null) {
+      dbgWarn("chat", "ExitPlanMode entry not found in timeline index", { id: entryId });
+      return null;
+    }
+    const result = extractPlanContent(store.timeline, idx);
+    if (result) return result;
+    // Fallback: use tool_use_result.plan (--permission-mode=plan auto-approves
+    // ExitPlanMode without Write, plan content is in the result directly)
+    const entry = store.timeline[idx];
+    if (entry?.kind === "tool" && entry.tool.status === "success") {
+      const toolResult = entry.tool.tool_use_result as
+        | { plan?: string; filePath?: string }
+        | undefined;
+      if (toolResult?.plan && typeof toolResult.plan === "string") {
+        const fp = String(toolResult.filePath ?? "");
+        const name = isPlanFilePath(fp) ? (planFileName(fp) ?? "plan") : "plan";
+        return { content: toolResult.plan, fileName: name };
+      }
+    }
+    return null;
+  }
+
+  /** Get the latest plan content for an approved ExitPlanMode card.
+   *  Applies subsequent Edits to the approved plan content. */
   async function handleExitPlanClearContext() {
     if (!store.run) return;
     const runId = store.run.id;
@@ -2715,21 +2777,16 @@
                           onPermissionRespond={handlePermissionRespond}
                           onExitPlanClearContext={handleExitPlanClearContext}
                           taskNotifications={store.taskNotifications}
+                          planContent={entry.tool.tool_name === "ExitPlanMode" &&
+                          (entry.tool.status === "permission_prompt" ||
+                            entry.tool.status === "success")
+                            ? getPlanContentForExitPlan(entry.id)
+                            : undefined}
+                          latestPlanTool={entry.kind === "tool" &&
+                            entry.tool.tool_use_id === latestPlanToolId}
                         />
                       </div>
                     </div>
-                    <!-- ExitPlanMode: render approved plan as standalone markdown in chat stream -->
-                    {#if entry.tool.tool_name === "ExitPlanMode" && entry.tool.status === "success" && entry.tool.tool_use_result?.plan}
-                      <div class="w-full py-2">
-                        <div class="mx-auto max-w-5xl px-8 pl-11">
-                          <div
-                            class="rounded-lg border border-indigo-500/20 bg-indigo-500/5 px-5 py-4 prose-chat"
-                          >
-                            <MarkdownContent text={String(entry.tool.tool_use_result.plan)} />
-                          </div>
-                        </div>
-                      </div>
-                    {/if}
                   {:else if entry.kind === "command_output"}
                     <div class="w-full py-2">
                       <div class="mx-auto max-w-5xl px-8 pl-11">
@@ -3195,7 +3252,7 @@
       <PromptInput
         bind:this={promptRef}
         agent={store.agent}
-        running={store.isRunning}
+        running={store.isActivelyRunning}
         hasRun={!!store.run}
         sessionAlive={store.sessionAlive}
         canResume={!store.sessionAlive && !!store.run?.session_id && store.useStreamSession}

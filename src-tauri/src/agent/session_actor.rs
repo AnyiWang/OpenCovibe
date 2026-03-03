@@ -10,8 +10,8 @@ use crate::agent::adapter::ActorSessionMap;
 use crate::agent::claude_protocol::{validate_bus_event, ProtocolState};
 use crate::agent::notify::notify_if_background;
 use crate::agent::turn_engine::{
-    ActiveTurn, ContextExtractor, InternalExtractor, InternalJob, InternalJobKind, TurnOrigin,
-    TurnPhase, UserTurnKind, UserTurnTicket, INTERNAL_HARD_TIMEOUT, INTERNAL_SOFT_TIMEOUT,
+    ActiveTurn, ContextExtractor, InternalExtractor, InternalJob, TurnOrigin, TurnPhase,
+    UserTurnKind, UserTurnTicket, INTERNAL_HARD_TIMEOUT, INTERNAL_SOFT_TIMEOUT,
     QUARANTINE_DEADLINE, TICK_INTERVAL, USER_HARD_TIMEOUT, USER_SOFT_TIMEOUT,
 };
 use crate::models::{
@@ -143,6 +143,9 @@ struct SessionActor {
     quarantine_until_result: bool,
     quarantine_deadline: Option<Instant>,
     interrupt_sent_for_quarantine: bool,
+    /// Whether the current quarantine was triggered by an internal turn (auto-context).
+    /// If true, quarantine hard-timeout abandons instead of killing the process.
+    quarantine_from_internal: bool,
     /// Set after quarantine kill — reject new messages, break run loop.
     terminated: bool,
     /// JSON parse failures in handle_stdout_line (before map_event).
@@ -214,6 +217,7 @@ pub fn spawn_actor(
         quarantine_until_result: false,
         quarantine_deadline: None,
         interrupt_sent_for_quarantine: false,
+        quarantine_from_internal: false,
         terminated: false,
         json_parse_fail_count: 0,
     };
@@ -546,9 +550,22 @@ impl SessionActor {
     }
 
     /// Called when a user turn reaches idle — enqueue auto-context if applicable. (HC #24)
+    /// NOTE: Auto-context is currently disabled because /context hangs CLI
+    /// with certain API proxies, causing process kills and SESSION ISSUE errors.
+    /// The /context slash command produces zero output and never completes,
+    /// leading to hard timeout → quarantine → kill. Re-enable once root cause
+    /// (likely proxy incompatibility with /context tokenization) is resolved.
     fn on_user_turn_finished(&mut self, turn: &ActiveTurn) {
         if let TurnOrigin::User(UserTurnKind::Normal { auto_ctx_id }) = &turn.origin {
             let auto_ctx_id = *auto_ctx_id;
+            log::debug!(
+                "[turn] auto-context skipped (disabled): auto_ctx_id={}",
+                auto_ctx_id
+            );
+            // Update last_auto_context_for to maintain dedup state
+            self.last_auto_context_for = Some(auto_ctx_id);
+
+            /* Disabled: /context hangs with some API proxies
             if crate::agent::turn_engine::should_trigger_auto_context(
                 auto_ctx_id,
                 self.last_auto_context_for,
@@ -568,6 +585,7 @@ impl SessionActor {
                     auto_ctx_id
                 );
             }
+            */ // end disabled auto-context
         }
     }
 
@@ -579,19 +597,20 @@ impl SessionActor {
                 if Instant::now() >= deadline {
                     // Quarantine secondary timeout → hard-kill
                     log::warn!(
-                        "[turn] quarantine hard-timeout: killing process for run_id={}",
-                        self.run_id
+                        "[turn] quarantine hard-timeout: killing process for run_id={} (from_internal={})",
+                        self.run_id,
+                        self.quarantine_from_internal
                     );
                     self.protocol.set_pending_slash_command(None);
                     if let Some(ref mut child) = self.child {
                         let _ = child.kill().await;
                     }
-                    self.emit_state(
-                        "failed",
-                        None,
-                        Some("Auto-context hard timeout — process killed".to_string()),
-                        true,
-                    );
+                    let error_msg = if self.quarantine_from_internal {
+                        "Auto-context hard timeout — process killed".to_string()
+                    } else {
+                        "Session hard timeout — process killed".to_string()
+                    };
+                    self.emit_state("failed", None, Some(error_msg), true);
                     self.fail_all_pending_replies("Session hard timeout");
                     self.terminated = true;
                     return;
@@ -634,6 +653,7 @@ impl SessionActor {
                 self.quarantine_until_result = true;
                 self.interrupt_sent_for_quarantine = false;
                 self.quarantine_deadline = None;
+                self.quarantine_from_internal = true;
                 // on_tick_timeout will send interrupt on next tick
             } else if now >= turn.soft_deadline && matches!(turn.phase, TurnPhase::Active) {
                 // Transition to Draining
@@ -664,6 +684,7 @@ impl SessionActor {
             self.quarantine_until_result = true;
             self.interrupt_sent_for_quarantine = false;
             self.quarantine_deadline = None;
+            self.quarantine_from_internal = false;
         }
     }
 
@@ -1008,6 +1029,7 @@ impl SessionActor {
                         self.quarantine_until_result = false;
                         self.quarantine_deadline = None;
                         self.interrupt_sent_for_quarantine = false;
+                        self.quarantine_from_internal = false;
                         self.protocol.set_pending_slash_command(None);
                         // Don't emit quarantine RunState to frontend (it was an internal turn)
                         // Just try to dispatch next queued item

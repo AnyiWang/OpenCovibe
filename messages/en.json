@@ -28,6 +28,11 @@
   "settings_general_models": "Models",
   "settings_general_modelsPlaceholder": "e.g. model-name",
   "settings_general_modelsHelp": "Comma-separated model names. First model is used as default. Leave empty to use CLI default.",
+  "settings_general_extraEnv": "Extra Environment Variables",
+  "settings_general_extraEnvHelp": "Injected into CLI process. Paste KEY=value lines or JSON to bulk-add.",
+  "settings_general_addEnvVar": "Add variable",
+  "settings_general_envKeyPlaceholder": "VAR_NAME",
+  "settings_general_envValuePlaceholder": "value",
   "settings_general_platform": "Platform",
   "settings_general_changePlatform": "Change",
   "settings_general_cancelChange": "Cancel",
@@ -287,6 +292,7 @@
   "prompt_maxPasteBlocks": "Max {count} paste blocks",
   "prompt_maxTextFiles": "Max {count} text files",
   "prompt_unsupportedFile": "Unsupported file type: .{ext}",
+  "prompt_clipboardUnsupported": "File paste is not yet supported on this platform",
   "prompt_conversionFailed": "Failed to convert {name}",
 
   "common_cancel": "Cancel",
@@ -936,6 +942,7 @@
   "plan_manuallyApprove": "Manually approve edits",
   "plan_keepPlanning": "Keep planning",
   "plan_feedbackPlaceholder": "Tell Claude what to change...",
+  "plan_cannotRebuild": "Unable to reconstruct the full plan. Scroll up to view the relevant changes.",
 
   "auth_sourceLabel": "Auth source",
   "auth_cliAuth": "CLI Auth",

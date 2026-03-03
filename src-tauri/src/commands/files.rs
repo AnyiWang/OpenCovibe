@@ -410,7 +410,9 @@ mod tests {
 
     #[test]
     fn read_task_output_error_for_nonexistent() {
-        let result = read_task_output("/tmp/definitely_does_not_exist_12345.output".to_string());
+        let tmp = tempfile::tempdir().unwrap();
+        let nonexistent = tmp.path().join("nonexistent.output");
+        let result = read_task_output(nonexistent.to_string_lossy().into_owned());
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Cannot resolve"));
     }

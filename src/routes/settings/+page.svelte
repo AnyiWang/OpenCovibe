@@ -82,6 +82,10 @@
   let selectedPlatformId = $state<string | null>(null);
   let showPlatformPicker = $state(false);
   let platformCredentials = $state<PlatformCredential[]>([]);
+  let platformExtraEnv = $state<Array<{ key: string; value: string }>>([]);
+  // Track whether user manually edited extra_env (per platform ID).
+  // Untouched platforms don't write extra_env, avoiding preset defaults being baked into credentials.
+  let extraEnvTouched = $state<Record<string, boolean>>({});
 
   // CLI Auth state
   let authOverview = $state<import("$lib/types").AuthOverview | null>(null);
@@ -642,6 +646,7 @@
     if (!platformId) {
       anthropicApiKey = "";
       anthropicBaseUrl = "";
+      platformExtraEnv = [];
       return;
     }
     const cred = findCredential(platformCredentials, platformId);
@@ -652,11 +657,17 @@
     // models: credential override > preset default > empty
     const models = cred?.models ?? preset?.models;
     platformModels = models?.join(", ") ?? "";
+    // extra_env: credential explicit value (including {}) takes priority; undefined falls back to preset
+    const extraEnv = cred?.extra_env !== undefined ? cred.extra_env : (preset?.extra_env ?? {});
+    platformExtraEnv = Object.entries(extraEnv).map(([key, value]) => ({ key, value }));
+    // Don't set touched on load — touched is only driven by UI edit actions (onblur/delete row)
     dbg("settings", "loadFieldsFromCredential", {
       platformId,
       hasKey: !!anthropicApiKey,
       url: anthropicBaseUrl,
       models: platformModels,
+      extraEnvKeys: Object.keys(extraEnv),
+      extraEnvSource: cred?.extra_env !== undefined ? "credential" : "preset",
     });
   }
 
@@ -670,13 +681,38 @@
       .map((s) => s.trim())
       .filter(Boolean);
     const modelsToSave = parsedModels.length > 0 ? parsedModels : preset?.models;
+
+    // Convert extra_env array back to Record, filter empty keys, warn on duplicates
+    const extraEnvRecord: Record<string, string> = {};
+    const seenKeys = new Set<string>();
+    for (const { key, value } of platformExtraEnv) {
+      const k = key.trim();
+      if (!k) continue;
+      if (seenKeys.has(k)) {
+        dbgWarn("settings", `duplicate extra_env key "${k}" — last value wins`);
+      }
+      seenKeys.add(k);
+      extraEnvRecord[k] = value;
+    }
+
+    // Only write extra_env when user has touched it; otherwise preserve credential's original value
+    const extraEnvToSave = extraEnvTouched[selectedPlatformId]
+      ? extraEnvRecord // always write (even empty {}), distinct from undefined
+      : undefined; // don't overwrite — keep credential as-is (may be undefined or old value)
+
+    dbg("settings", "saveCurrentToCredential: extra_env", {
+      platform: selectedPlatformId,
+      touched: !!extraEnvTouched[selectedPlatformId],
+      keys: Object.keys(extraEnvRecord),
+    });
+
     _upsertCredential(selectedPlatformId, {
       api_key: anthropicApiKey || undefined,
       // Always save base_url — backend needs it for ANTHROPIC_BASE_URL injection
       base_url: anthropicBaseUrl || preset?.base_url || undefined,
       auth_env_var: selectedPlatform?.auth_env_var ?? preset?.auth_env_var,
       models: modelsToSave,
-      extra_env: preset?.extra_env,
+      ...(extraEnvToSave !== undefined ? { extra_env: extraEnvToSave } : {}),
     });
   }
 
@@ -690,6 +726,78 @@
       active_platform_id: platformId,
       platform_credentials: platformCredentials,
     });
+  }
+
+  function markExtraEnvTouched() {
+    if (selectedPlatformId) extraEnvTouched[selectedPlatformId] = true;
+  }
+
+  /**
+   * Parse pasted env text. Supported formats:
+   * - KEY=value lines (with optional `export` prefix, # comments, quoted values)
+   * - JSON object: { "KEY": "value", ... }
+   */
+  function parseEnvText(text: string): Array<{ key: string; value: string }> {
+    const trimmed = text.trim();
+    // Try JSON object first
+    if (trimmed.startsWith("{")) {
+      try {
+        const obj = JSON.parse(trimmed);
+        if (obj && typeof obj === "object" && !Array.isArray(obj)) {
+          const results: Array<{ key: string; value: string }> = [];
+          for (const [key, val] of Object.entries(obj)) {
+            if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
+              results.push({ key, value: String(val) });
+            }
+          }
+          if (results.length > 0) return results;
+        }
+      } catch {
+        // Not valid JSON, fall through to line-based parsing
+      }
+    }
+    // Line-based: KEY=value, export KEY=value, # comments
+    const results: Array<{ key: string; value: string }> = [];
+    for (const raw of trimmed.split(/\r?\n/)) {
+      const line = raw.trim();
+      if (!line || line.startsWith("#")) continue;
+      const stripped = line.replace(/^export\s+/, "");
+      const eqIdx = stripped.indexOf("=");
+      if (eqIdx <= 0) continue;
+      const key = stripped.slice(0, eqIdx).trim();
+      let value = stripped.slice(eqIdx + 1).trim();
+      if (
+        (value.startsWith('"') && value.endsWith('"')) ||
+        (value.startsWith("'") && value.endsWith("'"))
+      ) {
+        value = value.slice(1, -1);
+      }
+      if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
+        results.push({ key, value });
+      }
+    }
+    return results;
+  }
+
+  /** Handle paste on env key input: if content looks like KEY=value lines, bulk-add them. */
+  function handleEnvKeyPaste(e: ClipboardEvent, index: number) {
+    const text = e.clipboardData?.getData("text/plain") ?? "";
+    const parsed = parseEnvText(text);
+    if (parsed.length === 0) return; // not env format, let normal paste through
+    e.preventDefault();
+    // Replace current (likely empty) row with first parsed entry, append rest
+    const before = platformExtraEnv.slice(0, index);
+    const after = platformExtraEnv.slice(index + 1);
+    platformExtraEnv = [...before, ...parsed, ...after];
+    markExtraEnvTouched();
+    persistCurrentPlatform();
+    dbg("settings", "env paste parsed", { count: parsed.length, keys: parsed.map((p) => p.key) });
+  }
+
+  /** Unified persist: save current platform fields to credential + sync to settings. */
+  function persistCurrentPlatform() {
+    saveCurrentToCredential();
+    if (selectedPlatformId) syncAndSave(selectedPlatformId);
   }
 
   function applyPlatformPreset(preset: PlatformPreset) {
@@ -1255,10 +1363,7 @@
                       placeholder={selectedPlatform?.key_placeholder ?? "<your-api-key>"}
                       type={showApiKey ? "text" : "password"}
                       class="font-mono text-xs"
-                      onblur={() => {
-                        saveCurrentToCredential();
-                        if (selectedPlatformId) syncAndSave(selectedPlatformId);
-                      }}
+                      onblur={() => persistCurrentPlatform()}
                     />
                   </div>
                   <button
@@ -1288,11 +1393,9 @@
                   class="mt-1 font-mono text-xs"
                   disabled={selectedPlatformId !== null &&
                     selectedPlatformId !== "anthropic" &&
+                    selectedPlatform?.category !== "local" &&
                     !isCustomPlatform(selectedPlatformId ?? "")}
-                  onblur={() => {
-                    saveCurrentToCredential();
-                    if (selectedPlatformId) syncAndSave(selectedPlatformId);
-                  }}
+                  onblur={() => persistCurrentPlatform()}
                 />
                 <p class="mt-1 text-xs text-muted-foreground">
                   {#if selectedPlatform && selectedPlatform.auth_env_var === "ANTHROPIC_AUTH_TOKEN"}
@@ -1315,13 +1418,80 @@
                   placeholder={selectedPlatform?.models?.join(", ") ||
                     t("settings_general_modelsPlaceholder")}
                   class="mt-1 font-mono text-xs"
-                  onblur={() => {
-                    saveCurrentToCredential();
-                    if (selectedPlatformId) syncAndSave(selectedPlatformId);
-                  }}
+                  onblur={() => persistCurrentPlatform()}
                 />
                 <p class="mt-1 text-xs text-muted-foreground">
                   {t("settings_general_modelsHelp")}
+                </p>
+              </div>
+
+              <!-- Extra Environment Variables -->
+              <div>
+                <label class="text-sm font-medium mb-1.5 block">
+                  {t("settings_general_extraEnv")}
+                </label>
+                {#each platformExtraEnv as envVar, i}
+                  <div class="flex gap-1.5 mt-1.5">
+                    <Input
+                      bind:value={envVar.key}
+                      placeholder={t("settings_general_envKeyPlaceholder")}
+                      class="flex-1 font-mono text-xs"
+                      oninput={() => markExtraEnvTouched()}
+                      onblur={() => persistCurrentPlatform()}
+                      onpaste={(e: ClipboardEvent) => handleEnvKeyPaste(e, i)}
+                    />
+                    <Input
+                      bind:value={envVar.value}
+                      placeholder={t("settings_general_envValuePlaceholder")}
+                      class="flex-1 font-mono text-xs"
+                      oninput={() => markExtraEnvTouched()}
+                      onblur={() => persistCurrentPlatform()}
+                    />
+                    <button
+                      class="shrink-0 rounded-md p-1.5 text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
+                      onclick={() => {
+                        platformExtraEnv = platformExtraEnv.filter((_, idx) => idx !== i);
+                        markExtraEnvTouched();
+                        persistCurrentPlatform();
+                      }}
+                    >
+                      <svg
+                        class="h-3.5 w-3.5"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                      >
+                        <path d="M18 6 6 18" /><path d="m6 6 12 12" />
+                      </svg>
+                    </button>
+                  </div>
+                {/each}
+                <button
+                  class="mt-1.5 flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
+                  onclick={() => {
+                    platformExtraEnv = [...platformExtraEnv, { key: "", value: "" }];
+                    // Don't markExtraEnvTouched(): empty row isn't an edit, avoids baking preset defaults.
+                    // touched is marked on onblur (actual value entry) or row deletion.
+                  }}
+                >
+                  <svg
+                    class="h-3 w-3"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  >
+                    <path d="M12 5v14" /><path d="M5 12h14" />
+                  </svg>
+                  {t("settings_general_addEnvVar")}
+                </button>
+                <p class="mt-1 text-xs text-muted-foreground">
+                  {t("settings_general_extraEnvHelp")}
                 </p>
               </div>
             </div>

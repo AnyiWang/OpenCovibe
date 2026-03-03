@@ -1225,8 +1225,12 @@
       }
       await processClipboardPaths(files);
     } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      // Only show toast when user explicitly pasted files (no text in clipboard)
+      if (snapshot === undefined && msg.includes("not yet supported")) {
+        showFileToast(t("prompt_clipboardUnsupported"));
+      }
       dbg("prompt", "native clipboard failed/timeout", e);
-      // Graceful degradation: text already inserted by browser, do nothing
     }
   }
 

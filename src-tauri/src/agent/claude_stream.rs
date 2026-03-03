@@ -93,6 +93,7 @@ fn extra_path_dirs() -> Vec<PathBuf> {
         let nvm_dir = home.join(".nvm").join("versions").join("node");
 
         let mut dirs = vec![
+            home.join(".claude").join("bin"),
             home.join(".local").join("bin"),
             home.join(".cargo").join("bin"),
         ];
@@ -135,6 +136,7 @@ fn extra_path_dirs() -> Vec<PathBuf> {
         }
 
         dirs.extend([
+            home.join(".bun").join("bin"),
             home.join(".volta").join("bin"),
             home.join(".fnm").join("current").join("bin"),
             home.join(".local").join("share").join("mise").join("shims"),
@@ -466,6 +468,7 @@ pub(crate) fn resolve_claude_path() -> String {
     let candidates = {
         let mut cands = Vec::new();
         if let Some(ref h) = home {
+            cands.push(h.join(".claude").join("bin").join("claude"));
             cands.push(h.join(".local").join("bin").join("claude"));
         }
         cands.push(PathBuf::from("/usr/local/bin/claude"));
@@ -486,7 +489,8 @@ pub(crate) fn resolve_claude_path() -> String {
     log::debug!(
         "[claude_stream] claude binary not found in candidates, falling back to PATH lookup"
     );
-    let fallback = "claude".to_string();
+    // Use which_binary to search augmented PATH for absolute path
+    let fallback = which_binary("claude").unwrap_or_else(|| "claude".to_string());
     *cached = Some(fallback.clone());
     fallback
 }

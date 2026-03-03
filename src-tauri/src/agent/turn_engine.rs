@@ -142,9 +142,9 @@ pub fn should_trigger_auto_context(auto_ctx_id: u32, last: Option<u32>) -> bool 
 pub const USER_SOFT_TIMEOUT: Duration = Duration::from_secs(300);
 pub const USER_HARD_TIMEOUT: Duration = Duration::from_secs(600);
 
-/// Internal turns (auto-context) get tight timeouts
-pub const INTERNAL_SOFT_TIMEOUT: Duration = Duration::from_secs(8);
-pub const INTERNAL_HARD_TIMEOUT: Duration = Duration::from_secs(30);
+/// Internal turns (auto-context) timeouts
+pub const INTERNAL_SOFT_TIMEOUT: Duration = Duration::from_secs(15);
+pub const INTERNAL_HARD_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Quarantine secondary timeout (after interrupt sent, wait for CLI response)
 pub const QUARANTINE_DEADLINE: Duration = Duration::from_secs(10);

@@ -812,7 +812,9 @@ mod tests {
 
     #[test]
     fn test_check_project_init_no_dir() {
-        let result = check_project_init("/tmp/nonexistent_dir_12345".into()).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let nonexistent = tmp.path().join("nonexistent_subdir");
+        let result = check_project_init(nonexistent.to_string_lossy().into()).unwrap();
         assert!(!result.has_claude_md);
     }
 
@@ -1016,7 +1018,10 @@ pub async fn get_cli_dist_tags() -> Result<CliDistTags, String> {
 pub fn check_ssh_key() -> Result<SshKeyInfo, String> {
     let candidates = [("~/.ssh/id_ed25519", "ed25519"), ("~/.ssh/id_rsa", "rsa")];
 
+    #[cfg(unix)]
     let ssh_copy_id_available = crate::agent::claude_stream::which_binary("ssh-copy-id").is_some();
+    #[cfg(not(unix))]
+    let ssh_copy_id_available = false;
 
     log::debug!(
         "[diagnostics] check_ssh_key: ssh_copy_id_available={}",

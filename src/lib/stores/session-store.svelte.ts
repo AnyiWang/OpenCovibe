@@ -64,6 +64,13 @@ function eventTs(ev: BusEvent): string {
   return (r.ts as string) ?? (r.timestamp as string) ?? new Date().toISOString();
 }
 
+/** Parse event timestamp to epoch milliseconds (falls back to Date.now()). */
+function eventTsMs(ev: BusEvent): number {
+  const iso = eventTs(ev);
+  const ms = new Date(iso).getTime();
+  return Number.isFinite(ms) ? ms : Date.now();
+}
+
 // ── Internal batch state (plain objects, no reactivity) ──
 
 interface ReduceCtx {
@@ -367,12 +374,20 @@ export class SessionStore {
     return this.tools.filter((e) => e.status === "running").at(-1)?.tool_name ?? "";
   }
 
+  /** Whether a permission prompt is pending user approval. */
+  get hasPendingPermission(): boolean {
+    return this.timeline.some((e) => e.kind === "tool" && e.tool.status === "permission_prompt");
+  }
+
   get isThinking(): boolean {
-    const lastIsAssistant =
-      this.timeline.length > 0 && this.timeline[this.timeline.length - 1].kind === "assistant";
-    return (
-      this.isRunning && !this.streamingText && (!lastIsAssistant || this.activeToolName !== "")
-    );
+    if (!this.isRunning || this.streamingText) return false;
+    return !this.hasPendingPermission;
+  }
+
+  /** isRunning but not blocked on a permission prompt.
+   *  Used for UI elements (stop button, spinner) that should hide during approval. */
+  get isActivelyRunning(): boolean {
+    return this.isRunning && !this.hasPendingPermission;
   }
 
   /** Duration of extended thinking in seconds (0 if no thinking happened). */
@@ -1884,7 +1899,7 @@ export class SessionStore {
         }
         // Mark thinking end: first text delta after thinking started
         if (this.thinkingStartMs && !this.thinkingEndMs) {
-          this.thinkingEndMs = Date.now();
+          this.thinkingEndMs = eventTsMs(ev);
         }
         if (ctx) ctx.streamText += ev.text;
         else this.streamingText += ev.text;
@@ -1901,7 +1916,7 @@ export class SessionStore {
           );
           break;
         }
-        if (!this.thinkingStartMs) this.thinkingStartMs = Date.now();
+        if (!this.thinkingStartMs) this.thinkingStartMs = eventTsMs(ev);
         if (ctx) ctx.thinkingText += ev.text;
         else this.thinkingText += ev.text;
         break;

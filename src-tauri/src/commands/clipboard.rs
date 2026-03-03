@@ -236,8 +236,8 @@ return paths as text
 
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
-        log::debug!("[clipboard] unsupported platform, returning empty");
-        Ok(vec![])
+        log::warn!("[clipboard] file paste is not yet supported on this platform");
+        Err("Clipboard file paste is not yet supported on this platform".into())
     }
 }
 

@@ -28,6 +28,11 @@
   "settings_general_models": "模型",
   "settings_general_modelsPlaceholder": "例如 model-name",
   "settings_general_modelsHelp": "逗号分隔的模型名，第一个为默认模型。留空使用 CLI 默认值。",
+  "settings_general_extraEnv": "额外环境变量",
+  "settings_general_extraEnvHelp": "注入到 CLI 进程。可粘贴 KEY=value 或 JSON 批量添加。",
+  "settings_general_addEnvVar": "添加变量",
+  "settings_general_envKeyPlaceholder": "变量名",
+  "settings_general_envValuePlaceholder": "值",
   "settings_general_platform": "平台",
   "settings_general_changePlatform": "更换",
   "settings_general_cancelChange": "取消",
@@ -287,6 +292,7 @@
   "prompt_maxPasteBlocks": "最多 {count} 个粘贴块",
   "prompt_maxTextFiles": "最多 {count} 个文本文件",
   "prompt_unsupportedFile": "不支持的文件类型：.{ext}",
+  "prompt_clipboardUnsupported": "当前平台暂不支持粘贴文件",
   "prompt_conversionFailed": "转换 {name} 失败",
 
   "common_cancel": "取消",
@@ -936,6 +942,7 @@
   "plan_manuallyApprove": "手动审批编辑",
   "plan_keepPlanning": "继续规划",
   "plan_feedbackPlaceholder": "告诉 Claude 要修改什么...",
+  "plan_cannotRebuild": "无法重建完整计划，请向上查看相关变更。",
 
   "auth_sourceLabel": "认证来源",
   "auth_cliAuth": "CLI 认证",
