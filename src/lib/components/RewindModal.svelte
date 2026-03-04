@@ -47,10 +47,6 @@
   let lastAutoSelectKey = ""; // one-shot guard: prevent initialCandidate prop bounce
   let hasFiles = $derived((dryRunResult?.filesChanged?.length ?? 0) > 0);
 
-  // ── File checkpoint detection ──
-  let checkpointStatus = $state<"loading" | "enabled" | "disabled" | "error">("loading");
-  let checkpointEnabling = $state(false);
-
   // ── Reset on close ──
   $effect(() => {
     if (!open) {
@@ -65,40 +61,6 @@
       lastAutoSelectKey = "";
     }
   });
-
-  // ── Check file checkpoint setting when modal opens with no candidates ──
-  $effect(() => {
-    if (open && candidates.length === 0) {
-      checkpointStatus = "loading";
-      api
-        .getCliConfig()
-        .then((config) => {
-          // CLI default is true when key is absent, but app should guide users to set it explicitly
-          checkpointStatus = config.fileCheckpointingEnabled === false ? "disabled" : "enabled";
-          dbg("rewind-modal", "checkpoint config check", {
-            fileCheckpointingEnabled: config.fileCheckpointingEnabled,
-            status: checkpointStatus,
-          });
-        })
-        .catch((e) => {
-          dbgWarn("rewind-modal", "failed to check checkpoint config", e);
-          checkpointStatus = "error";
-        });
-    }
-  });
-
-  async function enableFileCheckpoints() {
-    checkpointEnabling = true;
-    try {
-      await api.updateCliConfig({ fileCheckpointingEnabled: true });
-      checkpointStatus = "enabled";
-      dbg("rewind-modal", "file checkpoints enabled");
-    } catch (e) {
-      dbgWarn("rewind-modal", "failed to enable file checkpoints", e);
-    } finally {
-      checkpointEnabling = false;
-    }
-  }
 
   // ── Auto-select from initialCandidate (one-shot) ──
   $effect(() => {
@@ -302,30 +264,6 @@
         </svg>
         <p class="text-sm font-medium">{t("rewind_noCheckpoints")}</p>
         <p class="text-xs opacity-70">{t("rewind_noCheckpointsHint")}</p>
-
-        {#if checkpointStatus === "disabled"}
-          <div
-            class="mt-4 w-full rounded-md border border-amber-500/30 bg-amber-500/5 px-4 py-3 text-left"
-          >
-            <p class="text-sm text-amber-600 dark:text-amber-400 font-medium">
-              {t("rewind_checkpointsDisabled")}
-            </p>
-            <p class="mt-1 text-xs text-muted-foreground">
-              {t("rewind_checkpointsDisabledHint")}
-            </p>
-            <button
-              type="button"
-              class="mt-2 rounded-md bg-primary px-3 py-1.5 text-sm text-primary-foreground transition-colors hover:bg-primary/90
-                disabled:opacity-50"
-              onclick={enableFileCheckpoints}
-              disabled={checkpointEnabling}
-            >
-              {checkpointEnabling ? t("rewind_checkpointsEnabling") : t("rewind_checkpointsEnable")}
-            </button>
-          </div>
-        {:else if checkpointStatus === "enabled"}
-          <p class="mt-2 text-xs opacity-50">{t("rewind_checkpointsAlreadyEnabled")}</p>
-        {/if}
       </div>
     {:else}
       <p class="mb-3 text-sm text-muted-foreground">{t("rewind_selectCheckpoint")}</p>
