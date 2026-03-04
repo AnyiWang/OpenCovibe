@@ -19,17 +19,11 @@
   let isImage = $derived(mimeType.startsWith("image/"));
 </script>
 
-<div
-  class="flex items-center gap-2 rounded-md border px-2 py-1 text-xs {isImage
-    ? 'border-purple-200 dark:border-purple-800 bg-purple-50 dark:bg-purple-950/50 text-purple-700 dark:text-purple-300'
-    : isDoc
-      ? 'border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-950/50 text-red-700 dark:text-red-300'
-      : 'border-border bg-muted/50'}"
->
+<div class="flex items-center gap-2 rounded-md border border-border bg-muted/50 px-2 py-1 text-xs">
   {#if isImage}
     <!-- Image icon -->
     <svg
-      class="h-3.5 w-3.5 text-purple-400 shrink-0"
+      class="h-3.5 w-3.5 text-muted-foreground shrink-0"
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"
@@ -44,7 +38,7 @@
   {:else if isDoc}
     <!-- Document icon for PDF -->
     <svg
-      class="h-3.5 w-3.5 text-red-400 shrink-0"
+      class="h-3.5 w-3.5 text-muted-foreground shrink-0"
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"
@@ -73,20 +67,10 @@
     </svg>
   {/if}
   <span class="truncate max-w-[120px]">{name}</span>
-  <span
-    class={isImage
-      ? "text-purple-400 dark:text-purple-500"
-      : isDoc
-        ? "text-red-400 dark:text-red-500"
-        : "text-muted-foreground"}>{formatBytes(size)}</span
-  >
+  <span class="text-muted-foreground">{formatBytes(size)}</span>
   {#if onremove}
     <button
-      class="ml-auto {isImage
-        ? 'text-purple-400 hover:text-purple-600'
-        : isDoc
-          ? 'text-red-400 hover:text-red-600'
-          : 'text-muted-foreground hover:text-foreground'}"
+      class="ml-auto text-muted-foreground hover:text-foreground"
       onclick={onremove}
       aria-label={t("common_removeAttachment")}
     >

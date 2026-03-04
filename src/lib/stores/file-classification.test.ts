@@ -10,6 +10,8 @@ import {
   getSizeLimitByMime,
   isConvertibleFile,
   isConvertibleByExt,
+  isSpreadsheetExt,
+  SPREADSHEET_EXTENSIONS,
   IMAGE_TYPES,
   DOCUMENT_TYPES,
   BINARY_ATTACHMENT_TYPES,
@@ -369,6 +371,39 @@ describe("classifyByMime - convertible", () => {
   });
 });
 
+// ── isSpreadsheetExt ──
+
+describe("isSpreadsheetExt", () => {
+  it("recognizes xlsx", () => {
+    expect(isSpreadsheetExt("xlsx")).toBe(true);
+  });
+
+  it("recognizes xls", () => {
+    expect(isSpreadsheetExt("xls")).toBe(true);
+  });
+
+  it("recognizes csv", () => {
+    expect(isSpreadsheetExt("csv")).toBe(true);
+  });
+
+  it("is case-insensitive", () => {
+    expect(isSpreadsheetExt("XLSX")).toBe(true);
+    expect(isSpreadsheetExt("Csv")).toBe(true);
+  });
+
+  it("rejects docx", () => {
+    expect(isSpreadsheetExt("docx")).toBe(false);
+  });
+
+  it("rejects txt", () => {
+    expect(isSpreadsheetExt("txt")).toBe(false);
+  });
+
+  it("rejects empty string", () => {
+    expect(isSpreadsheetExt("")).toBe(false);
+  });
+});
+
 // ── Constants validation ──
 
 describe("constants", () => {
@@ -429,6 +464,13 @@ describe("constants", () => {
     expect(CONVERTIBLE_EXTENSIONS.has("docx")).toBe(true);
     expect(CONVERTIBLE_EXTENSIONS.has("xlsx")).toBe(true);
     expect(CONVERTIBLE_EXTENSIONS.size).toBe(2);
+  });
+
+  it("SPREADSHEET_EXTENSIONS has xlsx, xls, csv", () => {
+    expect(SPREADSHEET_EXTENSIONS.has("xlsx")).toBe(true);
+    expect(SPREADSHEET_EXTENSIONS.has("xls")).toBe(true);
+    expect(SPREADSHEET_EXTENSIONS.has("csv")).toBe(true);
+    expect(SPREADSHEET_EXTENSIONS.size).toBe(3);
   });
 });
 

@@ -135,6 +135,14 @@ export function isPdf(mimeType: string): boolean {
   return DOCUMENT_TYPES.includes(mimeType as (typeof DOCUMENT_TYPES)[number]);
 }
 
+/** Spreadsheet extensions for UI icon classification only (not conversion capability). */
+export const SPREADSHEET_EXTENSIONS = new Set(["xlsx", "xls", "csv"]);
+
+/** Check if an extension is a spreadsheet type (for icon selection). */
+export function isSpreadsheetExt(ext: string): boolean {
+  return SPREADSHEET_EXTENSIONS.has(ext.toLowerCase());
+}
+
 export type FileClassification = "binary" | "text" | "convertible" | "unsupported";
 
 /** Classify a file into one of four categories. */
