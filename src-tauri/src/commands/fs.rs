@@ -1,5 +1,5 @@
-use base64::Engine;
 use crate::models::{DirEntry, DirListing};
+use base64::Engine;
 
 const EXCLUDED_DIRS: &[&str] = &[
     "node_modules",
