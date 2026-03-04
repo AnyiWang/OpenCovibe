@@ -2,6 +2,7 @@
   import { page } from "$app/stores";
   import { goto, replaceState } from "$app/navigation";
   import { tick, onMount, untrack, getContext } from "svelte";
+  import { fade } from "svelte/transition";
   import { listen } from "@tauri-apps/api/event";
   import * as api from "$lib/api";
   import {
@@ -1040,15 +1041,19 @@
     };
   });
 
-  // Track whether user is near the bottom of the chat area
+  // Track whether user is near the bottom of the chat area (throttled via rAF)
+  let _scrollRaf = 0;
   function handleChatScroll() {
     if (_scrollRaf) return;
     _scrollRaf = requestAnimationFrame(() => {
       _scrollRaf = 0;
       if (!chatAreaRef) return;
-      const threshold = 100;
+      const prev = isNearBottom;
       isNearBottom =
-        chatAreaRef.scrollHeight - chatAreaRef.scrollTop - chatAreaRef.clientHeight < threshold;
+        chatAreaRef.scrollHeight - chatAreaRef.scrollTop - chatAreaRef.clientHeight < 100;
+      if (prev !== isNearBottom) {
+        dbg("chat", "isNearBottom changed", { isNearBottom });
+      }
     });
   }
 
@@ -3110,6 +3115,7 @@
       <!-- Scroll-to-bottom floating button -->
       {#if !isNearBottom && store.useStreamSession && !welcomeVisible}
         <button
+          transition:fade={{ duration: 150 }}
           class="absolute bottom-4 left-1/2 -translate-x-1/2 z-10 flex items-center justify-center w-9 h-9 rounded-full border border-primary/50 bg-primary/20 backdrop-blur-sm text-primary shadow-lg hover:bg-primary hover:text-primary-foreground transition-all duration-150"
           onclick={scrollToBottom}
           title={t("chat_scrollToBottom")}
