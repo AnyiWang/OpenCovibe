@@ -133,6 +133,8 @@ pub fn build_remote_claude_command(
             }
         }
     }
+    // Enable file checkpointing in SDK/non-interactive mode
+    claude_parts.push("CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING=1".to_string());
     // Escape claude binary path (preserves ~/... expansion)
     claude_parts.push(shell_escape_path(claude_bin));
     for arg in claude_args {

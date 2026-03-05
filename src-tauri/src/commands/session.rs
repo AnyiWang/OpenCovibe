@@ -1160,6 +1160,7 @@ async fn spawn_cli_process(
         cmd.current_dir(cwd)
             .env("PATH", &path_env)
             .env_remove("CLAUDECODE")
+            .env("CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING", "1")
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());

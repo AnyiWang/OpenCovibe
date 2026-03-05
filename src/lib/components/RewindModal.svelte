@@ -46,33 +46,6 @@
   let selectedFiles = $state<Set<string>>(new Set());
   let lastAutoSelectKey = ""; // one-shot guard: prevent initialCandidate prop bounce
   let hasFiles = $derived((dryRunResult?.filesChanged?.length ?? 0) > 0);
-  let checkpointDisabled = $state(false); // dryRun detected "not enabled"
-  let checkpointEnabling = $state(false); // calling updateCliConfig
-  let checkpointEnabled = $state(false); // enable succeeded
-  let enableReqId = 0; // guard for enable request staleness
-
-  function isCheckpointNotEnabled(err: unknown): boolean {
-    const msg = err instanceof Error ? err.message : typeof err === "string" ? err : "";
-    const hasSubject = /(rewind|checkpoint|file checkpoint|file rewinding)/i.test(msg);
-    const hasNegation = /(not enabled|disabled)/i.test(msg);
-    return hasSubject && hasNegation;
-  }
-
-  async function enableFileCheckpoints() {
-    const myId = ++enableReqId;
-    checkpointEnabling = true;
-    try {
-      await api.updateCliConfig({ fileCheckpointingEnabled: true });
-      if (myId !== enableReqId) return;
-      checkpointEnabled = true;
-      dbg("rewind-modal", "file checkpoints enabled");
-    } catch (e) {
-      if (myId !== enableReqId) return;
-      dbgWarn("rewind-modal", "failed to enable file checkpoints", e);
-    } finally {
-      if (myId === enableReqId) checkpointEnabling = false;
-    }
-  }
 
   // ── Reset on close ──
   $effect(() => {
@@ -86,10 +59,6 @@
       executeError = null;
       selectedFiles = new Set();
       lastAutoSelectKey = "";
-      checkpointDisabled = false;
-      checkpointEnabled = false;
-      enableReqId++;
-      checkpointEnabling = false;
     }
   });
 
@@ -114,10 +83,6 @@
     dryRunSkipped = false;
     executeError = null;
     selectedFiles = new Set();
-    checkpointDisabled = false;
-    checkpointEnabled = false;
-    enableReqId++;
-    checkpointEnabling = false;
     dbg("rewind-modal", "selectCheckpoint", { uuid: c.cliUuid, seq });
 
     try {
@@ -132,12 +97,6 @@
           error: result.error,
         });
         dryRunSkipped = true;
-      } else if (!result.canRewind && result.error && isCheckpointNotEnabled(result.error)) {
-        dbg("rewind-modal", "file checkpoints not enabled (resolve path)", {
-          error: result.error,
-        });
-        checkpointDisabled = true;
-        dryRunResult = result;
       } else {
         dryRunResult = result;
         // Initialize selectedFiles with all files checked
@@ -151,10 +110,6 @@
       if (isDryRunUnsupported(e)) {
         dbg("rewind-modal", "dryRun unsupported (exception path), allowing skip");
         dryRunSkipped = true;
-      } else if (isCheckpointNotEnabled(e)) {
-        dbg("rewind-modal", "file checkpoints not enabled (exception path)");
-        checkpointDisabled = true;
-        dryRunResult = { canRewind: false, error: String(e) };
       } else {
         dbgWarn("rewind-modal", "dryRun hard failure", e);
         dryRunResult = { canRewind: false, error: String(e) };
@@ -284,10 +239,6 @@
     dryRunSkipped = false;
     executeError = null;
     selectedFiles = new Set();
-    checkpointDisabled = false;
-    checkpointEnabled = false;
-    enableReqId++;
-    checkpointEnabling = false;
   }
 </script>
 
@@ -464,30 +415,6 @@
         <p class="text-sm text-destructive">
           {dryRunResult?.error ?? t("rewind_checkpointUnavailable")}
         </p>
-
-        {#if checkpointEnabled}
-          <p class="mt-3 text-xs text-emerald-500">{t("rewind_checkpointsEnabled")}</p>
-        {:else if checkpointDisabled}
-          <div
-            class="mt-4 w-full rounded-md border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-left"
-          >
-            <p class="text-sm font-medium text-amber-600 dark:text-amber-400">
-              {t("rewind_checkpointsNotEnabled")}
-            </p>
-            <p class="mt-1 text-xs text-amber-600/80 dark:text-amber-400/80">
-              {t("rewind_checkpointsNotEnabledHint")}
-            </p>
-            <button
-              type="button"
-              class="mt-3 rounded-md bg-amber-500 px-3 py-1.5 text-sm font-medium text-white transition-colors
-                hover:bg-amber-600 disabled:opacity-50 disabled:cursor-not-allowed"
-              onclick={enableFileCheckpoints}
-              disabled={checkpointEnabling}
-            >
-              {checkpointEnabling ? t("rewind_checkpointsEnabling") : t("rewind_checkpointsEnable")}
-            </button>
-          </div>
-        {/if}
       </div>
 
       <div class="flex justify-end">
