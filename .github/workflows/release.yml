@@ -77,3 +77,4 @@ jobs:
         with:
           files: artifacts/*
           tag_name: ${{ github.ref_name }}
+          generate_release_notes: true
