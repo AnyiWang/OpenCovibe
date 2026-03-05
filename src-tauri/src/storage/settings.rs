@@ -465,17 +465,8 @@ pub fn get_agent_settings(agent: &str) -> AgentSettings {
         .unwrap_or_else(|| AgentSettings::default_for(agent))
 }
 
-pub fn update_agent_settings(
-    agent: &str,
-    patch: serde_json::Value,
-) -> Result<AgentSettings, String> {
-    let mut all = load();
-    let mut settings = all
-        .agents
-        .get(agent)
-        .cloned()
-        .unwrap_or_else(|| AgentSettings::default_for(agent));
-
+/// Apply a JSON patch to AgentSettings (pure function, no I/O).
+fn apply_agent_patch(settings: &mut AgentSettings, patch: &serde_json::Value) {
     if let Some(model) = patch.get("model") {
         settings.model = model.as_str().map(|s| s.to_string());
     }
@@ -561,6 +552,26 @@ pub fn update_agent_settings(
     if let Some(v) = patch.get("no_session_persistence") {
         settings.no_session_persistence = if v.is_null() { None } else { v.as_bool() };
     }
+    if let Some(v) = patch.get("effort") {
+        settings.effort = if v.is_null() {
+            None
+        } else {
+            v.as_str().filter(|s| !s.is_empty()).map(|s| s.to_string())
+        };
+    }
+}
+
+pub fn update_agent_settings(
+    agent: &str,
+    patch: serde_json::Value,
+) -> Result<AgentSettings, String> {
+    let mut all = load();
+    let mut settings = all
+        .agents
+        .get(agent)
+        .cloned()
+        .unwrap_or_else(|| AgentSettings::default_for(agent));
+    apply_agent_patch(&mut settings, &patch);
     settings.updated_at = crate::models::now_iso();
     all.agents.insert(agent.to_string(), settings.clone());
     save(&all)?;
@@ -622,6 +633,31 @@ mod tests {
                 .map(|s| s.as_str()),
             Some("claude-sonnet-4-6")
         );
+    }
+
+    #[test]
+    fn apply_agent_patch_effort_set_and_clear() {
+        let mut s = AgentSettings::default_for("claude");
+        assert_eq!(s.effort, None);
+
+        // Set effort to "high"
+        apply_agent_patch(&mut s, &serde_json::json!({ "effort": "high" }));
+        assert_eq!(s.effort, Some("high".to_string()));
+
+        // Clear with empty string
+        apply_agent_patch(&mut s, &serde_json::json!({ "effort": "" }));
+        assert_eq!(s.effort, None);
+
+        // Set then clear with null
+        apply_agent_patch(&mut s, &serde_json::json!({ "effort": "low" }));
+        assert_eq!(s.effort, Some("low".to_string()));
+        apply_agent_patch(&mut s, &serde_json::json!({ "effort": null }));
+        assert_eq!(s.effort, None);
+
+        // Absent key doesn't touch existing value
+        apply_agent_patch(&mut s, &serde_json::json!({ "effort": "medium" }));
+        apply_agent_patch(&mut s, &serde_json::json!({ "model": "opus" }));
+        assert_eq!(s.effort, Some("medium".to_string()));
     }
 
     #[test]

@@ -33,6 +33,7 @@
   } from "$lib/utils/debug";
   import { dbg, dbgWarn, redactSensitive } from "$lib/utils/debug";
   import { splitPath } from "$lib/utils/format";
+  import { IS_WINDOWS } from "$lib/utils/platform";
   import { t, LOCALE_REGISTRY, currentLocale, switchLocale } from "$lib/i18n/index.svelte";
 
   // ── Tab state ──
@@ -260,7 +261,22 @@
     return "'" + s.replace(/'/g, "'\\''") + "'";
   }
 
+  function pwshQuote(s: string): string {
+    return "'" + s.replace(/'/g, "''") + "'";
+  }
+
   function buildCopyCommand(keyInfo: SshKeyInfo, host: string, user: string, port: number): string {
+    if (IS_WINDOWS) {
+      const pubPath = pwshQuote(keyInfo.key_path_expanded + ".pub");
+      const target = pwshQuote(`${user}@${host}`);
+      const remoteScript = pwshQuote(
+        "mkdir -p ~/.ssh && chmod 700 ~/.ssh && " +
+          "touch ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys && " +
+          'key=$(cat) && (grep -qxF "$key" ~/.ssh/authorized_keys 2>/dev/null || ' +
+          'echo "$key" >> ~/.ssh/authorized_keys)',
+      );
+      return `Get-Content -LiteralPath ${pubPath} -Raw | ssh -p ${port} ${target} ${remoteScript}`;
+    }
     const keyArg = shellQuote(keyInfo.key_path_expanded);
     const pubArg = shellQuote(keyInfo.key_path_expanded + ".pub");
     const target = `${shellQuote(user)}@${shellQuote(host)}`;
@@ -277,6 +293,11 @@
   }
 
   function buildRebuildPubKeyCommand(keyInfo: SshKeyInfo): string {
+    if (IS_WINDOWS) {
+      const keyPath = pwshQuote(keyInfo.key_path_expanded);
+      const pubPath = pwshQuote(keyInfo.key_path_expanded + ".pub");
+      return `ssh-keygen -y -f ${keyPath} | Out-File -Encoding ascii ${pubPath}`;
+    }
     const keyArg = shellQuote(keyInfo.key_path_expanded);
     return `ssh-keygen -y -f ${keyArg} > ${shellQuote(keyInfo.key_path_expanded + ".pub")}`;
   }
@@ -887,12 +908,12 @@
     loadCliInfo();
     // Detect current username + CLI keybindings source
     import("@tauri-apps/api/path")
-      .then((p) => p.homeDir())
-      .then((home) => {
-        // Extract username from home dir path (e.g. /Users/alice/ → alice)
+      .then(async (p) => {
+        const home = await p.homeDir();
         const parts = splitPath(home.replace(/[/\\]+$/, ""));
         currentUsername = parts[parts.length - 1] || "";
-        return api.readTextFile(`${home}.claude/keybindings.json`);
+        const absPath = await p.join(home, ".claude", "keybindings.json");
+        return api.readTextFile(absPath);
       })
       .then(() => {
         cliSource = "file";
@@ -1851,7 +1872,9 @@
               {t("settings_shortcuts_source", {
                 source:
                   cliSource === "file"
-                    ? "~/.claude/keybindings.json"
+                    ? IS_WINDOWS
+                      ? "%USERPROFILE%\\.claude\\keybindings.json"
+                      : "~/.claude/keybindings.json"
                     : t("settings_shortcuts_cliDefaults"),
               })}
             </p>
@@ -2041,7 +2064,13 @@
                       {t("settings_remote_sshKeyGenerating")}
                     </div>
                   {:else if sshKeyStep === "pub_missing" && sshKeyInfo}
-                    <p class="text-amber-400">{t("settings_remote_sshKeyPubMissing")}</p>
+                    <p class="text-amber-400">
+                      {t(
+                        IS_WINDOWS
+                          ? "settings_remote_sshKeyPubMissing_win"
+                          : "settings_remote_sshKeyPubMissing",
+                      )}
+                    </p>
                     <div class="flex items-center gap-2">
                       <code
                         class="flex-1 rounded bg-muted px-2 py-1.5 font-mono text-[11px] break-all select-all"
@@ -2078,7 +2107,13 @@
                     </p>
 
                     {#if remoteFormHost && remoteFormUser}
-                      <p class="text-muted-foreground">{t("settings_remote_sshKeyCopyCmd")}</p>
+                      <p class="text-muted-foreground">
+                        {t(
+                          IS_WINDOWS
+                            ? "settings_remote_sshKeyCopyCmd_win"
+                            : "settings_remote_sshKeyCopyCmd",
+                        )}
+                      </p>
                       <div class="flex items-center gap-2">
                         <code
                           class="flex-1 rounded bg-muted px-2 py-1.5 font-mono text-[11px] break-all select-all"
@@ -2128,7 +2163,13 @@
                       </div>
 
                       {#if sshKeyError && sshKeyStep === "has_key"}
-                        <p class="text-red-400 text-[11px]">{t("settings_remote_sshKeyFailed")}</p>
+                        <p class="text-red-400 text-[11px]">
+                          {t(
+                            IS_WINDOWS
+                              ? "settings_remote_sshKeyFailed_win"
+                              : "settings_remote_sshKeyFailed",
+                          )}
+                        </p>
                       {/if}
                     {:else}
                       <p class="text-muted-foreground text-[10px]">

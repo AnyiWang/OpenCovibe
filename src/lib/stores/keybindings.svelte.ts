@@ -402,9 +402,9 @@ export class KeybindingStore {
   /** Load CLI keybindings from ~/.claude/keybindings.json (best-effort). */
   async loadCliBindings(): Promise<void> {
     try {
-      const { homeDir } = await import("@tauri-apps/api/path");
+      const { homeDir, join } = await import("@tauri-apps/api/path");
       const home = await homeDir();
-      const absPath = `${home}.claude/keybindings.json`;
+      const absPath = await join(home, ".claude", "keybindings.json");
       const text = await api.readTextFile(absPath);
       const parsed = JSON.parse(text);
       dbg("keybindings", "loadCliBindings: parsed from file", {

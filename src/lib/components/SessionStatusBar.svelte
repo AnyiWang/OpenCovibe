@@ -52,6 +52,8 @@
     authSourceCategory,
     verbose = false,
     apiKeySource,
+    effort,
+    onEffortChange,
     onStatusClick,
   }: {
     run?: TaskRun | null;
@@ -97,6 +99,8 @@
     authSourceCategory?: string;
     verbose?: boolean;
     apiKeySource?: string;
+    effort?: string;
+    onEffortChange?: (effort: string) => void;
     onStatusClick?: () => void;
   } = $props();
 
@@ -352,6 +356,10 @@
           : "bg-emerald-500",
   );
 
+  let currentModelInfo = $derived(models.find((m) => m.value === model));
+  let effortLevels = $derived(currentModelInfo?.supportedEffortLevels ?? []);
+  let showEffort = $derived(currentModelInfo?.supportsEffort === true && effortLevels.length > 0);
+
   let modelLabel = $derived.by(() => {
     // Check platform models first, then CLI models
     const all = [...(platformModels ?? []), ...getCliModels()];
@@ -462,6 +470,9 @@
             onclick={toggleModelDropdown}
           >
             {modelLabel}
+            {#if showEffort && effort}
+              <span class="text-foreground/40 text-[10px]">{effort}</span>
+            {/if}
             <svg
               class="h-3 w-3 text-foreground/40"
               viewBox="0 0 24 24"
@@ -832,5 +843,31 @@
         </button>
       {/each}
     </div>
+    {#if showEffort && onEffortChange}
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <div
+        onkeydown={(e) => {
+          if (["Enter", " ", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.key)) {
+            e.stopPropagation();
+          }
+        }}
+      >
+        <div class="border-t mx-1 my-1"></div>
+        <div class="px-3 py-2">
+          <div class="text-[10px] text-muted-foreground mb-1.5">{t("effort_label")}</div>
+          <div class="flex gap-1">
+            {#each effortLevels as level}
+              <button
+                class="flex-1 rounded px-2 py-1 text-[11px] transition-colors
+                  {effort === level
+                  ? 'bg-primary text-primary-foreground font-medium'
+                  : 'bg-muted/50 text-muted-foreground hover:bg-accent'}"
+                onclick={() => onEffortChange(level)}>{level}</button
+              >
+            {/each}
+          </div>
+        </div>
+      </div>
+    {/if}
   </div>
 {/if}

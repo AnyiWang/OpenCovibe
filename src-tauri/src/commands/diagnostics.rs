@@ -57,6 +57,24 @@ pub async fn check_agent_cli(agent: String) -> Result<CliCheckResult, String> {
     })
 }
 
+/// Platform-aware message for missing SSH binaries.
+fn ssh_not_found_msg(binary: &str) -> String {
+    #[cfg(windows)]
+    {
+        format!(
+            "{} not found. Install OpenSSH: Settings → Apps → Optional Features → OpenSSH Client.",
+            binary
+        )
+    }
+    #[cfg(not(windows))]
+    {
+        format!(
+            "{} not found. Please install OpenSSH (e.g. apt install openssh-client / brew install openssh).",
+            binary
+        )
+    }
+}
+
 /// Test SSH connectivity and Claude CLI availability on a remote host.
 /// Uses async tokio::process::Command with timeout (audit #8).
 #[tauri::command]
@@ -68,6 +86,16 @@ pub async fn test_remote_host(
     remote_claude_path: Option<String>,
 ) -> Result<RemoteTestResult, String> {
     use tokio::process::Command as TokioCommand;
+
+    if crate::agent::claude_stream::which_binary("ssh").is_none() {
+        return Ok(RemoteTestResult {
+            ssh_ok: false,
+            cli_found: false,
+            cli_path: None,
+            cli_version: None,
+            error: Some(ssh_not_found_msg("ssh")),
+        });
+    }
 
     let port = port.unwrap_or(22);
     let target = format!("{}@{}", user, host);
@@ -1089,6 +1117,10 @@ pub fn check_ssh_key() -> Result<SshKeyInfo, String> {
 /// Returns SshKeyInfo for the newly created key.
 #[tauri::command]
 pub fn generate_ssh_key() -> Result<SshKeyInfo, String> {
+    if crate::agent::claude_stream::which_binary("ssh-keygen").is_none() {
+        return Err(ssh_not_found_msg("ssh-keygen"));
+    }
+
     let ssh_dir = expand_local_tilde("~/.ssh");
     let key_path = expand_local_tilde("~/.ssh/id_ed25519");
 

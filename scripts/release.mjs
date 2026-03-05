@@ -92,9 +92,23 @@ execSync(`git tag ${tag}`, { stdio: "inherit" });
 console.log(`\n  ✓ Committed and tagged ${tag}`);
 console.log(`\n  Next steps:`);
 console.log(`    git push && git push origin ${tag}`);
+console.log(`\n  Build:`);
 console.log(
-  `    cargo tauri build --target universal-apple-darwin`,
+  `    cargo tauri build --target universal-apple-darwin                    # macOS dmg`,
 );
 console.log(
-  `    gh release create ${tag} src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg --title "${tag}"`,
+  `    cargo tauri build --target x86_64-pc-windows-msvc                   # Windows exe (x64)`,
+);
+console.log(`\n  Release:`);
+console.log(
+  `    gh release create ${tag} \\`,
+);
+console.log(
+  `      src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg \\`,
+);
+console.log(
+  `      src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe \\`,
+);
+console.log(
+  `      --title "${tag}"`,
 );

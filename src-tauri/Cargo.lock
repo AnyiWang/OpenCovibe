@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "OpenCovibe"
-version = "0.1.16"
+version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -31,6 +31,7 @@ dependencies = [
  "tokio-util",
  "url",
  "uuid",
+ "windows",
 ]
 
 [[package]]

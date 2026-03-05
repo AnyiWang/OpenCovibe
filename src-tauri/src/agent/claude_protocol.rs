@@ -116,6 +116,8 @@ pub struct ProtocolState {
     pending_slash_command: Option<String>,
     /// Parsing statistics — accumulated per-session, never reset.
     pub stats: ParserStats,
+    /// Log the first stream_event unwrap only (avoid log spam).
+    seen_stream_event_envelope: bool,
     /// When true, map_event panics on unknown/invalid events instead of degrading gracefully.
     /// Only available in test builds — production always degrades.
     #[cfg(test)]
@@ -144,6 +146,7 @@ impl ProtocolState {
             seen_first_init: false,
             pending_slash_command: None,
             stats: ParserStats::default(),
+            seen_stream_event_envelope: false,
             #[cfg(test)]
             strict_mode: false,
         }
@@ -161,15 +164,48 @@ impl ProtocolState {
     /// Map a single raw Claude CLI JSON event into zero or more `BusEvent`s.
     pub fn map_event(&mut self, run_id: &str, raw: &Value) -> Vec<BusEvent> {
         let mut events = Vec::new();
-        let event_type = raw.get("type").and_then(|v| v.as_str()).unwrap_or("");
 
-        // Extract parent_tool_use_id for subagent tracking.
-        // Non-null = event belongs to a subagent spawned by a Task tool with this ID.
-        let parent_tool_use_id = raw
-            .get("parent_tool_use_id")
-            .and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty())
-            .map(|s| s.to_string());
+        // Unwrap stream_event envelope: CLI wraps API streaming events as
+        // {type: "stream_event", event: {type: "content_block_delta", ...}}
+        let (raw, parent_tool_use_id) = if raw.get("type").and_then(|v| v.as_str())
+            == Some("stream_event")
+        {
+            let inner = raw.get("event");
+            if let Some(inner_val) = inner.filter(|v| {
+                v.get("type")
+                    .and_then(|t| t.as_str())
+                    .is_some_and(|s| !s.is_empty())
+            }) {
+                if !self.seen_stream_event_envelope {
+                    log::debug!("[protocol] unwrapping stream_event envelope (first occurrence)");
+                    self.seen_stream_event_envelope = true;
+                }
+                let ptui = inner_val
+                    .get("parent_tool_use_id")
+                    .or_else(|| raw.get("parent_tool_use_id"))
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string());
+                (inner_val, ptui)
+            } else {
+                // Malformed stream_event: keep outer → falls through to BusEvent::Raw
+                let ptui = raw
+                    .get("parent_tool_use_id")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string());
+                (raw, ptui)
+            }
+        } else {
+            let ptui = raw
+                .get("parent_tool_use_id")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string());
+            (raw, ptui)
+        };
+
+        let event_type = raw.get("type").and_then(|v| v.as_str()).unwrap_or("");
 
         match event_type {
             // ── system init ──
@@ -517,6 +553,26 @@ impl ProtocolState {
                         output,
                         data: raw.clone(),
                     });
+                } else if subtype == "local_command_output" {
+                    // Slash command output via system event (newer CLI path).
+                    // Always clear pending — even if content is empty, the CLI
+                    // has acknowledged the command, so no fallback hint is needed.
+                    self.pending_slash_command = None;
+                    let content = raw
+                        .get("content")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    if !content.is_empty() {
+                        log::debug!(
+                            "[protocol] system/local_command_output ({} chars)",
+                            content.len()
+                        );
+                        events.push(BusEvent::CommandOutput {
+                            run_id: run_id.to_string(),
+                            content,
+                        });
+                    }
                 } else if !subtype.is_empty() {
                     // Unknown system subtype — wrap as Raw for forward compatibility
                     log::debug!("[protocol] unknown system subtype: {}", subtype);
@@ -1696,6 +1752,75 @@ mod tests {
     }
 
     #[test]
+    fn test_system_local_command_output() {
+        let mut ps = ProtocolState::new(false);
+        ps.set_pending_slash_command(Some("/context".to_string()));
+
+        // CLI sends system/local_command_output with content
+        let raw = json!({
+            "type": "system",
+            "subtype": "local_command_output",
+            "content": "## Context Usage\n\n**Model:** opus"
+        });
+        let events = ps.map_event(RUN, &raw);
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            BusEvent::CommandOutput { content, .. } => {
+                assert!(content.contains("Context Usage"));
+            }
+            other => panic!("expected CommandOutput, got {:?}", other),
+        }
+
+        // Behavior assertion: subsequent result should NOT emit a fallback hint
+        // because pending_slash_command was already cleared by local_command_output.
+        let result = json!({
+            "type": "result",
+            "subtype": "success",
+            "usage": {"input_tokens": 10, "output_tokens": 5},
+            "cost_usd": 0.001
+        });
+        let result_events = ps.map_event(RUN, &result);
+        // Should be UsageUpdate + RunState(idle), no extra CommandOutput hint
+        assert!(
+            !result_events
+                .iter()
+                .any(|e| matches!(e, BusEvent::CommandOutput { .. })),
+            "result should not emit fallback hint after local_command_output"
+        );
+    }
+
+    #[test]
+    fn test_system_local_command_output_empty_content_still_clears_pending() {
+        let mut ps = ProtocolState::new(false);
+        ps.set_pending_slash_command(Some("/context".to_string()));
+
+        // CLI sends system/local_command_output with empty content (edge case)
+        let raw = json!({
+            "type": "system",
+            "subtype": "local_command_output",
+            "content": ""
+        });
+        let events = ps.map_event(RUN, &raw);
+        // No CommandOutput emitted for empty content
+        assert_eq!(events.len(), 0);
+
+        // But pending_slash_command IS cleared → no fallback hint on result
+        let result = json!({
+            "type": "result",
+            "subtype": "success",
+            "usage": {"input_tokens": 10, "output_tokens": 5},
+            "cost_usd": 0.001
+        });
+        let result_events = ps.map_event(RUN, &result);
+        assert!(
+            !result_events
+                .iter()
+                .any(|e| matches!(e, BusEvent::CommandOutput { .. })),
+            "empty local_command_output should still prevent fallback hint"
+        );
+    }
+
+    #[test]
     fn test_result_success() {
         let mut ps = ProtocolState::new(false);
         let raw = json!({
@@ -2385,5 +2510,79 @@ mod tests {
             validate_strict(ev);
         }
         assert_eq!(ps.stats.invalid_tool_count, 0);
+    }
+
+    // ── stream_event envelope unwrapping ──
+
+    #[test]
+    fn thinking_delta_inside_stream_event() {
+        let mut ps = ProtocolState::new(false);
+        let raw = json!({
+            "type": "stream_event",
+            "event": {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": { "type": "thinking_delta", "thinking": "Let me think..." }
+            }
+        });
+        let events = ps.map_event(RUN, &raw);
+        assert_eq!(events.len(), 1);
+        assert!(
+            matches!(&events[0], BusEvent::ThinkingDelta { text, .. } if text == "Let me think...")
+        );
+    }
+
+    #[test]
+    fn message_delta_inside_stream_event() {
+        let mut ps = ProtocolState::new(false);
+        let raw = json!({
+            "type": "stream_event",
+            "event": {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": { "type": "text_delta", "text": "Hello" }
+            }
+        });
+        let events = ps.map_event(RUN, &raw);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(&events[0], BusEvent::MessageDelta { text, .. } if text == "Hello"));
+    }
+
+    #[test]
+    fn stream_event_preserves_parent_tool_use_id() {
+        let mut ps = ProtocolState::new(false);
+        let raw = json!({
+            "type": "stream_event",
+            "event": {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": { "type": "text_delta", "text": "sub" },
+                "parent_tool_use_id": "tu-parent"
+            }
+        });
+        let events = ps.map_event(RUN, &raw);
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            BusEvent::MessageDelta {
+                parent_tool_use_id, ..
+            } => {
+                assert_eq!(parent_tool_use_id.as_deref(), Some("tu-parent"));
+            }
+            other => panic!("expected MessageDelta, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn malformed_stream_event_falls_to_raw() {
+        let mut ps = ProtocolState::new(false);
+        let raw = json!({
+            "type": "stream_event",
+            "event": { "no_type_field": true }
+        });
+        let events = ps.map_event(RUN, &raw);
+        // The outer stream_event has no matching branch → falls to Raw
+        // (the malformed inner doesn't unwrap, so outer type "stream_event" is unknown)
+        assert_eq!(events.len(), 1);
+        assert!(matches!(&events[0], BusEvent::Raw { .. }));
     }
 }

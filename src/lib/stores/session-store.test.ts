@@ -1493,13 +1493,13 @@ describe("SessionStore reducer", () => {
       expect(subMsg.content).toBe("The command ran successfully.");
     });
 
-    it("discards subagent message_delta (does not affect streamingText)", () => {
-      // Subagent message_delta with parent_tool_use_id should be discarded
+    it("subagent message_delta does not affect main streamingText", () => {
+      // Subagent message_delta routes to subTimeline, not main streamingText
       expect(store.streamingText).toBe("");
     });
 
-    it("discards subagent thinking_delta (does not affect thinkingText)", () => {
-      // Subagent thinking_delta with parent_tool_use_id should be discarded
+    it("subagent thinking_delta does not affect main thinkingText", () => {
+      // Subagent thinking_delta routes to subTimeline, not main thinkingText
       expect(store.thinkingText).toBe("");
     });
 
@@ -3371,6 +3371,112 @@ describe("SessionStore reducer", () => {
         const ms = store.applyEventBatch(simpleChatEvents as BusEvent[]);
         expect(typeof ms).toBe("number");
         expect(ms).toBeGreaterThanOrEqual(0);
+      });
+    });
+
+    // ── Thinking text persistence ──
+
+    describe("thinking text persistence", () => {
+      it("persists thinkingText on main session message_complete", () => {
+        const s = new SessionStore();
+        s.run = makeRun("run-think-1");
+        s.phase = "running";
+        s.applyEventBatch([
+          {
+            type: "session_init",
+            run_id: "run-think-1",
+            model: "claude-opus-4-6",
+            tools: [],
+            cwd: "/",
+            slash_commands: [],
+            mcp_servers: [],
+          } as BusEvent,
+          {
+            type: "run_state",
+            run_id: "run-think-1",
+            state: "running",
+          } as BusEvent,
+          {
+            type: "thinking_delta",
+            run_id: "run-think-1",
+            text: "Let me reason about this...",
+          } as BusEvent,
+          {
+            type: "thinking_delta",
+            run_id: "run-think-1",
+            text: " Step 2.",
+          } as BusEvent,
+          {
+            type: "message_complete",
+            run_id: "run-think-1",
+            message_id: "msg-think-1",
+            text: "Here is my answer.",
+            ts: new Date().toISOString(),
+          } as BusEvent,
+        ]);
+
+        const assistant = s.timeline.find((e) => e.kind === "assistant" && e.id === "msg-think-1");
+        expect(assistant).toBeDefined();
+        expect(assistant!.thinkingText).toBe("Let me reason about this... Step 2.");
+      });
+
+      it("persists thinkingText on subagent message_complete", () => {
+        const s = new SessionStore();
+        s.run = makeRun("run-think-2");
+        s.phase = "running";
+        s.applyEventBatch([
+          {
+            type: "session_init",
+            run_id: "run-think-2",
+            model: "claude-opus-4-6",
+            tools: [],
+            cwd: "/",
+            slash_commands: [],
+            mcp_servers: [],
+          } as BusEvent,
+          {
+            type: "run_state",
+            run_id: "run-think-2",
+            state: "running",
+          } as BusEvent,
+          // Parent tool start
+          {
+            type: "tool_start",
+            run_id: "run-think-2",
+            tool_use_id: "tu-parent",
+            tool_name: "Task",
+            input: {},
+            ts: new Date().toISOString(),
+          } as BusEvent,
+          // Subagent thinking delta
+          {
+            type: "thinking_delta",
+            run_id: "run-think-2",
+            text: "Sub thinking...",
+            parent_tool_use_id: "tu-parent",
+          } as BusEvent,
+          // Subagent message complete
+          {
+            type: "message_complete",
+            run_id: "run-think-2",
+            message_id: "msg-sub-1",
+            text: "Subagent answer.",
+            parent_tool_use_id: "tu-parent",
+            ts: new Date().toISOString(),
+          } as BusEvent,
+        ]);
+
+        // Find the parent tool entry
+        const parentTool = s.timeline.find((e) => e.kind === "tool" && e.id === "tu-parent") as
+          | Extract<TimelineEntry, { kind: "tool" }>
+          | undefined;
+        expect(parentTool).toBeDefined();
+        expect(parentTool!.subTimeline).toBeDefined();
+        const subAssistant = parentTool!.subTimeline!.find(
+          (e) => e.kind === "assistant" && e.id === "msg-sub-1",
+        );
+        expect(subAssistant).toBeDefined();
+        expect(subAssistant!.thinkingText).toBe("Sub thinking...");
       });
     });
   });

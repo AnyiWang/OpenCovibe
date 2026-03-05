@@ -223,6 +223,48 @@ describe("mergeFileEntries", () => {
     expect(result[0].action).toBe("edit");
   });
 
+  it("merges entries with mixed separators", () => {
+    const result = mergeFileEntries(
+      { entries: [{ path: "C:\\Users\\me\\file.ts", action: "read" }], hasTemporalOrder: true },
+      { entries: [{ path: "C:/Users/me/file.ts", action: "edit" }], hasTemporalOrder: true },
+    );
+    expect(result).toHaveLength(1);
+    expect(result[0].action).toBe("edit");
+  });
+
+  it("merges entries with case-insensitive Windows paths", () => {
+    const result = mergeFileEntries(
+      { entries: [{ path: "C:/Foo/Bar.ts", action: "read" }], hasTemporalOrder: true },
+      { entries: [{ path: "c:/foo/bar.ts", action: "edit" }], hasTemporalOrder: true },
+    );
+    expect(result).toHaveLength(1);
+    expect(result[0].action).toBe("edit");
+  });
+
+  it("preserves case sensitivity for Unix paths", () => {
+    const result = mergeFileEntries(
+      { entries: [{ path: "/home/user/Foo.ts", action: "read" }], hasTemporalOrder: true },
+      { entries: [{ path: "/home/user/foo.ts", action: "edit" }], hasTemporalOrder: true },
+    );
+    expect(result).toHaveLength(2);
+  });
+
+  it("merges UNC paths case-insensitively", () => {
+    const result = mergeFileEntries(
+      { entries: [{ path: "\\\\Server\\Share\\File.ts", action: "read" }], hasTemporalOrder: true },
+      { entries: [{ path: "//server/share/file.ts", action: "edit" }], hasTemporalOrder: true },
+    );
+    expect(result).toHaveLength(1);
+  });
+
+  it("normalizes extended-length prefix to drive letter", () => {
+    const result = mergeFileEntries(
+      { entries: [{ path: "\\\\?\\C:\\foo\\bar.ts", action: "read" }], hasTemporalOrder: true },
+      { entries: [{ path: "C:/foo/bar.ts", action: "edit" }], hasTemporalOrder: true },
+    );
+    expect(result).toHaveLength(1);
+  });
+
   it("hasTemporalOrder: false sources sort to bottom", () => {
     const temporal: FileEntry[] = [{ path: "a.ts", action: "read" }];
     const persisted: FileEntry[] = [{ path: "b.ts", action: "persisted" }];

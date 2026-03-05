@@ -154,7 +154,9 @@ pub fn read_task_output(path: String) -> Result<String, String> {
         return Err("Access denied: not a task output file".into());
     }
 
-    // Prefix check: must be in temp directory (PathBuf::starts_with is path-level, not string-level)
+    // Prefix check: must be in temp directory (PathBuf::starts_with is path-level, not string-level).
+    // Both `canonical` and `temp_dir` are canonicalized, so short/long path differences on Windows
+    // are already resolved. WSL paths (/tmp/...) are NOT supported — this is a native Windows app.
     let temp_dir =
         std::fs::canonicalize(std::env::temp_dir()).unwrap_or_else(|_| std::env::temp_dir());
     #[cfg(target_os = "macos")]

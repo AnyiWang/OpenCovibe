@@ -281,25 +281,35 @@ pub fn fallback_cli_info() -> CliInfo {
                 value: "default".to_string(),
                 display_name: "Default (recommended)".to_string(),
                 description: "Sonnet 4.5".to_string(),
-                supports_effort: None,
-                supported_effort_levels: None,
-                supports_adaptive_thinking: None,
+                supports_effort: Some(true),
+                supported_effort_levels: Some(vec![
+                    "low".into(),
+                    "medium".into(),
+                    "high".into(),
+                    "max".into(),
+                ]),
+                supports_adaptive_thinking: Some(true),
             },
             CliModelInfo {
                 value: "opus".to_string(),
                 display_name: "Opus".to_string(),
                 description: "Opus 4.6".to_string(),
-                supports_effort: None,
-                supported_effort_levels: None,
-                supports_adaptive_thinking: None,
+                supports_effort: Some(true),
+                supported_effort_levels: Some(vec![
+                    "low".into(),
+                    "medium".into(),
+                    "high".into(),
+                    "max".into(),
+                ]),
+                supports_adaptive_thinking: Some(true),
             },
             CliModelInfo {
                 value: "haiku".to_string(),
                 display_name: "Haiku".to_string(),
                 description: "Haiku 4.5".to_string(),
-                supports_effort: None,
+                supports_effort: Some(false),
                 supported_effort_levels: None,
-                supports_adaptive_thinking: None,
+                supports_adaptive_thinking: Some(false),
             },
         ],
         commands: vec![],
@@ -307,5 +317,26 @@ pub fn fallback_cli_info() -> CliInfo {
         account: None,
         current_model: read_claude_settings_model(),
         fetched_at: now_iso(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fallback_cli_info_effort_metadata() {
+        let info = fallback_cli_info();
+        let find = |v: &str| info.models.iter().find(|m| m.value == v).unwrap();
+
+        assert_eq!(find("default").supports_effort, Some(true));
+        assert!(find("default")
+            .supported_effort_levels
+            .as_ref()
+            .unwrap()
+            .contains(&"medium".to_string()));
+        assert_eq!(find("opus").supports_effort, Some(true));
+        assert_eq!(find("haiku").supports_effort, Some(false));
+        assert!(find("haiku").supported_effort_levels.is_none());
     }
 }

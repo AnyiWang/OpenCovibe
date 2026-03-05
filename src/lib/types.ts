@@ -194,6 +194,7 @@ export interface HookEvent {
   task_subject?: string;
   model?: string;
   session_id?: string;
+  worktree?: { name: string; path: string; branch: string; originalRepoDir: string };
 }
 
 export interface TokenUsage {
@@ -546,7 +547,7 @@ export interface TeamTask {
   id: string;
   subject: string;
   description: string;
-  activeForm: string;
+  activeForm?: string;
   owner: string;
   status: string;
   blocks: string[];
@@ -1014,7 +1015,8 @@ export type HookEventType =
   | "TeammateIdle"
   | "TaskCompleted"
   | "WorktreeCreate"
-  | "WorktreeRemove";
+  | "WorktreeRemove"
+  | "InstructionsLoaded";
 
 export interface HookHandler {
   type: "command" | "prompt";

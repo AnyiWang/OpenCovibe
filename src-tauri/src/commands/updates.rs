@@ -77,18 +77,20 @@ fn is_newer(current: &str, latest: &str) -> bool {
     }
 }
 
-fn select_download_url(body: &serde_json::Value) -> String {
+/// Platform-independent: select download URL given preferred extensions.
+fn select_download_url_for_exts(body: &serde_json::Value, preferred_exts: &[&str]) -> String {
     let html_url = body["html_url"].as_str().unwrap_or("").to_string();
     let Some(assets) = body["assets"].as_array() else {
         return html_url;
     };
 
-    // Prefer direct macOS installer link for one-click download.
-    for asset in assets {
-        let name = asset["name"].as_str().unwrap_or("").to_ascii_lowercase();
-        if name.ends_with(".dmg") {
-            if let Some(url) = asset["browser_download_url"].as_str() {
-                return url.to_string();
+    for ext in preferred_exts {
+        for asset in assets {
+            let name = asset["name"].as_str().unwrap_or("").to_ascii_lowercase();
+            if name.ends_with(ext) {
+                if let Some(url) = asset["browser_download_url"].as_str() {
+                    return url.to_string();
+                }
             }
         }
     }
@@ -101,6 +103,17 @@ fn select_download_url(body: &serde_json::Value) -> String {
     }
 
     html_url
+}
+
+fn select_download_url(body: &serde_json::Value) -> String {
+    #[cfg(target_os = "macos")]
+    let exts: &[&str] = &[".dmg"];
+    #[cfg(target_os = "windows")]
+    let exts: &[&str] = &[".msi", ".exe"];
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let exts: &[&str] = &[".appimage", ".deb"];
+
+    select_download_url_for_exts(body, exts)
 }
 
 // ── Tauri command ──
@@ -237,7 +250,57 @@ mod tests {
                 { "name": "OpenCovibe_0.1.14_universal.dmg", "browser_download_url": "https://example.com/a.dmg" }
             ]
         });
-        assert_eq!(select_download_url(&body), "https://example.com/a.dmg");
+        assert_eq!(
+            select_download_url_for_exts(&body, &[".dmg"]),
+            "https://example.com/a.dmg"
+        );
+    }
+
+    #[test]
+    fn test_select_download_url_prefers_msi() {
+        let body = json!({
+            "html_url": "https://github.com/AnyiWang/OpenCovibe/releases/tag/v0.1.14",
+            "assets": [
+                { "name": "OpenCovibe-0.1.14.zip", "browser_download_url": "https://example.com/a.zip" },
+                { "name": "OpenCovibe_0.1.14_x64-setup.msi", "browser_download_url": "https://example.com/a.msi" },
+                { "name": "OpenCovibe_0.1.14_x64.exe", "browser_download_url": "https://example.com/a.exe" }
+            ]
+        });
+        // .msi preferred over .exe
+        assert_eq!(
+            select_download_url_for_exts(&body, &[".msi", ".exe"]),
+            "https://example.com/a.msi"
+        );
+    }
+
+    #[test]
+    fn test_select_download_url_exe_fallback() {
+        // .msi not present → should fall back to .exe
+        let body = json!({
+            "html_url": "https://github.com/AnyiWang/OpenCovibe/releases/tag/v0.1.14",
+            "assets": [
+                { "name": "OpenCovibe-0.1.14.zip", "browser_download_url": "https://example.com/a.zip" },
+                { "name": "OpenCovibe_0.1.14_x64.exe", "browser_download_url": "https://example.com/a.exe" }
+            ]
+        });
+        assert_eq!(
+            select_download_url_for_exts(&body, &[".msi", ".exe"]),
+            "https://example.com/a.exe"
+        );
+    }
+
+    #[test]
+    fn test_select_download_url_prefers_appimage() {
+        let body = json!({
+            "html_url": "https://github.com/AnyiWang/OpenCovibe/releases/tag/v0.1.14",
+            "assets": [
+                { "name": "OpenCovibe_0.1.14.AppImage", "browser_download_url": "https://example.com/a.AppImage" }
+            ]
+        });
+        assert_eq!(
+            select_download_url_for_exts(&body, &[".appimage", ".deb"]),
+            "https://example.com/a.AppImage"
+        );
     }
 
     #[test]
@@ -247,7 +310,7 @@ mod tests {
             "assets": []
         });
         assert_eq!(
-            select_download_url(&body),
+            select_download_url_for_exts(&body, &[".dmg"]),
             "https://github.com/AnyiWang/OpenCovibe/releases/tag/v0.1.14"
         );
     }

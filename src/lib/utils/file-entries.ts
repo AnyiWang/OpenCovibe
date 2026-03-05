@@ -91,9 +91,26 @@ export function extractFilesFromPersisted(files: unknown[]): FileEntry[] {
   });
 }
 
-/** Lightweight path normalization: deduplicate /, strip ./ prefix */
+/** Lightweight path normalization: deduplicate /, strip ./ prefix, handle Windows paths */
 function normalizePath(p: string): string {
-  return p.replace(/\/+/g, "/").replace(/^\.\//, "");
+  let n = p.replaceAll("\\", "/");
+  // Strip extended-length prefix before collapsing slashes: //?/C:/ → C:/
+  if (n.startsWith("//?/") && /^\/\/\?\/[A-Za-z]:\//.test(n)) {
+    n = n.slice(4);
+  }
+  // Detect UNC path (//server/share) before collapsing duplicate slashes
+  const isUNC = /^\/\/[^/]/.test(n);
+  n = n.replace(/\/+/g, "/").replace(/^\.\//, "");
+  // Restore UNC prefix if collapsed to single slash
+  if (isUNC && n.startsWith("/") && !n.startsWith("//")) {
+    n = "/" + n;
+  }
+  // Windows paths (drive letter or UNC) are case-insensitive: lowercase for dedup.
+  // Unix paths are NOT lowercased (ext4/APFS are case-sensitive).
+  if (/^[A-Za-z]:\//.test(n) || n.startsWith("//")) {
+    n = n.toLowerCase();
+  }
+  return n;
 }
 
 /** Merge priority: write > edit > read > persisted */

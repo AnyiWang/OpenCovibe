@@ -58,6 +58,15 @@ pub fn home_dir() -> Option<String> {
     {
         std::env::var("HOME")
             .or_else(|_| std::env::var("USERPROFILE"))
+            .or_else(|_| {
+                let drive = std::env::var("HOMEDRIVE").unwrap_or_default();
+                let path = std::env::var("HOMEPATH").unwrap_or_default();
+                if !drive.is_empty() && !path.is_empty() {
+                    Ok(format!("{}{}", drive, path))
+                } else {
+                    Err(std::env::VarError::NotPresent)
+                }
+            })
             .ok()
     }
 }

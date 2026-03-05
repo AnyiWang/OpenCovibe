@@ -80,7 +80,6 @@ fn mime_from_extension(ext: &str) -> &'static str {
 
 /// Build ClipboardFileInfo entries from an iterator of file paths.
 /// Shared logic for macOS and Linux clipboard reading.
-#[cfg(not(windows))]
 fn paths_to_clipboard_infos(paths: impl Iterator<Item = String>) -> Vec<ClipboardFileInfo> {
     let mut results = Vec::new();
     for path_str in paths {
@@ -234,10 +233,60 @@ return paths as text
         Ok(vec![])
     }
 
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    #[cfg(windows)]
+    {
+        read_clipboard_files_windows()
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
     {
         log::warn!("[clipboard] file paste is not yet supported on this platform");
         Err("Clipboard file paste is not yet supported on this platform".into())
+    }
+}
+
+#[cfg(windows)]
+fn read_clipboard_files_windows() -> Result<Vec<ClipboardFileInfo>, String> {
+    use windows::Win32::System::DataExchange::{CloseClipboard, GetClipboardData, OpenClipboard};
+    use windows::Win32::System::Ole::CF_HDROP;
+    use windows::Win32::UI::Shell::{DragQueryFileW, HDROP};
+
+    unsafe {
+        if OpenClipboard(None).is_err() {
+            log::debug!("[clipboard] failed to open clipboard");
+            return Ok(vec![]);
+        }
+        // RAII guard: CloseClipboard always called
+        struct ClipGuard;
+        impl Drop for ClipGuard {
+            fn drop(&mut self) {
+                unsafe {
+                    let _ = CloseClipboard();
+                }
+            }
+        }
+        let _guard = ClipGuard;
+
+        let handle = match GetClipboardData(CF_HDROP.0 as u32) {
+            Ok(h) if !h.0.is_null() => h,
+            _ => {
+                log::debug!("[clipboard] no CF_HDROP data on clipboard");
+                return Ok(vec![]);
+            }
+        };
+        let hdrop = HDROP(handle.0 as _);
+        let count = DragQueryFileW(hdrop, 0xFFFF_FFFF, None);
+        log::debug!("[clipboard] CF_HDROP file count: {}", count);
+
+        let mut paths = Vec::new();
+        for i in 0..count {
+            let len = DragQueryFileW(hdrop, i, None) as usize;
+            let mut buf = vec![0u16; len + 1];
+            DragQueryFileW(hdrop, i, Some(&mut buf));
+            let path = String::from_utf16_lossy(&buf[..len]);
+            paths.push(path);
+        }
+        Ok(paths_to_clipboard_infos(paths.into_iter()))
     }
 }
 

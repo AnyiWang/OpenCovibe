@@ -631,6 +631,22 @@ export class SessionStore {
     }
   }
 
+  /** Extract thinkingText from a parent tool's synthetic streaming entry (before removal). */
+  private _extractSubTimelineThinking(
+    parentToolUseId: string,
+    ctx: ReduceCtx | null,
+  ): string | undefined {
+    const tl = ctx ? ctx.tl : this.timeline;
+    const pIdx = this._findParentToolIdx(tl, parentToolUseId);
+    if (pIdx < 0) return undefined;
+    const parent = tl[pIdx] as Extract<TimelineEntry, { kind: "tool" }>;
+    const sub = parent.subTimeline ?? [];
+    const syntheticId = `__sub_stream_${parentToolUseId}`;
+    const entry = sub.find((e) => e.kind === "assistant" && e.id === syntheticId);
+    if (!entry || entry.kind !== "assistant") return undefined;
+    return entry.thinkingText;
+  }
+
   /** Remove the synthetic streaming entry from a parent tool's subTimeline (called on message_complete). */
   private _removeSubTimelineStreamingEntry(parentToolUseId: string, ctx: ReduceCtx | null): void {
     const tl = ctx ? ctx.tl : this.timeline;
@@ -1966,15 +1982,54 @@ export class SessionStore {
       }
 
       case "message_complete": {
-        // Always clean up synthetic streaming entry (even on dedup/double-replay)
-        if (ev.parent_tool_use_id) {
-          this._removeSubTimelineStreamingEntry(ev.parent_tool_use_id, ctx);
+        // Dedup guard — but always clean up synthetic entry first to prevent leaks
+        if (getSeenMsg().has(ev.message_id)) {
+          if (ev.parent_tool_use_id)
+            this._removeSubTimelineStreamingEntry(ev.parent_tool_use_id, ctx);
+          break;
         }
-        if (getSeenMsg().has(ev.message_id)) break;
         getSeenMsg().add(ev.message_id);
-        // Also check timeline for duplicates (in case of replay)
-        if (getTl().some((e) => e.kind === "assistant" && e.id === ev.message_id)) break;
+        if (getTl().some((e) => e.kind === "assistant" && e.id === ev.message_id)) {
+          if (ev.parent_tool_use_id)
+            this._removeSubTimelineStreamingEntry(ev.parent_tool_use_id, ctx);
+          break;
+        }
 
+        // Subagent path: extract thinking → remove synthetic → create entry → append
+        if (ev.parent_tool_use_id) {
+          const subThinking = this._extractSubTimelineThinking(ev.parent_tool_use_id, ctx);
+          this._removeSubTimelineStreamingEntry(ev.parent_tool_use_id, ctx);
+
+          const entry: TimelineEntry = {
+            kind: "assistant",
+            id: ev.message_id,
+            content: ev.text,
+            ts: eventTs(ev),
+            ...(ev.model ? { model: ev.model } : {}),
+            ...(subThinking ? { thinkingText: subThinking } : {}),
+          };
+          dbg("store", "subagent thinking persisted", {
+            parent: ev.parent_tool_use_id,
+            len: subThinking?.length ?? 0,
+          });
+
+          const parentIdx = this._findParentToolIdx(getTl(), ev.parent_tool_use_id);
+          if (parentIdx >= 0) {
+            this._appendToSubTimeline(getTl(), parentIdx, entry, ctx);
+            break;
+          }
+          dbgWarn(
+            "store",
+            "subagent message_complete: parent not found, fallback to main timeline",
+            { parent: ev.parent_tool_use_id },
+          );
+          if (ctx) ctx.tl.push(entry);
+          else this.timeline = [...this.timeline, entry];
+          break;
+        }
+
+        // Main session path: save thinking before clearing
+        const savedThinking = ctx ? ctx.thinkingText : this.thinkingText;
         if (ctx) {
           ctx.streamText = "";
           ctx.thinkingText = "";
@@ -1991,20 +2046,14 @@ export class SessionStore {
           content: ev.text,
           ts: eventTs(ev),
           ...(ev.model ? { model: ev.model } : {}),
+          ...(savedThinking ? { thinkingText: savedThinking } : {}),
         };
-        // Subagent routing: nest inside parent tool's subTimeline
-        if (ev.parent_tool_use_id) {
-          const parentIdx = this._findParentToolIdx(getTl(), ev.parent_tool_use_id);
-          if (parentIdx >= 0) {
-            this._appendToSubTimeline(getTl(), parentIdx, entry, ctx);
-            break;
-          }
-          dbgWarn(
-            "store",
-            "subagent message_complete: parent not found, fallback to main timeline",
-            { parent: ev.parent_tool_use_id },
-          );
-        }
+        if (savedThinking)
+          dbg("store", "thinking persisted to timeline", {
+            id: ev.message_id,
+            len: savedThinking.length,
+          });
+
         if (ctx) ctx.tl.push(entry);
         else this.timeline = [...this.timeline, entry];
         break;

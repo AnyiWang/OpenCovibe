@@ -9,9 +9,11 @@
   let {
     message,
     attachments,
+    thinkingText,
   }: {
     message: ChatMessage;
     attachments?: Attachment[];
+    thinkingText?: string;
   } = $props();
 
   function isImage(att: Attachment): boolean {
@@ -23,6 +25,7 @@
   let hovered = $state(false);
   let copied = $state(false);
   let collapsed = $state(true);
+  let thinkingCollapsed = $state(true);
 
   const lineCount = $derived(message.content.split("\n").length);
   const isLong = $derived(isUser && lineCount > 10);
@@ -174,6 +177,30 @@
           <p class="whitespace-pre-wrap">{message.content}</p>
         {/if}
       {:else}
+        {#if thinkingText}
+          <button
+            class="mb-2 flex items-center gap-1.5 text-xs text-violet-500 hover:text-violet-400 transition-colors"
+            onclick={() => (thinkingCollapsed = !thinkingCollapsed)}
+          >
+            <svg
+              class="h-3 w-3 transition-transform {thinkingCollapsed ? '' : 'rotate-90'}"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"><path d="m9 18 6-6-6-6" /></svg
+            >
+            {t("chat_thoughtProcess")}
+          </button>
+          {#if !thinkingCollapsed}
+            <div
+              class="mb-3 rounded-md border border-violet-500/20 bg-violet-500/5 px-3 py-2 text-xs text-violet-300/80 whitespace-pre-wrap leading-relaxed"
+            >
+              {thinkingText}
+            </div>
+          {/if}
+        {/if}
         <div class="prose-chat">
           <MarkdownContent text={message.content} />
         </div>

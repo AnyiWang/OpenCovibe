@@ -508,6 +508,36 @@
   });
 
   let effectiveModels = $derived(platformModels.length > 0 ? platformModels : getCliModels());
+  let currentEffort = $state("");
+
+  // Effort guard: auto-clear effort when model doesn't support it;
+  // also auto-populate default effort ("high") when empty and model supports it.
+  $effect(() => {
+    if (store.agent !== "claude") return;
+
+    const pid = store.platformId;
+    // Third-party platform: don't touch effort
+    if (pid && pid !== "anthropic") return;
+
+    const modelInfo = effectiveModels.find((m) => m.value === store.model);
+    if (!modelInfo) return; // models not loaded yet
+
+    if (currentEffort && modelInfo.supportsEffort === false) {
+      // Model doesn't support effort → clear
+      dbg("chat", "effort-guard: clearing for unsupported model", { model: store.model });
+      currentEffort = "";
+      api.updateCliConfig({ effortLevel: null }).catch((e) => {
+        dbgWarn("chat", "effort-guard: CLI config clear failed", e);
+      });
+    } else if (!currentEffort && modelInfo.supportsEffort === true) {
+      // No effort set but model supports it → default to "high" (CLI default)
+      dbg("chat", "effort-guard: defaulting to high", { model: store.model });
+      currentEffort = "high";
+      api.updateCliConfig({ effortLevel: "high" }).catch((e) => {
+        dbgWarn("chat", "effort-guard: CLI config default failed", e);
+      });
+    }
+  });
 
   // Reset filter on run change & auto-focus input
   $effect(() => {
@@ -797,6 +827,20 @@
     }
     try {
       agentSettings = await api.getAgentSettings("claude");
+      // Read effort from CLI config (~/.claude/settings.json) — the authoritative source.
+      // NOT from agentSettings.effort (that would cause --effort flag at spawn, which
+      // locks effort in memory and prevents live switching via settings.json).
+      try {
+        const cliCfg = await api.getCliConfig();
+        const cliEffort = cliCfg.effortLevel;
+        currentEffort = typeof cliEffort === "string" && cliEffort ? cliEffort : "";
+      } catch {
+        currentEffort = "";
+      }
+      // One-time migration: clear stale agentSettings.effort to prevent --effort at spawn
+      if (agentSettings?.effort) {
+        api.updateAgentSettings("claude", { effort: "" }).catch(() => {});
+      }
     } catch (e) {
       dbgWarn("chat", "failed to load agent settings:", e);
     }
@@ -1604,6 +1648,19 @@
         dbgWarn("chat", "failed to persist model change", e);
       }
     }
+  }
+
+  async function handleEffortChange(newEffort: string) {
+    dbg("chat", "effort change", { from: currentEffort, to: newEffort });
+    currentEffort = newEffort;
+    // Write to CLI config (~/.claude/settings.json) — the CLI reads effortLevel
+    // per-request, so changes take effect immediately within a running session.
+    // Deliberately NOT writing to agentSettings.effort — that would cause --effort
+    // to be passed at spawn, which locks the CLI's in-memory effort and prevents
+    // settings.json changes from being picked up during the session.
+    api.updateCliConfig({ effortLevel: newEffort || null }).catch((e) => {
+      dbgWarn("chat", "failed to persist effort to CLI config", e);
+    });
   }
 
   async function handleAuthModeChange(mode: string) {
@@ -2683,6 +2740,8 @@
       onEndSession={handleStop}
       onFork={forkOverlay ? undefined : () => handleResume("fork")}
       onModelChange={handleModelChange}
+      effort={store.agent === "claude" ? currentEffort : undefined}
+      onEffortChange={store.agent === "claude" ? handleEffortChange : undefined}
       onNavigateParent={store.run?.parent_run_id
         ? () => goto(`/chat?run=${store.run!.parent_run_id}`)
         : undefined}
@@ -2986,6 +3045,7 @@
                           content: entry.content,
                           timestamp: entry.ts,
                         }}
+                        thinkingText={entry.thinkingText}
                       />
                     {:else if entry.kind === "tool"}
                       {#if !burstHiddenIndices.has(i)}
