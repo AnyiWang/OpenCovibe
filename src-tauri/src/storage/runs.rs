@@ -33,17 +33,20 @@ pub fn create_run(
     // Use explicit platform_id if provided, otherwise fall back to global active
     let resolved_pid = platform_id.or_else(|| settings.active_platform_id.clone());
 
-    // Resolve base_url: prefer credential's base_url for the platform, fallback to global
+    // Resolve base_url: credential → known provider defaults → global
     let resolved_base_url = resolved_pid
         .as_ref()
         .and_then(|pid| {
+            // Try credential's base_url first
             settings
                 .platform_credentials
                 .iter()
                 .find(|c| c.platform_id == *pid)
+                .and_then(|c| c.base_url.clone())
+                .filter(|s| !s.is_empty())
+                // Fallback to known provider defaults (for keyless platforms without credential)
+                .or_else(|| super::settings::get_provider_info(pid).and_then(|i| i.base_url))
         })
-        .and_then(|c| c.base_url.clone())
-        .filter(|s| !s.is_empty())
         .or_else(|| settings.anthropic_base_url.clone());
 
     let meta = RunMeta {
