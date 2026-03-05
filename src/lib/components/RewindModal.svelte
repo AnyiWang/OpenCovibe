@@ -242,6 +242,32 @@
   }
 </script>
 
+{#snippet candidateList()}
+  <div class="{phase === 'select' ? 'max-h-[50vh]' : 'max-h-[30vh] mb-3'} overflow-y-auto">
+    {#each candidates as c, i (c.cliUuid)}
+      <button
+        type="button"
+        class="w-full rounded-md border px-3 py-2 text-left transition-colors
+          {selected?.cliUuid === c.cliUuid
+          ? 'border-primary bg-primary/5'
+          : 'border-transparent hover:border-border hover:bg-muted/50'}"
+        onclick={() => selectCheckpoint(c)}
+        disabled={dryRunLoading && selected?.cliUuid === c.cliUuid}
+      >
+        <div class="flex items-baseline justify-between gap-2">
+          <span class="shrink-0 text-xs font-mono text-muted-foreground/60"
+            >#{candidates.length - i}</span
+          >
+          <span class="min-w-0 flex-1 truncate text-sm">{truncate(c.content, 80)}</span>
+          {#if c.ts}
+            <span class="shrink-0 text-xs text-muted-foreground">{fmtTime(c.ts)}</span>
+          {/if}
+        </div>
+      </button>
+    {/each}
+  </div>
+{/snippet}
+
 <Modal bind:open title={t("rewind_modalTitle")} closeable={phase !== "executing"}>
   <!-- Phase: select -->
   {#if phase === "select"}
@@ -266,23 +292,7 @@
       </div>
     {:else}
       <p class="mb-3 text-sm text-muted-foreground">{t("rewind_selectCheckpoint")}</p>
-      <div class="max-h-[50vh] overflow-y-auto">
-        {#each candidates as c (c.cliUuid)}
-          <button
-            type="button"
-            class="w-full rounded-md border px-3 py-2 text-left transition-colors
-              {selected?.cliUuid === c.cliUuid
-              ? 'border-primary bg-primary/5'
-              : 'border-transparent hover:border-border hover:bg-muted/50'}"
-            onclick={() => selectCheckpoint(c)}
-          >
-            <div class="flex items-baseline justify-between gap-2">
-              <span class="min-w-0 flex-1 truncate text-sm">{truncate(c.content, 80)}</span>
-              <span class="shrink-0 text-xs text-muted-foreground">{fmtTime(c.ts)}</span>
-            </div>
-          </button>
-        {/each}
-      </div>
+      {@render candidateList()}
     {/if}
 
     <!-- Phase: preview -->
@@ -296,11 +306,7 @@
       </div>
     {:else if dryRunResult && dryRunResult.canRewind}
       <!-- Successful dryRun preview -->
-      {#if selected}
-        <div class="mb-3 rounded-md bg-muted/50 px-3 py-2 text-sm">
-          {truncate(selected.content, 80)}
-        </div>
-      {/if}
+      {@render candidateList()}
 
       {#if executeError}
         <div class="mb-3 rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
@@ -379,11 +385,7 @@
       </div>
     {:else if dryRunSkipped}
       <!-- CLI doesn't support dry_run — allow execute without preview -->
-      {#if selected}
-        <div class="mb-3 rounded-md bg-muted/50 px-3 py-2 text-sm">
-          {truncate(selected.content, 80)}
-        </div>
-      {/if}
+      {@render candidateList()}
 
       {#if executeError}
         <div class="mb-3 rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
@@ -411,10 +413,10 @@
       </div>
     {:else}
       <!-- dryRun failed (hard error or canRewind: false) -->
-      <div class="flex flex-col items-center gap-2 py-8 text-center">
-        <p class="text-sm text-destructive">
-          {dryRunResult?.error ?? t("rewind_checkpointUnavailable")}
-        </p>
+      {@render candidateList()}
+
+      <div class="my-4 rounded-md bg-destructive/10 px-3 py-2 text-center text-sm text-destructive">
+        {dryRunResult?.error ?? t("rewind_checkpointUnavailable")}
       </div>
 
       <div class="flex justify-end">
