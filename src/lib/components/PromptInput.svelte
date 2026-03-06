@@ -258,6 +258,13 @@
     ext?: string;
   }
 
+  interface PathRef {
+    id: string;
+    name: string;
+    path: string;
+    isDir: boolean;
+  }
+
   let inputText = $state("");
   let pendingAttachments = $state<
     Array<{
@@ -271,6 +278,7 @@
     }>
   >([]);
   let pastedBlocks = $state<PastedBlock[]>([]);
+  let pendingPathRefs = $state<PathRef[]>([]);
 
   let fileInput: HTMLInputElement | undefined = $state();
   let textareaEl: HTMLTextAreaElement | undefined = $state();
@@ -297,9 +305,11 @@
 
   // ── File toast ──
   let toastMessage = $state<string | null>(null);
+  let toastVariant = $state<"error" | "info">("error");
   let toastTimeout: ReturnType<typeof setTimeout> | null = null;
-  function showFileToast(msg: string) {
+  function showFileToast(msg: string, variant: "error" | "info" = "error") {
     toastMessage = msg;
+    toastVariant = variant;
     if (toastTimeout) clearTimeout(toastTimeout);
     toastTimeout = setTimeout(() => {
       toastMessage = null;
@@ -964,6 +974,23 @@
     }
   }
 
+  /** Wrap path in backtick fence that won't conflict with path content. */
+  function wrapPathInBackticks(p: string): string {
+    let maxRun = 0;
+    let currentRun = 0;
+    for (const ch of p) {
+      if (ch === "`") {
+        currentRun++;
+        maxRun = Math.max(maxRun, currentRun);
+      } else {
+        currentRun = 0;
+      }
+    }
+    const fence = "`".repeat(maxRun + 1);
+    const needsPadding = p.startsWith("`") || p.endsWith("`");
+    return needsPadding ? `${fence} ${p} ${fence}` : `${fence}${p}${fence}`;
+  }
+
   function handleSend() {
     const typed = inputText.trim();
 
@@ -1006,6 +1033,11 @@
       const refs = pathRefAtts.map((a) => `[PDF: ${a.filePath}]`).join("\n");
       parts.push(refs);
     }
+    // pendingPathRefs (directories, large files from drag-drop)
+    if (pendingPathRefs.length > 0) {
+      parts.push(pendingPathRefs.map((r) => wrapPathInBackticks(r.path)).join("\n"));
+    }
+
     if (typed) parts.push(typed);
     const text = parts.join("\n\n");
     if (!text || disabled) return;
@@ -1015,6 +1047,7 @@
       pasteBlocks: pastedBlocks.length,
       attachments: regularAtts.length,
       pathRefs: pathRefAtts.length,
+      dragPathRefs: pendingPathRefs.length,
       agent,
     });
 
@@ -1028,6 +1061,7 @@
     inputText = "";
     pendingAttachments = [];
     pastedBlocks = [];
+    pendingPathRefs = [];
     resetHistory(histState);
     onSend(text, attachments);
 
@@ -1493,7 +1527,10 @@
 
   let canSend = $derived(
     !disabled &&
-      (!!inputText.trim() || pastedBlocks.length > 0 || pendingAttachments.some((a) => a.filePath)),
+      (!!inputText.trim() ||
+        pastedBlocks.length > 0 ||
+        pendingAttachments.some((a) => a.filePath) ||
+        pendingPathRefs.length > 0),
   );
 
   // ── Mode dropdown outside-click + Escape ──
@@ -1539,7 +1576,26 @@
   }
 
   export function addFiles(files: FileList | File[]) {
-    processFiles(files);
+    return processFiles(files);
+  }
+
+  export function addPathRefs(refs: Array<{ path: string; name: string; isDir: boolean }>) {
+    const newRefs = refs.map((ref) => ({
+      id: crypto.randomUUID().slice(0, 8),
+      name: ref.name,
+      path: ref.path,
+      isDir: ref.isDir,
+    }));
+    pendingPathRefs = [...pendingPathRefs, ...newRefs];
+    dbg("prompt", "add-path-refs", { count: refs.length });
+  }
+
+  function removePathRef(id: string) {
+    pendingPathRefs = pendingPathRefs.filter((r) => r.id !== id);
+  }
+
+  export function showToast(message: string, variant: "error" | "info" = "info") {
+    showFileToast(message, variant);
   }
 
   export function getInputSnapshot(): PromptInputSnapshot {
@@ -1547,6 +1603,7 @@
       text: inputText,
       attachments: [...pendingAttachments],
       pastedBlocks: [...pastedBlocks],
+      pathRefs: [...pendingPathRefs],
     };
   }
 
@@ -1554,6 +1611,7 @@
     inputText = snapshot.text;
     pendingAttachments = snapshot.attachments;
     pastedBlocks = snapshot.pastedBlocks as PastedBlock[];
+    pendingPathRefs = snapshot.pathRefs ?? [];
     resetHistory(histState);
     requestAnimationFrame(() => {
       autoResize();
@@ -1564,16 +1622,24 @@
   export function clearAll(): void {
     inputText = "";
     pendingAttachments = [];
+    pendingPathRefs = [];
     pastedBlocks = [];
     resetHistory(histState);
     requestAnimationFrame(() => autoResize());
   }
 
   function hasContent(): boolean {
-    return !!(inputText.trim() || pendingAttachments.length || pastedBlocks.length);
+    return !!(
+      inputText.trim() ||
+      pendingAttachments.length ||
+      pastedBlocks.length ||
+      pendingPathRefs.length
+    );
   }
 </script>
 
+<!-- Web drag handlers — only fire when Tauri dragDropEnabled is false (non-Tauri builds).
+     When dragDropEnabled: true, Tauri intercepts OS drag events and Web drag events do not fire. -->
 <div
   class="border-t border-border bg-muted/30 px-4 py-3 relative"
   ondragenter={handleDragEnter}
@@ -1593,7 +1659,10 @@
   <!-- File toast -->
   {#if toastMessage}
     <div
-      class="absolute -top-10 left-4 right-4 z-20 flex items-center gap-2 rounded-md bg-destructive/90 px-3 py-1.5 text-xs text-destructive-foreground shadow-lg animate-fade-in"
+      class="absolute -top-10 left-4 right-4 z-20 flex items-center gap-2 rounded-md px-3 py-1.5 text-xs shadow-lg animate-fade-in {toastVariant ===
+      'error'
+        ? 'bg-destructive/90 text-destructive-foreground'
+        : 'bg-muted text-foreground'}"
     >
       <svg
         class="h-3.5 w-3.5 shrink-0"
@@ -1611,14 +1680,24 @@
   {/if}
 
   <!-- Attachment & paste block previews -->
-  {#if pendingAttachments.length > 0 || pastedBlocks.length > 0}
+  {#if pendingAttachments.length > 0 || pastedBlocks.length > 0 || pendingPathRefs.length > 0}
     <div class="mb-2 flex flex-wrap gap-1.5">
       {#each pendingAttachments as att (att.id)}
         <FileAttachment
           name={att.name}
           size={att.size}
           mimeType={att.type}
+          isPathRef={!!att.filePath && !att.contentBase64}
           onremove={() => removeAttachment(att.id)}
+        />
+      {/each}
+      {#each pendingPathRefs as ref (ref.id)}
+        <FileAttachment
+          name={ref.name}
+          size={0}
+          mimeType={ref.isDir ? "inode/directory" : "application/octet-stream"}
+          isPathRef={true}
+          onremove={() => removePathRef(ref.id)}
         />
       {/each}
       {#each pastedBlocks as block (block.id)}

@@ -1297,5 +1297,10 @@
   "appUpdate_manual": "更新到最新版",
   "appUpdate_checking": "检查中...",
   "appUpdate_upToDate": "当前已为最新版本（v{version}）。",
-  "appUpdate_checkFailed": "检查更新失败，请稍后重试。"
+  "appUpdate_checkFailed": "检查更新失败，请稍后重试。",
+
+  "drag_foldersInserted": "已添加 {count} 个文件夹路径引用",
+  "drag_filesAsPathRef": "{count} 个文件已添加为路径引用",
+  "drag_processing": "正在处理文件…",
+  "common_listSeparator": "；"
 }

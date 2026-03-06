@@ -1154,6 +1154,7 @@ export interface PromptInputSnapshot {
     charCount: number;
     preview: string;
   }>;
+  pathRefs?: Array<{ id: string; name: string; path: string; isDir: boolean }>;
 }
 
 export interface PlatformCredential {

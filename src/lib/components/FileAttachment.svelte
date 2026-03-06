@@ -7,23 +7,84 @@
     name,
     size,
     mimeType = "",
+    isPathRef = false,
     onremove,
   }: {
     name: string;
     size: number;
     mimeType?: string;
+    isPathRef?: boolean;
     onremove?: () => void;
   } = $props();
 
   let isDoc = $derived(isPdf(mimeType));
   let isImage = $derived(mimeType.startsWith("image/"));
+  let isDir = $derived(mimeType === "inode/directory");
+
+  // Color scheme per file type
+  let colorClasses = $derived.by(() => {
+    if (isDir) {
+      return {
+        border: isPathRef
+          ? "border-dashed border-amber-400/50 dark:border-amber-500/40"
+          : "border-amber-200 dark:border-amber-800",
+        bg: "bg-amber-50 dark:bg-amber-950/40",
+        icon: "text-amber-600 dark:text-amber-400",
+        size: "text-amber-400 dark:text-amber-500",
+      };
+    }
+    if (isImage) {
+      return {
+        border: isPathRef
+          ? "border-dashed border-sky-400/50 dark:border-sky-500/40"
+          : "border-sky-200 dark:border-sky-800",
+        bg: "bg-sky-50 dark:bg-sky-950/40",
+        icon: "text-sky-600 dark:text-sky-400",
+        size: "text-sky-400 dark:text-sky-500",
+      };
+    }
+    if (isDoc) {
+      return {
+        border: isPathRef
+          ? "border-dashed border-red-400/50 dark:border-red-500/40"
+          : "border-red-200 dark:border-red-800",
+        bg: "bg-red-50 dark:bg-red-950/40",
+        icon: "text-red-600 dark:text-red-400",
+        size: "text-red-400 dark:text-red-500",
+      };
+    }
+    // Default (other files)
+    return {
+      border: isPathRef ? "border-dashed border-muted-foreground/40" : "border-border",
+      bg: "bg-muted/50",
+      icon: "text-muted-foreground",
+      size: "text-muted-foreground",
+    };
+  });
 </script>
 
-<div class="flex items-center gap-2 rounded-md border border-border bg-muted/50 px-2 py-1 text-xs">
-  {#if isImage}
+<div
+  class="flex items-center gap-2 rounded-md border {colorClasses.border} {colorClasses.bg} px-2 py-1 text-xs"
+>
+  {#if isDir}
+    <!-- Folder icon -->
+    <svg
+      class="h-3.5 w-3.5 {colorClasses.icon} shrink-0"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="2"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    >
+      <path
+        d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"
+      />
+    </svg>
+  {:else if isImage}
     <!-- Image icon -->
     <svg
-      class="h-3.5 w-3.5 text-muted-foreground shrink-0"
+      class="h-3.5 w-3.5 {colorClasses.icon} shrink-0"
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"
@@ -38,7 +99,7 @@
   {:else if isDoc}
     <!-- Document icon for PDF -->
     <svg
-      class="h-3.5 w-3.5 text-muted-foreground shrink-0"
+      class="h-3.5 w-3.5 {colorClasses.icon} shrink-0"
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"
@@ -53,7 +114,7 @@
   {:else}
     <!-- Paperclip icon for other -->
     <svg
-      class="h-3.5 w-3.5 text-muted-foreground shrink-0"
+      class="h-3.5 w-3.5 {colorClasses.icon} shrink-0"
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"
@@ -67,7 +128,9 @@
     </svg>
   {/if}
   <span class="truncate max-w-[120px]">{name}</span>
-  <span class="text-muted-foreground">{formatBytes(size)}</span>
+  {#if size > 0}
+    <span class={colorClasses.size}>{formatBytes(size)}</span>
+  {/if}
   {#if onremove}
     <button
       class="ml-auto text-muted-foreground hover:text-foreground"

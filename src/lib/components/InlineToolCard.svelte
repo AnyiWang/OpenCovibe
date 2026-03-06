@@ -1749,7 +1749,7 @@
             <div class="text-sm text-muted-foreground py-1">
               {#if subEntry.thinkingText}
                 <pre
-                  class="text-xs font-mono whitespace-pre-wrap break-words text-violet-300/70 italic mb-1 leading-relaxed">{subEntry.thinkingText}</pre>
+                  class="text-xs font-mono whitespace-pre-wrap break-words text-blue-300/70 italic mb-1 leading-relaxed">{subEntry.thinkingText.trimEnd()}</pre>
               {/if}
               <MarkdownContent text={subEntry.content} />
             </div>
