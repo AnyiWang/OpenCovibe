@@ -1155,7 +1155,10 @@
         const snapshot = promptRef?.getInputSnapshot();
         if (
           snapshot &&
-          (snapshot.text.trim() || snapshot.attachments.length || snapshot.pastedBlocks.length)
+          (snapshot.text.trim() ||
+            snapshot.attachments.length ||
+            snapshot.pastedBlocks.length ||
+            (snapshot.pathRefs?.length ?? 0) > 0)
         ) {
           stashedInput = snapshot;
           promptRef?.clearAll();
@@ -1187,6 +1190,15 @@
       promptRef?.addFiles([file]);
     });
 
+    // Tauri native drag-drop listeners (dragDropEnabled: true in tauri.conf.json)
+    const dragEnterUnlisten = listen<{ paths: string[] }>("tauri://drag-enter", () => {
+      pageDragActive = true;
+    });
+    const dragLeaveUnlisten = listen("tauri://drag-leave", () => {
+      pageDragActive = false;
+    });
+    const dragDropUnlisten = listen<{ paths: string[] }>("tauri://drag-drop", handleTauriDrop);
+
     return () => {
       window.removeEventListener("ocv:statusbar-toggle", onStatusBarToggle);
       keybindingStore.unregisterCallback("chat:interrupt");
@@ -1200,6 +1212,9 @@
       keybindingStore.unregisterCallback("chat:toggleTasks");
       keybindingStore.unregisterCallback("chat:undoLastTurn");
       screenshotUnlisten.then((fn) => fn());
+      dragEnterUnlisten.then((fn) => fn());
+      dragLeaveUnlisten.then((fn) => fn());
+      dragDropUnlisten.then((fn) => fn());
       // Clean up verbose retry timer
       if (verboseRetryTimer) clearTimeout(verboseRetryTimer);
       // Clean up progressive rendering timer
@@ -2282,27 +2297,139 @@
 
   // Chat keybinding callbacks — registered/unregistered via keybindingStore in onMount below
 
-  // ── Page-level drag-drop (forward to PromptInput) ──
-  let pageDragCounter = $state(0);
-  let pageDragActive = $derived(pageDragCounter > 0);
+  // ── Page-level drag-drop (Tauri native events) ──
+  let pageDragActive = $state(false);
+  let dragProcessingCount = $state(0);
+  let dragProcessing = $derived(dragProcessingCount > 0);
 
-  function handlePageDragEnter(e: DragEvent) {
-    e.preventDefault();
-    pageDragCounter++;
+  /** Concurrency-limited parallel map returning PromiseSettledResult for each item. */
+  async function mapSettled<T, R>(
+    items: T[],
+    fn: (item: T) => Promise<R>,
+    concurrency: number,
+  ): Promise<PromiseSettledResult<R>[]> {
+    const results: PromiseSettledResult<R>[] = new Array(items.length);
+    let next = 0;
+    const c = Math.max(1, Math.min(concurrency, items.length));
+    async function worker() {
+      while (next < items.length) {
+        const i = next++;
+        try {
+          results[i] = { status: "fulfilled", value: await fn(items[i]) };
+        } catch (e) {
+          results[i] = { status: "rejected", reason: e };
+        }
+      }
+    }
+    await Promise.all(Array.from({ length: c }, () => worker()));
+    return results;
   }
-  function handlePageDragLeave(e: DragEvent) {
-    e.preventDefault();
-    pageDragCounter--;
-  }
-  function handlePageDragOver(e: DragEvent) {
-    e.preventDefault();
-  }
-  function handlePageDrop(e: DragEvent) {
-    e.preventDefault();
-    pageDragCounter = 0;
-    const files = e.dataTransfer?.files;
-    if (files && promptRef) {
-      promptRef.addFiles(files);
+
+  async function handleTauriDrop(event: { payload: { paths: string[] } }) {
+    pageDragActive = false;
+    const paths = event.payload.paths;
+    const input = promptRef; // cache ref — promptRef may become undefined after awaits
+    if (!paths?.length || !input) return;
+
+    dragProcessingCount++;
+    dbg("chat", "tauri-drop", { count: paths.length });
+
+    try {
+      // Phase 1: parallel classify (concurrency=5 to avoid IPC flood on large batches)
+      const classified = await mapSettled(
+        paths,
+        async (p) => {
+          const name = p.split(/[/\\]/).pop() || "file";
+          const isDir = await api.checkIsDirectory(p);
+          return { p, name, isDir };
+        },
+        5,
+      );
+
+      const dirRefs: Array<{ path: string; name: string; isDir: true }> = [];
+      const fileEntries: Array<{ p: string; name: string }> = [];
+
+      for (let i = 0; i < classified.length; i++) {
+        const result = classified[i];
+        const p = paths[i];
+        const name = p.split(/[/\\]/).pop() || "file";
+        if (result.status === "fulfilled") {
+          if (result.value.isDir) {
+            dirRefs.push({ path: p, name, isDir: true });
+            dbg("chat", "tauri-drop: dir", { name });
+          } else {
+            fileEntries.push({ p, name });
+          }
+        } else {
+          // checkIsDirectory IPC failed — conservatively treat as file
+          fileEntries.push({ p, name });
+          dbgWarn("chat", "tauri-drop: classify failed, treating as file", {
+            name,
+            error: result.reason,
+          });
+        }
+      }
+
+      // Phase 2: parallel file read (concurrency=2 to limit memory)
+      const fileResults = await mapSettled(
+        fileEntries,
+        async ({ p, name }) => {
+          const [base64, mime] = await api.readFileBase64(p);
+          const bytes = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
+          return { file: new File([bytes], name, { type: mime }), name, mime, size: bytes.length };
+        },
+        2,
+      );
+
+      const filesToProcess: File[] = [];
+      const fileRefs: Array<{ path: string; name: string; isDir: false }> = [];
+
+      for (let i = 0; i < fileResults.length; i++) {
+        const result = fileResults[i];
+        const { p, name } = fileEntries[i];
+        if (result.status === "fulfilled") {
+          filesToProcess.push(result.value.file);
+          dbg("chat", "tauri-drop: file", {
+            name: result.value.name,
+            mime: result.value.mime,
+            size: result.value.size,
+          });
+        } else {
+          fileRefs.push({ path: p, name, isDir: false });
+          dbgWarn("chat", "tauri-drop: fallback to path ref", { name, error: result.reason });
+        }
+      }
+
+      // Guard: if page navigated away during processing, promptRef is stale
+      if (promptRef !== input) {
+        dbgWarn("chat", "tauri-drop: promptRef stale after processing, discarding");
+        return;
+      }
+
+      // Add path refs (dirs + failed files)
+      const allPathRefs = [...dirRefs, ...fileRefs];
+      if (allPathRefs.length > 0) {
+        input.addPathRefs(allPathRefs);
+      }
+
+      // Normal files → existing addFiles pipeline (await so spinner covers processFiles)
+      if (filesToProcess.length > 0) {
+        await input.addFiles(filesToProcess);
+      }
+
+      // Single summary toast
+      if (allPathRefs.length > 0) {
+        const parts: string[] = [];
+        if (dirRefs.length > 0) {
+          parts.push(t("drag_foldersInserted", { count: String(dirRefs.length) }));
+        }
+        if (fileRefs.length > 0) {
+          parts.push(t("drag_filesAsPathRef", { count: String(fileRefs.length) }));
+        }
+        input.showToast(parts.join(t("common_listSeparator")));
+      }
+    } finally {
+      dragProcessingCount--;
     }
   }
 
@@ -2716,35 +2843,44 @@
   </div>
 {/snippet}
 
-<div
-  class="flex h-full overflow-hidden bg-background relative"
-  ondragenter={handlePageDragEnter}
-  ondragleave={handlePageDragLeave}
-  ondragover={handlePageDragOver}
-  ondrop={handlePageDrop}
->
-  <!-- Page-level drag overlay -->
-  {#if pageDragActive}
+<div class="flex h-full overflow-hidden bg-background relative">
+  <!-- Page-level drag overlay (drag-hover or processing spinner) -->
+  {#if pageDragActive || dragProcessing}
     <div
       class="absolute inset-0 z-50 flex items-center justify-center bg-background/60 backdrop-blur-[2px]"
     >
       <div
         class="flex flex-col items-center gap-2 rounded-xl border-2 border-dashed border-primary/50 bg-primary/5 px-12 py-8"
       >
-        <svg
-          class="h-8 w-8 text-primary/60"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="1.5"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-        >
-          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-          <polyline points="17 8 12 3 7 8" />
-          <line x1="12" x2="12" y1="3" y2="15" />
-        </svg>
-        <span class="text-sm font-medium text-primary/70">{t("prompt_dropFiles")}</span>
+        {#if dragProcessing}
+          <svg
+            class="h-8 w-8 text-primary/60 animate-spin"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.5"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+          </svg>
+          <span class="text-sm font-medium text-primary/70">{t("drag_processing")}</span>
+        {:else}
+          <svg
+            class="h-8 w-8 text-primary/60"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.5"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+            <polyline points="17 8 12 3 7 8" />
+            <line x1="12" x2="12" y1="3" y2="15" />
+          </svg>
+          <span class="text-sm font-medium text-primary/70">{t("prompt_dropFiles")}</span>
+        {/if}
       </div>
     </div>
   {/if}
@@ -3154,8 +3290,8 @@
                 >
                   <div class="mx-auto max-w-5xl px-8">
                     <div class="flex items-center gap-3">
-                      <div class="h-px flex-1 bg-violet-500/20"></div>
-                      <div class="flex items-center gap-2 text-xs text-violet-500/80 font-medium">
+                      <div class="h-px flex-1 bg-blue-500/20"></div>
+                      <div class="flex items-center gap-2 text-xs text-blue-500/80 font-medium">
                         <svg
                           class="h-3.5 w-3.5"
                           viewBox="0 0 24 24"
@@ -3174,7 +3310,7 @@
                           })}</span
                         >
                       </div>
-                      <div class="h-px flex-1 bg-violet-500/20"></div>
+                      <div class="h-px flex-1 bg-blue-500/20"></div>
                     </div>
                     <div class="mt-1 ml-8 text-[11px] text-muted-foreground/60 truncate">
                       &ldquo;{marker.targetContent}&rdquo;
@@ -3182,7 +3318,7 @@
                     {#if marker.filesReverted.length > 0}
                       <details class="mt-1 ml-8">
                         <summary
-                          class="cursor-pointer text-[10px] text-violet-500/50 hover:text-violet-500/80"
+                          class="cursor-pointer text-[10px] text-blue-500/50 hover:text-blue-500/80"
                         >
                           {t("rewind_separatorFiles", {
                             count: String(marker.filesReverted.length),
@@ -3236,15 +3372,15 @@
                 <div class="w-full animate-fade-in">
                   <div class="mx-auto max-w-5xl px-8 py-2">
                     <button
-                      class="w-full text-left rounded-lg border border-violet-500/20 bg-violet-500/5 px-3 py-2 transition-colors group"
+                      class="w-full text-left rounded-lg border border-blue-500/20 bg-blue-500/5 px-3 py-2 transition-colors group"
                       onclick={() => (thinkingExpanded = !thinkingExpanded)}
                     >
                       <div class="flex items-center gap-2">
                         <div
-                          class="flex h-5 w-5 shrink-0 items-center justify-center rounded bg-violet-500/10"
+                          class="flex h-5 w-5 shrink-0 items-center justify-center rounded bg-blue-500/10"
                         >
                           <svg
-                            class="h-3 w-3 text-violet-400"
+                            class="h-3 w-3 text-blue-400"
                             viewBox="0 0 24 24"
                             fill="none"
                             stroke="currentColor"
@@ -3258,11 +3394,10 @@
                             <path d="M10 22h4" />
                           </svg>
                         </div>
-                        <span class="text-xs font-medium text-violet-400">{t("chat_thinking")}</span
-                        >
+                        <span class="text-xs font-medium text-blue-400">{t("chat_thinking")}</span>
                         {#if store.isRunning && !store.streamingText}
                           <div
-                            class="h-2.5 w-2.5 rounded-full border-2 border-violet-500/30 border-t-violet-400 animate-spin"
+                            class="h-2.5 w-2.5 rounded-full border-2 border-blue-500/30 border-t-blue-400 animate-spin"
                           ></div>
                         {/if}
                         <svg
@@ -3282,7 +3417,7 @@
                       {#if thinkingExpanded}
                         <div class="mt-2 pl-7 max-h-60 overflow-y-auto">
                           <pre
-                            class="text-xs font-mono whitespace-pre-wrap break-words text-violet-300/70 leading-relaxed">{store.thinkingText}</pre>
+                            class="text-xs font-mono whitespace-pre-wrap break-words text-blue-300/70 leading-relaxed">{store.thinkingText.trimEnd()}</pre>
                         </div>
                       {/if}
                     </button>

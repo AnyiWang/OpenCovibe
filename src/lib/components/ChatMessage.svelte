@@ -179,7 +179,7 @@
       {:else}
         {#if thinkingText}
           <button
-            class="mb-2 flex items-center gap-1.5 text-xs text-violet-500 hover:text-violet-400 transition-colors"
+            class="mb-2 flex items-center gap-1.5 text-xs text-blue-500 hover:text-blue-400 transition-colors"
             onclick={() => (thinkingCollapsed = !thinkingCollapsed)}
           >
             <svg
@@ -195,9 +195,9 @@
           </button>
           {#if !thinkingCollapsed}
             <div
-              class="mb-3 rounded-md border border-violet-500/20 bg-violet-500/5 px-3 py-2 text-xs text-violet-300/80 whitespace-pre-wrap leading-relaxed"
+              class="mb-3 rounded-md border border-blue-500/20 bg-blue-500/5 px-3 py-2 text-xs text-blue-300/80 whitespace-pre-wrap leading-relaxed"
             >
-              {thinkingText}
+              {thinkingText.trimEnd()}
             </div>
           {/if}
         {/if}

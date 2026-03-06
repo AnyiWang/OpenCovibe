@@ -209,6 +209,14 @@ export async function listDirectory(path: string, showHidden?: boolean): Promise
   return invoke<DirListing>("list_directory", { path, showHidden });
 }
 
+export async function checkIsDirectory(path: string): Promise<boolean> {
+  return invoke<boolean>("check_is_directory", { path });
+}
+
+export async function readFileBase64(path: string): Promise<[string, string]> {
+  return invoke<[string, string]>("read_file_base64", { path });
+}
+
 // Git
 export async function getGitSummary(cwd: string): Promise<GitSummary> {
   dbg("api", "getGitSummary", cwd);

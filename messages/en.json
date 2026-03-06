@@ -1297,5 +1297,10 @@
   "appUpdate_manual": "Update to Latest",
   "appUpdate_checking": "Checking...",
   "appUpdate_upToDate": "You are already on the latest version (v{version}).",
-  "appUpdate_checkFailed": "Failed to check for updates. Please try again later."
+  "appUpdate_checkFailed": "Failed to check for updates. Please try again later.",
+
+  "drag_foldersInserted": "{count} folder(s) added as path reference",
+  "drag_filesAsPathRef": "{count} file(s) added as path reference",
+  "drag_processing": "Processing files...",
+  "common_listSeparator": "; "
 }
