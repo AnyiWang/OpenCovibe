@@ -223,6 +223,11 @@ export async function getGitSummary(cwd: string): Promise<GitSummary> {
   return invoke<GitSummary>("get_git_summary", { cwd });
 }
 
+export async function getGitBranch(cwd: string): Promise<string> {
+  dbg("api", "getGitBranch", cwd);
+  return invoke<string>("get_git_branch", { cwd });
+}
+
 export async function getGitDiff(cwd: string, staged: boolean, file?: string): Promise<string> {
   dbg("api", "getGitDiff", { cwd, staged, file });
   return invoke<string>("get_git_diff", { cwd, staged, file: file ?? null });

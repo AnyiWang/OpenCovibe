@@ -10,6 +10,7 @@
     PlatformCredential,
   } from "$lib/types";
   import * as api from "$lib/api";
+  import { createGitBranchPoller } from "$lib/utils/git-branch";
   import AgentSelector from "./AgentSelector.svelte";
   import AuthSourceBadge from "./AuthSourceBadge.svelte";
   import SkillSelector from "./SkillSelector.svelte";
@@ -154,6 +155,52 @@
         ? t("prompt_hasRunPlaceholder")
         : t("prompt_newPlaceholder"),
   );
+
+  // ── Git branch (fetched from cwd) ──
+  const branchPoller = createGitBranchPoller(api.getGitBranch);
+  let gitBranch = $state("");
+
+  // Fetch on cwd / isRemote change
+  $effect(() => {
+    void cwd;
+    void isRemote;
+    const effectiveCwd = isRemote ? "" : cwd;
+    branchPoller.refresh(effectiveCwd).then((b) => {
+      gitBranch = b;
+    });
+  });
+
+  // Poll every 10s to catch branch changes made by CLI commands
+  $effect(() => {
+    if (isRemote) return;
+    const interval = setInterval(() => {
+      branchPoller.refresh(cwd).then((b) => {
+        gitBranch = b;
+      });
+    }, 10_000);
+    return () => clearInterval(interval);
+  });
+
+  // ── Branch color (7 rainbow colors based on name hash) ──
+  const BRANCH_COLORS = [
+    { bg: "bg-red-500/15", text: "text-red-400" },
+    { bg: "bg-orange-500/15", text: "text-orange-400" },
+    { bg: "bg-yellow-500/15", text: "text-yellow-400" },
+    { bg: "bg-green-500/15", text: "text-green-400" },
+    { bg: "bg-blue-500/15", text: "text-blue-400" },
+    { bg: "bg-indigo-500/15", text: "text-indigo-400" },
+    { bg: "bg-purple-500/15", text: "text-purple-400" },
+  ];
+
+  function branchColor(name: string) {
+    let hash = 0;
+    for (let i = 0; i < name.length; i++) {
+      hash = (hash * 31 + name.charCodeAt(i)) | 0;
+    }
+    return BRANCH_COLORS[Math.abs(hash) % BRANCH_COLORS.length];
+  }
+
+  let currentBranchColor = $derived(branchColor(gitBranch));
 
   // ── Permission mode selector ──
   const PERMISSION_MODES = [
@@ -1761,29 +1808,57 @@
     </div>
   {/if}
 
-  <!-- L3: Quick action pills (above input container) -->
-  {#if slashEnabled && quickActions.length > 0}
-    <div class="flex items-center gap-1 px-1 pb-1.5 overflow-x-auto scrollbar-hide">
-      {#each quickActions as cmd (cmd.name)}
-        <button
-          class="shrink-0 rounded-md border border-border/50 px-2 py-0.5 text-[11px]
-            text-muted-foreground/70 hover:text-foreground hover:bg-accent
-            hover:border-border transition-colors whitespace-nowrap"
-          onclick={() => handleQuickAction(cmd)}
-          title={cmd.description}
-        >
-          {t(`quickAction_${cmd.name}` as MessageKey)}
-        </button>
-      {/each}
-      <button
-        class="shrink-0 rounded-md border border-border/50 px-2 py-0.5 text-[11px]
-          text-muted-foreground/70 hover:text-foreground hover:bg-accent
-          hover:border-border transition-colors whitespace-nowrap"
-        onclick={openSlashMenuFromButton}
-        title={t("quickAction_moreTitle")}
-      >
-        {t("quickAction_more")}
-      </button>
+  <!-- L3: Quick action pills + git branch (above input container) -->
+  {#if (slashEnabled && quickActions.length > 0) || gitBranch}
+    <div class="flex items-center gap-1 px-1 pb-1.5">
+      {#if slashEnabled && quickActions.length > 0}
+        <div class="flex items-center gap-1 overflow-x-auto scrollbar-hide">
+          {#each quickActions as cmd (cmd.name)}
+            <button
+              class="shrink-0 rounded-md border border-border/50 px-2 py-0.5 text-[11px]
+                text-muted-foreground/70 hover:text-foreground hover:bg-accent
+                hover:border-border transition-colors whitespace-nowrap"
+              onclick={() => handleQuickAction(cmd)}
+              title={cmd.description}
+            >
+              {t(`quickAction_${cmd.name}` as MessageKey)}
+            </button>
+          {/each}
+          <button
+            class="shrink-0 rounded-md border border-border/50 px-2 py-0.5 text-[11px]
+              text-muted-foreground/70 hover:text-foreground hover:bg-accent
+              hover:border-border transition-colors whitespace-nowrap"
+            onclick={openSlashMenuFromButton}
+            title={t("quickAction_moreTitle")}
+          >
+            {t("quickAction_more")}
+          </button>
+        </div>
+      {/if}
+      {#if gitBranch}
+        <div class="ml-auto shrink-0">
+          <span
+            class="inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] font-medium {currentBranchColor.bg} {currentBranchColor.text} max-w-[200px]"
+            title={gitBranch}
+          >
+            <svg
+              class="w-3 h-3 shrink-0"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <line x1="6" y1="3" x2="6" y2="15" />
+              <circle cx="18" cy="6" r="3" />
+              <circle cx="6" cy="18" r="3" />
+              <path d="M18 9a9 9 0 0 1-9 9" />
+            </svg>
+            <span class="truncate">{gitBranch}</span>
+          </span>
+        </div>
+      {/if}
     </div>
   {/if}
 

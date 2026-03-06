@@ -80,6 +80,7 @@ pub fn run() {
             commands::fs::check_is_directory,
             commands::fs::read_file_base64,
             commands::git::get_git_summary,
+            commands::git::get_git_branch,
             commands::git::get_git_diff,
             commands::git::get_git_status,
             commands::export::export_conversation,

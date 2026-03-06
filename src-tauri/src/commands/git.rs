@@ -134,6 +134,97 @@ pub async fn get_git_summary(cwd: String) -> Result<GitSummary, String> {
 }
 
 #[tauri::command]
+pub async fn get_git_branch(cwd: String) -> Result<String, String> {
+    log::debug!("[git] get_git_branch: cwd={}", cwd);
+
+    // Step 1: structured probe (rev-parse plumbing, exit code semantics are well-defined)
+    let check = match Command::new("git")
+        .current_dir(&cwd)
+        .args(["rev-parse", "--is-inside-work-tree"])
+        .output()
+    {
+        Err(e) => {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                // git executable not installed → normal state, no branch badge
+                log::debug!("[git] get_git_branch: git not installed, cwd={}", cwd);
+                return Ok(String::new());
+            }
+            log::warn!("[git] get_git_branch I/O error: cwd={}, err={}", cwd, e);
+            return Err(e.to_string());
+        }
+        Ok(o) => o,
+    };
+
+    if check.status.success() {
+        let stdout = String::from_utf8_lossy(&check.stdout).trim().to_string();
+        if stdout != "true" {
+            // "false" → bare repo / inside .git dir → no branch badge
+            log::debug!("[git] get_git_branch: not a work tree, cwd={}", cwd);
+            return Ok(String::new());
+        }
+    } else {
+        let code = check.status.code().unwrap_or(-1);
+        let stderr = String::from_utf8_lossy(&check.stderr);
+        let stderr_trimmed = stderr.trim();
+        if code == 128 && stderr_trimmed.contains("not a git repository") {
+            // Genuinely not a git directory → Ok("") (normal state, not an error)
+            log::debug!("[git] get_git_branch: not a git repo, cwd={}", cwd);
+            return Ok(String::new());
+        }
+        // Other failures (safe.directory, corruption, permissions, etc) → Err
+        log::warn!(
+            "[git] get_git_branch: rev-parse error, cwd={}, code={}",
+            cwd,
+            code
+        );
+        return Err(format!(
+            "git rev-parse failed (code {}): {}",
+            code, stderr_trimmed
+        ));
+    }
+
+    // Step 2: get branch name
+    let output = Command::new("git")
+        .current_dir(&cwd)
+        .args(["branch", "--show-current"])
+        .output()
+        .map_err(|e| {
+            log::warn!("[git] get_git_branch: branch cmd I/O error: {}", e);
+            e.to_string()
+        })?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        log::warn!(
+            "[git] get_git_branch: branch cmd failed: code={}",
+            output.status.code().unwrap_or(-1)
+        );
+        return Err(format!("git branch failed: {}", stderr.trim()));
+    }
+
+    let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
+
+    // Step 3: detached HEAD → fallback to short SHA
+    if branch.is_empty() {
+        let sha = Command::new("git")
+            .current_dir(&cwd)
+            .args(["rev-parse", "--short", "HEAD"])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_default();
+        log::debug!(
+            "[git] get_git_branch: detached HEAD, sha={}, cwd={}",
+            sha,
+            cwd
+        );
+        return Ok(sha);
+    }
+
+    Ok(branch)
+}
+
+#[tauri::command]
 pub async fn get_git_diff(
     cwd: String,
     staged: bool,
