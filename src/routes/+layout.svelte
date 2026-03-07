@@ -369,8 +369,9 @@
     try {
       settings = await getUserSettings();
       if (settings.working_directory) {
-        localStorage.setItem("ocv:settings-cwd", settings.working_directory);
-        if (!projectCwd) projectCwd = settings.working_directory;
+        const normalizedWd = normalizeCwd(settings.working_directory) || "";
+        localStorage.setItem("ocv:settings-cwd", normalizedWd || settings.working_directory);
+        if (!projectCwd) projectCwd = normalizedWd;
       }
       // Show setup wizard if onboarding not completed
       if (!settings.onboarding_completed) {
@@ -735,6 +736,14 @@
   // Build project folder tree for chats tab
   let projectFolders = $derived.by(() => buildProjectFolders(runs, favoriteRunIds, pinnedCwds));
 
+  // Debug log when folder tree rebuilds
+  $effect(() => {
+    dbg("layout", "folders rebuilt", {
+      count: projectFolders.length,
+      total: projectFolders.reduce((s, f) => s + f.conversationCount, 0),
+    });
+  });
+
   // Current page detection
   let currentPath = $derived($page.url.pathname);
   let isChatPage = $derived(currentPath === "/chat" || currentPath === "/");
@@ -818,14 +827,22 @@
   });
 
   // Auto-expand folder containing selected run (chats tab only)
-  // Only trigger on selectedRunId change — not on expandedProjects change
-  // (otherwise collapsing a folder re-expands immediately)
+  // Track both runId and folder count to handle async load:
+  //   - runId changes → new selection, try expand
+  //   - folderCount changes with same runId → runs loaded after deep-link, retry expand
+  // Don't track expandedProjects itself (otherwise collapsing re-expands).
   let _prevAutoExpandRunId = "";
+  let _prevAutoExpandFolderCount = 0;
   $effect(() => {
     if (!isChatPage || panelTab !== "chats") return;
     const runId = selectedRunId;
-    if (runId === _prevAutoExpandRunId) return; // early-return avoids tracking expandedProjects
+    const folderCount = projectFolders.length;
+    const runChanged = runId !== _prevAutoExpandRunId;
+    const foldersChanged = folderCount !== _prevAutoExpandFolderCount;
+    if (!runChanged && !foldersChanged) return; // early-return avoids tracking expandedProjects
     _prevAutoExpandRunId = runId;
+    _prevAutoExpandFolderCount = folderCount;
+    if (!runId) return;
     const next = autoExpandForRun(runId, projectFolders, expandedProjects);
     if (next) {
       dbg("layout", "auto-expand for run", { selectedRunId: runId });
