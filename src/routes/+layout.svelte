@@ -369,9 +369,11 @@
     try {
       settings = await getUserSettings();
       if (settings.working_directory) {
-        const normalizedWd = normalizeCwd(settings.working_directory) || "";
-        localStorage.setItem("ocv:settings-cwd", normalizedWd || settings.working_directory);
-        if (!projectCwd) projectCwd = normalizedWd;
+        const normalizedWd = normalizeCwd(settings.working_directory);
+        if (normalizedWd) {
+          localStorage.setItem("ocv:settings-cwd", normalizedWd);
+          if (!projectCwd) projectCwd = normalizedWd;
+        }
       }
       // Show setup wizard if onboarding not completed
       if (!settings.onboarding_completed) {
@@ -827,21 +829,20 @@
   });
 
   // Auto-expand folder containing selected run (chats tab only)
-  // Track both runId and folder count to handle async load:
-  //   - runId changes → new selection, try expand
-  //   - folderCount changes with same runId → runs loaded after deep-link, retry expand
+  // Track runId + total conversation count (not folder count — pinned cwds
+  // create empty folders before runs load, so folder count may not change).
   // Don't track expandedProjects itself (otherwise collapsing re-expands).
   let _prevAutoExpandRunId = "";
-  let _prevAutoExpandFolderCount = 0;
+  let _prevAutoExpandConvTotal = 0;
   $effect(() => {
     if (!isChatPage || panelTab !== "chats") return;
     const runId = selectedRunId;
-    const folderCount = projectFolders.length;
+    const convTotal = projectFolders.reduce((s, f) => s + f.conversationCount, 0);
     const runChanged = runId !== _prevAutoExpandRunId;
-    const foldersChanged = folderCount !== _prevAutoExpandFolderCount;
-    if (!runChanged && !foldersChanged) return; // early-return avoids tracking expandedProjects
+    const convsChanged = convTotal !== _prevAutoExpandConvTotal;
+    if (!runChanged && !convsChanged) return; // early-return avoids tracking expandedProjects
     _prevAutoExpandRunId = runId;
-    _prevAutoExpandFolderCount = folderCount;
+    _prevAutoExpandConvTotal = convTotal;
     if (!runId) return;
     const next = autoExpandForRun(runId, projectFolders, expandedProjects);
     if (next) {
