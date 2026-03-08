@@ -1,27 +1,45 @@
 <script lang="ts">
+  import type { Snippet } from "svelte";
   import type { ProjectFolder } from "$lib/utils/sidebar-groups";
   import ConversationItem from "./ConversationItem.svelte";
   import { t } from "$lib/i18n/index.svelte";
+  import { dbgWarn } from "$lib/utils/debug";
 
   const PAGE_SIZE = 5;
 
-  let {
-    folder,
-    expanded,
-    selectedRunId,
-    onToggle,
-    onSelectConversation,
-    onResume,
-    label,
-  }: {
+  type BaseProps = {
     folder: ProjectFolder;
-    expanded: boolean;
-    selectedRunId: string;
+    label: string;
+    expanded?: boolean;
     onToggle: () => void;
+    showCount?: boolean;
+  };
+
+  type ChatProps = BaseProps & {
+    children?: never;
+    selectedRunId?: string;
     onSelectConversation: (runId: string) => void;
     onResume: (runId: string, mode: "resume") => void;
-    label: string;
-  } = $props();
+  };
+
+  type CustomProps = BaseProps & {
+    children: Snippet;
+    selectedRunId?: never;
+    onSelectConversation?: never;
+    onResume?: never;
+  };
+
+  let {
+    folder,
+    label,
+    expanded = false,
+    onToggle,
+    showCount = true,
+    children,
+    selectedRunId = "",
+    onSelectConversation,
+    onResume,
+  }: ChatProps | CustomProps = $props();
 
   let visibleCount = $state(PAGE_SIZE);
 
@@ -32,7 +50,7 @@
 
   // Auto-expand visible count if selected run is beyond current page
   $effect(() => {
-    if (!expanded || !selectedRunId) return;
+    if (!expanded || !selectedRunId || children) return;
     const idx = folder.conversations.findIndex((conv) =>
       conv.runs.some((r) => r.id === selectedRunId),
     );
@@ -41,8 +59,11 @@
     }
   });
 
-  const visibleConversations = $derived(folder.conversations.slice(0, visibleCount));
-  const hiddenCount = $derived(folder.conversationCount - visibleCount);
+  // Skip conversation-related derivations when using children snippet
+  const visibleConversations = $derived(
+    children ? [] : folder.conversations.slice(0, visibleCount),
+  );
+  const hiddenCount = $derived(children ? 0 : folder.conversationCount - visibleCount);
   const hasMore = $derived(hiddenCount > 0);
 
   function showMore() {
@@ -52,6 +73,22 @@
   function isConvSelected(conv: { runs: { id: string }[] }): boolean {
     return conv.runs.some((r) => r.id === selectedRunId);
   }
+
+  // Warn once if conversation-mode callbacks are missing
+  let warnedMissingCallbacks = false;
+  $effect(() => {
+    if (children) {
+      // children mode switched back to conversation mode — reset latch
+      warnedMissingCallbacks = false;
+      return;
+    }
+    if (!warnedMissingCallbacks && (!onSelectConversation || !onResume)) {
+      warnedMissingCallbacks = true;
+      if (!onSelectConversation)
+        dbgWarn("ProjectFolderItem", "onSelectConversation missing in conversation mode");
+      if (!onResume) dbgWarn("ProjectFolderItem", "onResume missing in conversation mode");
+    }
+  });
 </script>
 
 <div class="mb-0.5">
@@ -109,9 +146,9 @@
     <!-- Label -->
     <span class="truncate">{label}</span>
     <!-- Count badge -->
-    {#if folder.conversationCount > 0}
+    {#if showCount && folder.conversationCount > 0}
       <span
-        class="ml-auto shrink-0 inline-flex h-3.5 min-w-[14px] items-center justify-center rounded-full bg-muted px-1 text-[8px] font-medium text-muted-foreground"
+        class="ml-auto shrink-0 inline-flex h-3.5 min-w-[14px] items-center justify-center rounded-full bg-muted px-1 text-[10px] font-medium text-muted-foreground"
       >
         {folder.conversationCount}
       </span>
@@ -121,21 +158,25 @@
   <!-- Expanded children -->
   {#if expanded}
     <div class="pl-3">
-      {#each visibleConversations as conv (conv.groupKey)}
-        <ConversationItem
-          conversation={conv}
-          selected={isConvSelected(conv)}
-          onclick={() => onSelectConversation(conv.latestRun.id)}
-          onresume={onResume}
-        />
-      {/each}
-      {#if hasMore}
-        <button
-          class="w-full px-3 py-1.5 text-[10px] text-muted-foreground hover:text-sidebar-foreground hover:bg-sidebar-accent/50 rounded-md transition-colors"
-          onclick={showMore}
-        >
-          {t("sidebar_showMore", { count: String(Math.min(PAGE_SIZE, hiddenCount)) })}
-        </button>
+      {#if children}
+        {@render children()}
+      {:else}
+        {#each visibleConversations as conv (conv.groupKey)}
+          <ConversationItem
+            conversation={conv}
+            selected={isConvSelected(conv)}
+            onclick={() => onSelectConversation?.(conv.latestRun.id)}
+            onresume={onResume}
+          />
+        {/each}
+        {#if hasMore}
+          <button
+            class="w-full px-3 py-1.5 text-xs text-muted-foreground hover:text-sidebar-foreground hover:bg-sidebar-accent/50 rounded-md transition-colors"
+            onclick={showMore}
+          >
+            {t("sidebar_showMore", { count: String(Math.min(PAGE_SIZE, hiddenCount)) })}
+          </button>
+        {/if}
       {/if}
     </div>
   {/if}

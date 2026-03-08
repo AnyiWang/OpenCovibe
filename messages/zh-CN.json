@@ -400,6 +400,7 @@
 
   "project_allProjects": "所有项目",
   "project_openFolder": "打开文件夹...",
+  "sidebar_currentProject": "项目:",
 
   "plugin_title": "技能",
   "plugin_desc": "为 Claude 扩展专业知识和行为",
@@ -666,6 +667,7 @@
   "memory_saved": "已保存",
   "memory_unsavedChanges": "有未保存的更改",
   "memory_setProjectFirst": "请先设置项目工作目录",
+  "memory_noProjectFiles": "该项目暂无 memory 文件",
   "memory_tabProject": "项目",
   "memory_tabGlobal": "全局",
   "memory_tabMemory": "自动记忆",

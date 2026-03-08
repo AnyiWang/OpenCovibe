@@ -400,6 +400,7 @@
 
   "project_allProjects": "All Projects",
   "project_openFolder": "Open folder...",
+  "sidebar_currentProject": "Project:",
 
   "plugin_title": "Skills",
   "plugin_desc": "Extend Claude with specialized knowledge and behavior",
@@ -666,6 +667,7 @@
   "memory_saved": "Saved",
   "memory_unsavedChanges": "Unsaved changes",
   "memory_setProjectFirst": "Set a project working directory first",
+  "memory_noProjectFiles": "No memory files for this project",
   "memory_tabProject": "Project",
   "memory_tabGlobal": "Global",
   "memory_tabMemory": "Auto Memory",
