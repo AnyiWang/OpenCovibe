@@ -429,27 +429,19 @@
           <div class="flex flex-1 items-center justify-center p-4">
             <p class="text-sm text-destructive">{fileError}</p>
           </div>
-        {:else if editorMode === "rendered" && isPreviewable}
-          {#if isMarkdown}
-            <div class="flex-1 overflow-y-auto p-4 h-full">
-              {#if fileContent}
-                <MarkdownContent text={fileContent} />
-              {:else}
-                <p class="text-sm text-muted-foreground italic">{t("explorer_emptyFile")}</p>
-              {/if}
-            </div>
-          {:else}
-            <CodeEditor
-              content={fileContent}
-              filePath={selectedFilePath}
-              readonly={true}
-              class="h-full"
-            />
-          {/if}
+        {:else if editorMode === "rendered" && isMarkdown}
+          <div class="flex-1 overflow-y-auto p-4 h-full">
+            {#if fileContent}
+              <MarkdownContent text={fileContent} />
+            {:else}
+              <p class="text-sm text-muted-foreground italic">{t("explorer_emptyFile")}</p>
+            {/if}
+          </div>
         {:else}
           <CodeEditor
             bind:content={fileContent}
             filePath={selectedFilePath}
+            readonly={editorMode === "rendered"}
             onsave={saveFile}
             class="h-full"
           />
