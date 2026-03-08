@@ -22,10 +22,64 @@
   let activeView = $state<"preview" | "diff">("preview");
   let editorMode = $state<"edit" | "rendered">("edit");
 
-  const PREVIEWABLE_EXTENSIONS = new Set(["md", "markdown"]);
-  let isPreviewable = $derived(
-    PREVIEWABLE_EXTENSIONS.has(selectedFilePath.split(".").pop()?.toLowerCase() ?? ""),
-  );
+  const MARKDOWN_EXTENSIONS = new Set(["md", "markdown"]);
+  /** Extensions that get a read-only syntax-highlighted preview (CodeMirror readonly). */
+  const CODE_EXTENSIONS = new Set([
+    "ts",
+    "mts",
+    "cts",
+    "tsx",
+    "js",
+    "mjs",
+    "cjs",
+    "jsx",
+    "json",
+    "jsonc",
+    "toml",
+    "lock",
+    "html",
+    "htm",
+    "xml",
+    "svg",
+    "xsl",
+    "css",
+    "scss",
+    "less",
+    "py",
+    "rs",
+    "go",
+    "java",
+    "kt",
+    "swift",
+    "c",
+    "cpp",
+    "cc",
+    "cxx",
+    "h",
+    "hpp",
+    "cs",
+    "yaml",
+    "yml",
+    "sql",
+    "sh",
+    "bash",
+    "zsh",
+    "ksh",
+    "diff",
+    "patch",
+    "env",
+    "conf",
+    "cfg",
+    "ini",
+    "properties",
+    "editorconfig",
+    "svelte",
+    "vue",
+  ]);
+
+  let fileExt = $derived(selectedFilePath.split(".").pop()?.toLowerCase() ?? "");
+  let isMarkdown = $derived(MARKDOWN_EXTENSIONS.has(fileExt));
+  let isPreviewable = $derived(isMarkdown || CODE_EXTENSIONS.has(fileExt));
 
   let projectCwd = $state(
     typeof window !== "undefined" ? (localStorage.getItem("ocv:project-cwd") ?? "") : "",
@@ -85,7 +139,7 @@
     activeView = "preview";
     fileError = "";
     const ext = path.split(".").pop()?.toLowerCase() ?? "";
-    editorMode = PREVIEWABLE_EXTENSIONS.has(ext) ? "rendered" : "edit";
+    editorMode = MARKDOWN_EXTENSIONS.has(ext) || CODE_EXTENSIONS.has(ext) ? "rendered" : "edit";
     fileLoading = true;
     fileDirty = false;
     try {
@@ -376,13 +430,22 @@
             <p class="text-sm text-destructive">{fileError}</p>
           </div>
         {:else if editorMode === "rendered" && isPreviewable}
-          <div class="flex-1 overflow-y-auto p-4 h-full">
-            {#if fileContent}
-              <MarkdownContent text={fileContent} />
-            {:else}
-              <p class="text-sm text-muted-foreground italic">{t("explorer_emptyFile")}</p>
-            {/if}
-          </div>
+          {#if isMarkdown}
+            <div class="flex-1 overflow-y-auto p-4 h-full">
+              {#if fileContent}
+                <MarkdownContent text={fileContent} />
+              {:else}
+                <p class="text-sm text-muted-foreground italic">{t("explorer_emptyFile")}</p>
+              {/if}
+            </div>
+          {:else}
+            <CodeEditor
+              content={fileContent}
+              filePath={selectedFilePath}
+              readonly={true}
+              class="h-full"
+            />
+          {/if}
         {:else}
           <CodeEditor
             bind:content={fileContent}
