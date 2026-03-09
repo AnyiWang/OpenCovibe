@@ -328,12 +328,23 @@
 
   .shiki-input {
     color: transparent;
-    caret-color: var(--foreground, #d4d4d4);
+    caret-color: #000;
     background: transparent;
     resize: none;
     outline: none;
     z-index: 1;
     -webkit-text-fill-color: transparent;
+    cursor: text;
+  }
+
+  :global(.dark) .shiki-input {
+    caret-color: #e5e5e5;
+  }
+
+  /* Focus indicator on editor container */
+  .shiki-editor:has(.shiki-input:focus) {
+    outline: 2px solid hsl(var(--primary, 220 90% 56%) / 0.5);
+    outline-offset: -2px;
   }
 
   /* Readonly mode: no textarea, highlight layer is scrollable */
