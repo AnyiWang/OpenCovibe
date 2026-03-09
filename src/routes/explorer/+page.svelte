@@ -5,6 +5,7 @@
   import { t } from "$lib/i18n/index.svelte";
   import { onMount } from "svelte";
   import CodeEditor from "$lib/components/CodeEditor.svelte";
+  import CodePreview from "$lib/components/CodePreview.svelte";
   import MarkdownContent from "$lib/components/MarkdownContent.svelte";
 
   // ── State ──
@@ -432,11 +433,12 @@
               <p class="text-sm text-muted-foreground italic">{t("explorer_emptyFile")}</p>
             {/if}
           </div>
+        {:else if editorMode === "rendered"}
+          <CodePreview content={fileContent} filePath={selectedFilePath} class="h-full" />
         {:else}
           <CodeEditor
             bind:content={fileContent}
             filePath={selectedFilePath}
-            readonly={editorMode === "rendered"}
             onsave={saveFile}
             class="h-full"
           />
