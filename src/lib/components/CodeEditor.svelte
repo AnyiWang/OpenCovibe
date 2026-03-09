@@ -42,6 +42,7 @@
 
   const themeCompartment = new Compartment();
   const langCompartment = new Compartment();
+  const readonlyCompartment = new Compartment();
 
   /** Race condition guard: only apply the latest language resolution. */
   let langSeq = 0;
@@ -150,8 +151,10 @@
           ...historyKeymap,
         ]),
         syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
-        EditorView.editable.of(!readonly),
-        EditorState.readOnly.of(readonly),
+        readonlyCompartment.of([
+          EditorView.editable.of(!readonly),
+          EditorState.readOnly.of(readonly),
+        ]),
         themeCompartment.of(dark ? oneDark : []),
         langCompartment.of([]),
         EditorView.updateListener.of((update) => {
@@ -214,6 +217,17 @@
       if (seq !== langSeq || !view) return; // stale — user already switched files
       view.dispatch({ effects: langCompartment.reconfigure(lang) });
       if (lang.length > 0) verifySyntaxStyles(view);
+    });
+  });
+
+  // Reconfigure readonly when prop changes
+  $effect(() => {
+    if (!view) return;
+    view.dispatch({
+      effects: readonlyCompartment.reconfigure([
+        EditorView.editable.of(!readonly),
+        EditorState.readOnly.of(readonly),
+      ]),
     });
   });
 </script>
