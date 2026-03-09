@@ -4,8 +4,7 @@
   import { fileName as pathFileName } from "$lib/utils/format";
   import { t } from "$lib/i18n/index.svelte";
   import { onMount } from "svelte";
-  import CodeEditor from "$lib/components/CodeEditor.svelte";
-  import CodePreview from "$lib/components/CodePreview.svelte";
+  import ShikiEditor from "$lib/components/ShikiEditor.svelte";
   import MarkdownContent from "$lib/components/MarkdownContent.svelte";
 
   // ── State ──
@@ -21,7 +20,8 @@
   let fileDirty = $state(false);
   let fileError = $state("");
   let activeView = $state<"preview" | "diff">("preview");
-  let editorMode = $state<"edit" | "rendered">("edit");
+  /** For markdown files: toggle between source editing and rendered preview. */
+  let mdRendered = $state(true);
 
   const MARKDOWN_EXTENSIONS = new Set(["md", "markdown"]);
   /** Binary/non-text extensions that should NOT get a preview. Everything else is previewable. */
@@ -75,7 +75,7 @@
 
   let fileExt = $derived(selectedFilePath.split(".").pop()?.toLowerCase() ?? "");
   let isMarkdown = $derived(MARKDOWN_EXTENSIONS.has(fileExt));
-  let isPreviewable = $derived(!BINARY_EXTENSIONS.has(fileExt));
+  let isBinary = $derived(BINARY_EXTENSIONS.has(fileExt));
 
   let projectCwd = $state(
     typeof window !== "undefined" ? (localStorage.getItem("ocv:project-cwd") ?? "") : "",
@@ -134,8 +134,7 @@
     selectedFilePath = path;
     activeView = "preview";
     fileError = "";
-    const ext = path.split(".").pop()?.toLowerCase() ?? "";
-    editorMode = BINARY_EXTENSIONS.has(ext) ? "edit" : "rendered";
+    mdRendered = true;
     fileLoading = true;
     fileDirty = false;
     try {
@@ -166,7 +165,7 @@
     }
   }
 
-  // Track dirty state when CodeEditor updates content
+  // Track dirty state when editor updates content
   $effect(() => {
     if (!fileLoading) {
       fileDirty = fileContent !== originalContent;
@@ -354,14 +353,14 @@
         {/if}
         <span class="text-xs text-muted-foreground truncate flex-1 min-w-0">{selectedFilePath}</span
         >
-        {#if isPreviewable}
+        {#if isMarkdown}
           <div class="flex rounded-md border bg-background p-0.5 shrink-0">
             <button
               class="flex items-center gap-1 rounded px-2 py-0.5 text-[11px] font-medium transition-colors
-                {editorMode === 'edit'
+                {!mdRendered
                 ? 'bg-muted text-foreground'
                 : 'text-muted-foreground hover:text-foreground'}"
-              onclick={() => (editorMode = "edit")}
+              onclick={() => (mdRendered = false)}
             >
               <svg
                 class="h-3 w-3"
@@ -379,10 +378,10 @@
             </button>
             <button
               class="flex items-center gap-1 rounded px-2 py-0.5 text-[11px] font-medium transition-colors
-                {editorMode === 'rendered'
+                {mdRendered
                 ? 'bg-muted text-foreground'
                 : 'text-muted-foreground hover:text-foreground'}"
-              onclick={() => (editorMode = "rendered")}
+              onclick={() => (mdRendered = true)}
             >
               <svg
                 class="h-3 w-3"
@@ -406,8 +405,8 @@
           class="rounded-md px-2.5 py-1 text-[11px] font-medium transition-colors shrink-0 disabled:opacity-40 {fileDirty
             ? 'bg-primary text-primary-foreground hover:bg-primary/90'
             : 'bg-muted text-muted-foreground cursor-default'}"
-          disabled={!fileDirty || fileSaving || editorMode === "rendered"}
-          title={editorMode === "rendered" ? t("explorer_saveDisabledInPreview") : ""}
+          disabled={!fileDirty || fileSaving || (isMarkdown && mdRendered)}
+          title={isMarkdown && mdRendered ? t("explorer_saveDisabledInPreview") : ""}
           onclick={saveFile}
         >
           {fileSaving ? t("explorer_saving") : t("explorer_save")}
@@ -425,7 +424,11 @@
           <div class="flex flex-1 items-center justify-center p-4">
             <p class="text-sm text-destructive">{fileError}</p>
           </div>
-        {:else if editorMode === "rendered" && isMarkdown}
+        {:else if isBinary}
+          <div class="flex flex-1 items-center justify-center p-4">
+            <p class="text-sm text-muted-foreground">{t("explorer_binaryFile")}</p>
+          </div>
+        {:else if isMarkdown && mdRendered}
           <div class="flex-1 overflow-y-auto p-4 h-full">
             {#if fileContent}
               <MarkdownContent text={fileContent} />
@@ -433,10 +436,8 @@
               <p class="text-sm text-muted-foreground italic">{t("explorer_emptyFile")}</p>
             {/if}
           </div>
-        {:else if editorMode === "rendered"}
-          <CodePreview content={fileContent} filePath={selectedFilePath} class="h-full" />
         {:else}
-          <CodeEditor
+          <ShikiEditor
             bind:content={fileContent}
             filePath={selectedFilePath}
             onsave={saveFile}

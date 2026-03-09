@@ -614,6 +614,7 @@
   "explorer_save": "保存",
   "explorer_modified": "已修改",
   "explorer_emptyFile": "空文件",
+  "explorer_binaryFile": "无法显示二进制文件",
   "explorer_discardConfirm": "有未保存的更改，确定要丢弃吗？",
   "explorer_saveDisabledInPreview": "切换到编辑模式后可保存",
 

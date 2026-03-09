@@ -614,6 +614,7 @@
   "explorer_save": "Save",
   "explorer_modified": "Modified",
   "explorer_emptyFile": "Empty file",
+  "explorer_binaryFile": "Binary file cannot be displayed",
   "explorer_discardConfirm": "You have unsaved changes. Discard them?",
   "explorer_saveDisabledInPreview": "Switch to Edit mode to save",
 
