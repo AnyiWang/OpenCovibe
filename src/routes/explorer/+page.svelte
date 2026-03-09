@@ -23,63 +23,58 @@
   let editorMode = $state<"edit" | "rendered">("edit");
 
   const MARKDOWN_EXTENSIONS = new Set(["md", "markdown"]);
-  /** Extensions that get a read-only syntax-highlighted preview (CodeMirror readonly). */
-  const CODE_EXTENSIONS = new Set([
-    "ts",
-    "mts",
-    "cts",
-    "tsx",
-    "js",
-    "mjs",
-    "cjs",
-    "jsx",
-    "json",
-    "jsonc",
-    "toml",
-    "lock",
-    "html",
-    "htm",
-    "xml",
+  /** Binary/non-text extensions that should NOT get a preview. Everything else is previewable. */
+  const BINARY_EXTENSIONS = new Set([
+    "png",
+    "jpg",
+    "jpeg",
+    "gif",
+    "webp",
+    "bmp",
+    "ico",
+    "avif",
     "svg",
-    "xsl",
-    "css",
-    "scss",
-    "less",
-    "py",
-    "rs",
-    "go",
-    "java",
-    "kt",
-    "swift",
-    "c",
-    "cpp",
-    "cc",
-    "cxx",
-    "h",
-    "hpp",
-    "cs",
-    "yaml",
-    "yml",
-    "sql",
-    "sh",
-    "bash",
-    "zsh",
-    "ksh",
-    "diff",
-    "patch",
-    "env",
-    "conf",
-    "cfg",
-    "ini",
-    "properties",
-    "editorconfig",
-    "svelte",
-    "vue",
+    "mp3",
+    "mp4",
+    "wav",
+    "ogg",
+    "webm",
+    "avi",
+    "mov",
+    "flac",
+    "zip",
+    "tar",
+    "gz",
+    "bz2",
+    "xz",
+    "7z",
+    "rar",
+    "pdf",
+    "doc",
+    "docx",
+    "xls",
+    "xlsx",
+    "ppt",
+    "pptx",
+    "woff",
+    "woff2",
+    "ttf",
+    "otf",
+    "eot",
+    "exe",
+    "dll",
+    "so",
+    "dylib",
+    "bin",
+    "dmg",
+    "iso",
+    "sqlite",
+    "db",
   ]);
 
   let fileExt = $derived(selectedFilePath.split(".").pop()?.toLowerCase() ?? "");
   let isMarkdown = $derived(MARKDOWN_EXTENSIONS.has(fileExt));
-  let isPreviewable = $derived(isMarkdown || CODE_EXTENSIONS.has(fileExt));
+  let isPreviewable = $derived(!BINARY_EXTENSIONS.has(fileExt));
 
   let projectCwd = $state(
     typeof window !== "undefined" ? (localStorage.getItem("ocv:project-cwd") ?? "") : "",
@@ -139,7 +134,7 @@
     activeView = "preview";
     fileError = "";
     const ext = path.split(".").pop()?.toLowerCase() ?? "";
-    editorMode = MARKDOWN_EXTENSIONS.has(ext) || CODE_EXTENSIONS.has(ext) ? "rendered" : "edit";
+    editorMode = BINARY_EXTENSIONS.has(ext) ? "edit" : "rendered";
     fileLoading = true;
     fileDirty = false;
     try {
