@@ -321,6 +321,7 @@
   "common_collapse": "Collapse",
   "common_showAllLines": "Show all ({count} lines)",
   "common_showAllItems": "Show all ({count} items)",
+  "common_showAll": "Show all",
   "common_dismiss": "dismiss",
 
   "chat_examplePrompt1": "Build a login page with email and password",
@@ -798,6 +799,7 @@
   "inline_permissionRequired": "Permission Required",
   "inline_claudeWantsToUse": "Claude wants to use",
   "inline_starting": "starting...",
+  "inline_loadDetails": "Load full output",
   "inline_alwaysAllow": "Always Allow",
   "inline_switchToMode": "Switch to {mode} mode",
   "inline_addDirectory": "Add directory: {dir}",

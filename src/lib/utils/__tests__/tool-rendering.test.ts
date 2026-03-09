@@ -14,6 +14,7 @@ import {
   planFileSuffix,
   extractPlanContent,
   applyPlanEditsForward,
+  getToolRenderLevel,
 } from "../tool-rendering";
 
 // ── extractOutputText ──
@@ -846,5 +847,90 @@ describe("detectToolBursts", () => {
     const tl = [read("r1"), grep("g1"), bash("b1"), read("r2")];
     const bursts = detectToolBursts(tl);
     expect(bursts.size).toBe(0);
+  });
+});
+
+// ── getToolRenderLevel ──
+
+describe("getToolRenderLevel", () => {
+  // Level 3: interactive
+  it("returns 3 for AskUserQuestion regardless of status", () => {
+    expect(getToolRenderLevel("AskUserQuestion", "running")).toBe(3);
+    expect(getToolRenderLevel("AskUserQuestion", "success")).toBe(3);
+    expect(getToolRenderLevel("AskUserQuestion", "denied")).toBe(3);
+  });
+  it("returns 3 for permission_prompt on any tool", () => {
+    expect(getToolRenderLevel("Bash", "permission_prompt")).toBe(3);
+    expect(getToolRenderLevel("Read", "permission_prompt")).toBe(3);
+  });
+  it("returns 3 for permission_denied on any tool", () => {
+    expect(getToolRenderLevel("Bash", "permission_denied")).toBe(3);
+    expect(getToolRenderLevel("Write", "permission_denied")).toBe(3);
+  });
+  it("returns 3 for ExitPlanMode only in permission_prompt", () => {
+    expect(getToolRenderLevel("ExitPlanMode", "permission_prompt")).toBe(3);
+  });
+  it("returns 1 for ExitPlanMode running/success/error (no Level 3 template for these)", () => {
+    // ExitPlanMode running must NOT be Level 3 — Level 3 has no branch for it,
+    // which would render a blank line. It uses Level 1 one-liner instead.
+    expect(getToolRenderLevel("ExitPlanMode", "running")).toBe(1);
+    expect(getToolRenderLevel("ExitPlanMode", "success")).toBe(1);
+    expect(getToolRenderLevel("ExitPlanMode", "error")).toBe(1);
+  });
+
+  // Level 2: output-focused
+  it("returns 2 for Bash/Edit/Write and aliases", () => {
+    expect(getToolRenderLevel("Bash", "success")).toBe(2);
+    expect(getToolRenderLevel("bash", "running")).toBe(2);
+    expect(getToolRenderLevel("Edit", "success")).toBe(2);
+    expect(getToolRenderLevel("edit_file", "success")).toBe(2);
+    expect(getToolRenderLevel("Write", "success")).toBe(2);
+    expect(getToolRenderLevel("write_file", "success")).toBe(2);
+  });
+
+  // Level 1: info tools
+  it("returns 1 for Read, Glob, Grep, etc.", () => {
+    expect(getToolRenderLevel("Read", "success")).toBe(1);
+    expect(getToolRenderLevel("read_file", "success")).toBe(1);
+    expect(getToolRenderLevel("Glob", "success")).toBe(1);
+    expect(getToolRenderLevel("Grep", "running")).toBe(1);
+    expect(getToolRenderLevel("Task", "success")).toBe(1);
+    expect(getToolRenderLevel("WebFetch", "error")).toBe(1);
+  });
+
+  // Level 2 tools with interactive status → Level 3 wins
+  it("returns 3 when Level 2 tool has interactive status", () => {
+    expect(getToolRenderLevel("Bash", "permission_prompt")).toBe(3);
+    expect(getToolRenderLevel("Edit", "permission_denied")).toBe(3);
+  });
+
+  // ── Template-alignment regression tests ──
+  // These verify that every Level 3 classification has a matching template branch
+  // in InlineToolCard.svelte. Level 3 branches:
+  //   B1: isAsk && (running|ask_pending)
+  //   B2: isAsk && !(running|ask_pending|permission_prompt) — covers success/error/denied/permission_denied
+  //   B3: isAsk && permission_prompt
+  //   B4: ExitPlanMode && permission_prompt
+  //   B5: generic permission_prompt
+  //   B6: generic permission_denied
+  // Any Level 3 classification that doesn't match B1-B6 renders blank.
+
+  it("ExitPlanMode running is Level 1 (no Level 3 template branch for it)", () => {
+    // This was the original bug: ExitPlanMode + running → Level 3 → blank
+    expect(getToolRenderLevel("ExitPlanMode", "running")).not.toBe(3);
+  });
+
+  it("AskUserQuestion permission_denied is Level 3 (caught by B2 exclusion-based condition)", () => {
+    // B2 uses !(running && !ask_pending && !permission_prompt) which covers permission_denied
+    expect(getToolRenderLevel("AskUserQuestion", "permission_denied")).toBe(3);
+  });
+
+  it("non-Ask non-ExitPlanMode permission_denied is Level 3 (caught by B6)", () => {
+    expect(getToolRenderLevel("Read", "permission_denied")).toBe(3);
+    expect(getToolRenderLevel("Glob", "permission_denied")).toBe(3);
+  });
+
+  it("ExitPlanMode permission_denied is Level 3 (caught by B6 generic denied)", () => {
+    expect(getToolRenderLevel("ExitPlanMode", "permission_denied")).toBe(3);
   });
 });

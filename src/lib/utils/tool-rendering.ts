@@ -551,6 +551,29 @@ export function applyPlanEditsForward(
   return content;
 }
 
+// ── Tool Render Level ──
+
+/** Tools whose output is the primary content (auto-expand, accent border). */
+const LEVEL_2_TOOLS = new Set(["Bash", "bash", "Edit", "edit_file", "Write", "write_file"]);
+
+/**
+ * Determine the render level for a tool card.
+ * Level 1 = one-liner (info tools), Level 2 = inline content (output tools), Level 3 = interactive card.
+ */
+export function getToolRenderLevel(toolName: string, status: BusToolItem["status"]): 1 | 2 | 3 {
+  // AskUserQuestion is always Level 3 (all states: active, done, denied)
+  if (toolName === "AskUserQuestion") return 3;
+  // Interactive statuses: user must approve/deny/retry
+  if (status === "permission_prompt" || status === "permission_denied") return 3;
+  // ExitPlanMode only needs Level 3 when it's a permission_prompt (plan approval card)
+  // Other states (running, success, error) use Level 1 one-liner
+  if (toolName === "ExitPlanMode" && status === "permission_prompt") return 3;
+  // Output-focused tools (including cross-provider aliases)
+  if (LEVEL_2_TOOLS.has(toolName)) return 2;
+  // Everything else
+  return 1;
+}
+
 /** Copy text to clipboard with legacy fallback for Tauri WebView. */
 export async function copyToClipboard(text: string): Promise<void> {
   if (navigator.clipboard) {

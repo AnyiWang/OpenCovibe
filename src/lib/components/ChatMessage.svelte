@@ -62,7 +62,7 @@
   onmouseenter={() => (hovered = true)}
   onmouseleave={() => (hovered = false)}
 >
-  <div class="mx-auto max-w-5xl px-8 py-4">
+  <div class="chat-content-width py-4">
     <!-- Header: icon + name + copy button + timestamp -->
     <div class="mb-1.5 flex items-center gap-2">
       {#if isUser}

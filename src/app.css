@@ -619,11 +619,11 @@
 
 /* Code block — dark mode deeper backgrounds (terminal-like) */
 .dark .code-block {
-  background: hsl(0 0% 8%);
-  border-color: hsl(0 0% 18%);
+  background: hsl(var(--muted));
+  border-color: transparent;
 }
 .dark .code-block-header {
-  background: hsl(0 0% 12%);
+  background: hsl(var(--muted) / 0.8);
 }
 
 /* Diff section — dark mode deeper background */
@@ -667,4 +667,33 @@ code.hljs {
 }
 .cm-editor.cm-focused {
   outline: none;
+}
+
+/* Responsive chat content width — replaces fixed max-w-5xl */
+@layer components {
+  .chat-content-width {
+    margin-left: auto;
+    margin-right: auto;
+    padding-left: 2rem;
+    padding-right: 2rem;
+    max-width: 64rem; /* 1024px baseline */
+  }
+}
+
+@media (min-width: 1400px) {
+  .chat-content-width {
+    max-width: 72rem; /* 1152px — 14" MacBook starts benefiting */
+  }
+}
+
+@media (min-width: 1600px) {
+  .chat-content-width {
+    max-width: 80rem; /* 1280px */
+  }
+}
+
+@media (min-width: 1920px) {
+  .chat-content-width {
+    max-width: 92rem; /* 1472px */
+  }
 }

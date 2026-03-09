@@ -321,6 +321,7 @@
   "common_collapse": "折叠",
   "common_showAllLines": "显示全部（{count} 行）",
   "common_showAllItems": "显示全部（{count} 项）",
+  "common_showAll": "显示全部",
   "common_dismiss": "关闭",
 
   "chat_examplePrompt1": "构建一个包含邮箱和密码的登录页面",
@@ -798,6 +799,7 @@
   "inline_permissionRequired": "需要权限",
   "inline_claudeWantsToUse": "Claude 想要使用",
   "inline_starting": "启动中...",
+  "inline_loadDetails": "加载完整输出",
   "inline_alwaysAllow": "始终允许",
   "inline_switchToMode": "切换到 {mode} 模式",
   "inline_addDirectory": "添加目录：{dir}",

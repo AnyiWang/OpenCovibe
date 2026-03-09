@@ -68,7 +68,7 @@
     prose-p:text-foreground prose-p:leading-relaxed
     prose-a:text-primary prose-a:underline prose-a:underline-offset-2
     prose-code:rounded prose-code:bg-muted/70 prose-code:px-1 prose-code:py-0.5 prose-code:text-xs prose-code:font-mono prose-code:before:content-none prose-code:after:content-none
-    prose-pre:m-0 prose-pre:p-0 prose-pre:bg-transparent
+    prose-pre:m-0 prose-pre:p-0 prose-pre:bg-transparent prose-pre:border-0
     prose-li:text-foreground
     {className}"
 >
