@@ -3,6 +3,7 @@ use crate::storage;
 #[tauri::command]
 pub fn export_conversation(run_id: String) -> Result<String, String> {
     log::debug!("[export] export_conversation: run_id={}", run_id);
+    storage::runs::get_run(&run_id).ok_or_else(|| format!("Run {} not found", run_id))?;
     let events = storage::events::list_events(&run_id, 0);
     let mut md = String::new();
     md.push_str(&format!("# Conversation — {}\n\n", run_id));

@@ -16,17 +16,22 @@
     selected = false,
     onclick,
     onresume,
+    ondelete,
   }: {
     conversation: ConversationGroup;
     selected?: boolean;
     onclick?: () => void;
     onresume?: (runId: string, mode: "resume") => void;
+    ondelete?: (conversation: ConversationGroup) => void;
   } = $props();
 
   const run = $derived(conversation.latestRun);
   const label = $derived(truncate(conversation.title, 28));
   const time = $derived(relativeTime(run.last_activity_at ?? run.started_at));
   const canResume = $derived(!!run.session_id && TERMINAL_PHASES.includes(run.status as any));
+  const canDelete = $derived(
+    conversation.runs.every((r) => TERMINAL_PHASES.includes(r.status as any)),
+  );
   const runCount = $derived(conversation.runs.length);
 
   // ── Inline rename (self-contained, mirrors RunListItem) ──
@@ -162,6 +167,29 @@
             stroke-linejoin="round"
             ><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8" /><path
               d="M21 3v5h-5"
+            /></svg
+          >
+        </button>
+      {/if}
+      {#if canDelete && ondelete}
+        <button
+          class="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-destructive/20 text-muted-foreground hover:text-destructive transition-opacity"
+          onclick={(e) => {
+            e.stopPropagation();
+            ondelete(conversation);
+          }}
+          title={t("sidebar_deleteConfirm")}
+        >
+          <svg
+            class="h-3.5 w-3.5"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            ><path d="M3 6h18" /><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" /><path
+              d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"
             /></svg
           >
         </button>

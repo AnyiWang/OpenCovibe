@@ -199,6 +199,8 @@ pub struct UserSettings {
     pub platform_credentials: Vec<PlatformCredential>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_platform_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ui_zoom: Option<f64>,
     #[serde(default)]
     pub onboarding_completed: bool,
     pub updated_at: String,
@@ -281,6 +283,7 @@ impl Default for UserSettings {
             remote_hosts: vec![],
             platform_credentials: vec![],
             active_platform_id: None,
+            ui_zoom: None,
             onboarding_completed: false,
             updated_at: now_iso(),
         }
@@ -435,6 +438,9 @@ pub struct RunMeta {
     /// True when CLI import couldn't reconstruct complete usage data.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cli_usage_incomplete: Option<bool>,
+    /// Soft-delete timestamp (ISO 8601). When set, run is hidden from all read paths.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deleted_at: Option<String>,
 }
 
 impl RunMeta {

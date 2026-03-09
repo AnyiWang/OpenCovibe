@@ -1185,6 +1185,7 @@ pub fn import_session(
         }),
         cli_session_path: Some(cli_path.to_string_lossy().to_string()),
         cli_usage_incomplete: None, // Set after import
+        deleted_at: None,
     };
 
     let run_dir = super::run_dir(&run_id);

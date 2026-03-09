@@ -123,6 +123,7 @@ export interface UserSettings {
   remote_hosts?: RemoteHost[];
   platform_credentials?: PlatformCredential[];
   active_platform_id?: string;
+  ui_zoom?: number;
   onboarding_completed: boolean;
   updated_at: string;
 }

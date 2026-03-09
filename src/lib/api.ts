@@ -92,6 +92,11 @@ export async function updateRunModel(id: string, model: string): Promise<void> {
   return invoke<void>("update_run_model", { id, model });
 }
 
+export async function softDeleteRuns(ids: string[]): Promise<number> {
+  dbg("api", "softDeleteRuns", { ids });
+  return invoke<number>("soft_delete_runs", { ids });
+}
+
 // Prompt search & favorites
 
 export async function searchPrompts(query: string, limit?: number): Promise<PromptSearchResult[]> {

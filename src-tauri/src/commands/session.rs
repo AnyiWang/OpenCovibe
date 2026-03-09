@@ -788,8 +788,12 @@ pub async fn send_session_control(
 }
 
 #[tauri::command]
-pub fn get_bus_events(id: String, since_seq: Option<u64>) -> Vec<serde_json::Value> {
-    storage::events::list_bus_events(&id, since_seq)
+pub fn get_bus_events(
+    id: String,
+    since_seq: Option<u64>,
+) -> Result<Vec<serde_json::Value>, String> {
+    storage::runs::get_run(&id).ok_or_else(|| format!("Run {} not found", id))?;
+    Ok(storage::events::list_bus_events(&id, since_seq))
 }
 
 #[tauri::command]

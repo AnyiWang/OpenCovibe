@@ -376,6 +376,19 @@ pub fn get_user_settings() -> UserSettings {
     load().user
 }
 
+fn validate_ui_zoom(v: &serde_json::Value) -> Result<Option<f64>, String> {
+    if v.is_null() {
+        return Ok(None);
+    }
+    let f = v
+        .as_f64()
+        .ok_or_else(|| "ui_zoom must be a number".to_string())?;
+    if !(0.75..=1.5).contains(&f) {
+        return Err(format!("ui_zoom must be between 0.75 and 1.5, got {}", f));
+    }
+    Ok(Some(f))
+}
+
 pub fn update_user_settings(patch: serde_json::Value) -> Result<UserSettings, String> {
     let mut all = load();
     if let Some(agent) = patch.get("default_agent").and_then(|v| v.as_str()) {
@@ -457,6 +470,10 @@ pub fn update_user_settings(patch: serde_json::Value) -> Result<UserSettings, St
         } else {
             v.as_str().filter(|s| !s.is_empty()).map(|s| s.to_string())
         };
+    }
+    if let Some(v) = patch.get("ui_zoom") {
+        all.user.ui_zoom = validate_ui_zoom(v)?;
+        log::debug!("[storage/settings] ui_zoom patched: {:?}", all.user.ui_zoom);
     }
     if let Some(v) = patch.get("onboarding_completed") {
         all.user.onboarding_completed = v.as_bool().unwrap_or(false);
@@ -668,6 +685,30 @@ mod tests {
         apply_agent_patch(&mut s, &serde_json::json!({ "effort": "medium" }));
         apply_agent_patch(&mut s, &serde_json::json!({ "model": "opus" }));
         assert_eq!(s.effort, Some("medium".to_string()));
+    }
+
+    #[test]
+    fn validate_ui_zoom_rejects_invalid() {
+        assert!(validate_ui_zoom(&serde_json::json!(0.1)).is_err());
+        assert!(validate_ui_zoom(&serde_json::json!(5.0)).is_err());
+        assert!(validate_ui_zoom(&serde_json::json!("abc")).is_err());
+    }
+
+    #[test]
+    fn validate_ui_zoom_accepts_valid() {
+        assert_eq!(
+            validate_ui_zoom(&serde_json::json!(1.0)).unwrap(),
+            Some(1.0)
+        );
+        assert_eq!(
+            validate_ui_zoom(&serde_json::json!(0.75)).unwrap(),
+            Some(0.75)
+        );
+        assert_eq!(
+            validate_ui_zoom(&serde_json::json!(1.5)).unwrap(),
+            Some(1.5)
+        );
+        assert_eq!(validate_ui_zoom(&serde_json::json!(null)).unwrap(), None);
     }
 
     #[test]

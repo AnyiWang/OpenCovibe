@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { Snippet } from "svelte";
-  import type { ProjectFolder } from "$lib/utils/sidebar-groups";
+  import type { ProjectFolder, ConversationGroup } from "$lib/utils/sidebar-groups";
   import ConversationItem from "./ConversationItem.svelte";
   import { t } from "$lib/i18n/index.svelte";
   import { dbgWarn } from "$lib/utils/debug";
@@ -20,6 +20,7 @@
     selectedRunId?: string;
     onSelectConversation: (runId: string) => void;
     onResume: (runId: string, mode: "resume") => void;
+    onDelete?: (conversation: ConversationGroup) => void;
   };
 
   type CustomProps = BaseProps & {
@@ -27,6 +28,7 @@
     selectedRunId?: never;
     onSelectConversation?: never;
     onResume?: never;
+    onDelete?: never;
   };
 
   let {
@@ -39,6 +41,7 @@
     selectedRunId = "",
     onSelectConversation,
     onResume,
+    onDelete,
   }: ChatProps | CustomProps = $props();
 
   let visibleCount = $state(PAGE_SIZE);
@@ -167,6 +170,7 @@
             selected={isConvSelected(conv)}
             onclick={() => onSelectConversation?.(conv.latestRun.id)}
             onresume={onResume}
+            ondelete={onDelete}
           />
         {/each}
         {#if hasMore}

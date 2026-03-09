@@ -6,6 +6,7 @@
 //!
 //! Uses in-memory cache with 120s TTL (same pattern as `claude_usage.rs`).
 
+use crate::models::RunMeta;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -253,6 +254,16 @@ pub fn build_or_update_index() -> Result<Vec<PromptEntry>, String> {
             let events_path = entry.path().join("events.jsonl");
             if !events_path.exists() {
                 continue;
+            }
+
+            // Skip soft-deleted runs
+            let meta_path = entry.path().join("meta.json");
+            if let Ok(content) = fs::read_to_string(&meta_path) {
+                if let Ok(meta) = serde_json::from_str::<RunMeta>(&content) {
+                    if meta.deleted_at.is_some() {
+                        continue;
+                    }
+                }
             }
 
             current_run_ids.insert(run_id.clone());

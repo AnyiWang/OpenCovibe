@@ -56,6 +56,10 @@
   "settings_general_displayLanguage": "Display Language",
   "settings_general_displayLanguageDesc": "Choose the language for the app interface",
 
+  "settings_general_display": "Display",
+  "settings_general_uiZoom": "Interface Scale",
+  "settings_general_uiZoomDesc": "Adjust the overall size of the interface",
+
   "settings_cliConfig_loading": "Loading CLI config...",
   "settings_cliConfig_loadFailed": "Failed to load CLI config: {error}",
   "settings_cliConfig_retry": "Retry",
@@ -237,6 +241,10 @@
   "sidebar_uncategorized": "Uncategorized",
   "sidebar_conversations": "{count} conversations",
   "sidebar_showMore": "Show {count} more...",
+  "sidebar_deleteConfirm": "Delete conversation",
+  "sidebar_deleteDesc": "This conversation will be removed from the sidebar. Data is kept on disk and can be restored later.",
+  "sidebar_deleteCancel": "Cancel",
+  "sidebar_deleteOk": "Delete",
 
   "statusbar_toggleSidebar": "Toggle sidebar (Ctrl+B)",
   "statusbar_contextTitle": "Context usage for the latest turn ({pct}% of {tokens} tokens). The CLI automatically compacts context when approaching the limit.",

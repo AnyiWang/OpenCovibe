@@ -74,6 +74,7 @@ pub fn create_run(
         cli_import_watermark: None,
         cli_session_path: None,
         cli_usage_incomplete: None,
+        deleted_at: None,
     };
 
     save_meta(&meta)?;
@@ -84,18 +85,41 @@ pub fn save_meta(meta: &RunMeta) -> Result<(), String> {
     let dir = super::run_dir(&meta.id);
     super::ensure_dir(&dir).map_err(|e| e.to_string())?;
     let path = dir.join("meta.json");
+    let tmp = dir.join(format!(
+        "meta.json.{}.{}.tmp",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
     let json = serde_json::to_string_pretty(meta).map_err(|e| e.to_string())?;
-    fs::write(&path, json).map_err(|e| e.to_string())
+    fs::write(&tmp, &json).map_err(|e| format!("write tmp: {e}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600));
+    }
+    fs::rename(&tmp, &path).map_err(|e| format!("rename: {e}"))
 }
 
-pub fn get_run(id: &str) -> Option<RunMeta> {
+/// Read meta.json without deleted_at filtering (internal use).
+fn get_run_raw(id: &str) -> Option<RunMeta> {
     let path = super::run_dir(id).join("meta.json");
     if !path.exists() {
-        log::debug!("[storage/runs] get_run: id={} not found", id);
         return None;
     }
     let content = fs::read_to_string(&path).ok()?;
     serde_json::from_str(&content).ok()
+}
+
+pub fn get_run(id: &str) -> Option<RunMeta> {
+    let meta = get_run_raw(id)?;
+    if meta.deleted_at.is_some() {
+        log::debug!("[storage/runs] get_run: id={} is soft-deleted", id);
+        return None;
+    }
+    Some(meta)
 }
 
 pub fn update_session_id(id: &str, session_id: &str) -> Result<(), String> {
@@ -207,6 +231,9 @@ pub fn list_runs() -> Vec<TaskRun> {
             }
             if let Ok(content) = fs::read_to_string(&meta_path) {
                 if let Ok(meta) = serde_json::from_str::<RunMeta>(&content) {
+                    if meta.deleted_at.is_some() {
+                        continue;
+                    }
                     // Compute summary from events
                     let events_path = entry.path().join("events.jsonl");
                     let (last_activity, msg_count, last_preview) = summarize_events(&events_path);
@@ -340,6 +367,9 @@ pub fn list_all_run_metas() -> Vec<RunMeta> {
             }
             if let Ok(content) = fs::read_to_string(&meta_path) {
                 if let Ok(meta) = serde_json::from_str::<RunMeta>(&content) {
+                    if meta.deleted_at.is_some() {
+                        continue;
+                    }
                     metas.push(meta);
                 }
             }
@@ -392,4 +422,49 @@ pub fn reconcile_orphaned_runs() {
             }
         }
     }
+}
+
+/// Soft-delete runs by ID list. Pre-checks all IDs, then writes deleted_at.
+/// Best-effort rollback on failure.
+pub fn soft_delete_runs(ids: &[String]) -> Result<u32, String> {
+    // Deduplicate
+    let unique_ids: Vec<&String> = {
+        let mut seen = std::collections::HashSet::new();
+        ids.iter().filter(|id| seen.insert(id.as_str())).collect()
+    };
+
+    // Phase 1: pre-check — read all metas, reject if any not found or still active
+    let mut metas: Vec<RunMeta> = Vec::with_capacity(unique_ids.len());
+    for id in &unique_ids {
+        let meta = get_run_raw(id).ok_or_else(|| format!("Run {} not found", id))?;
+        if meta.deleted_at.is_some() {
+            continue; // already deleted, skip
+        }
+        if matches!(meta.status, RunStatus::Running | RunStatus::Pending) {
+            return Err(format!("Cannot delete: run {} is still active", id));
+        }
+        metas.push(meta);
+    }
+
+    // Phase 2: write deleted_at; rollback on failure
+    let now = now_iso();
+    let originals: Vec<RunMeta> = metas.clone();
+    let mut count = 0u32;
+    for meta in &mut metas {
+        meta.deleted_at = Some(now.clone());
+        if let Err(e) = save_meta(meta) {
+            // best-effort rollback
+            for orig in &originals[..=count as usize] {
+                let _ = save_meta(orig);
+            }
+            return Err(format!(
+                "Failed to delete run {}: {}. Rollback attempted.",
+                meta.id, e
+            ));
+        }
+        count += 1;
+    }
+
+    log::debug!("[storage/runs] soft_delete_runs: deleted {} runs", count);
+    Ok(count)
 }

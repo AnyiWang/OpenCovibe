@@ -62,6 +62,7 @@ pub fn run() {
             commands::runs::stop_run,
             commands::runs::update_run_model,
             commands::runs::rename_run,
+            commands::runs::soft_delete_runs,
             commands::runs::search_prompts,
             commands::runs::add_prompt_favorite,
             commands::runs::remove_prompt_favorite,

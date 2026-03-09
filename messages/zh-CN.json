@@ -56,6 +56,10 @@
   "settings_general_displayLanguage": "界面语言",
   "settings_general_displayLanguageDesc": "选择应用界面的显示语言",
 
+  "settings_general_display": "显示",
+  "settings_general_uiZoom": "界面缩放",
+  "settings_general_uiZoomDesc": "调整界面整体大小",
+
   "settings_cliConfig_loading": "正在加载 CLI 配置...",
   "settings_cliConfig_loadFailed": "加载 CLI 配置失败：{error}",
   "settings_cliConfig_retry": "重试",
@@ -237,6 +241,10 @@
   "sidebar_uncategorized": "未分类",
   "sidebar_conversations": "{count} 个对话",
   "sidebar_showMore": "显示更多 ({count})...",
+  "sidebar_deleteConfirm": "删除对话",
+  "sidebar_deleteDesc": "对话将从侧边栏移除，数据保留在磁盘上，后续可恢复。",
+  "sidebar_deleteCancel": "取消",
+  "sidebar_deleteOk": "删除",
 
   "statusbar_toggleSidebar": "切换侧边栏 (Ctrl+B)",
   "statusbar_contextTitle": "最新轮次的上下文使用量（{pct}%，共 {tokens} 个 token）。接近限制时 CLI 会自动压缩上下文。",

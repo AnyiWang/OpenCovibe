@@ -9,11 +9,13 @@
     listPromptFavorites,
     searchPrompts,
     listMemoryFiles,
+    softDeleteRuns,
   } from "$lib/api";
   import ProjectFolderItem from "$lib/components/ProjectFolderItem.svelte";
   import CommandPalette from "$lib/components/CommandPalette.svelte";
   import SetupWizard from "$lib/components/SetupWizard.svelte";
   import AboutModal from "$lib/components/AboutModal.svelte";
+  import Modal from "$lib/components/Modal.svelte";
   import CliSessionBrowser from "$lib/components/CliSessionBrowser.svelte";
   import UpdateBanner from "$lib/components/UpdateBanner.svelte";
   import type {
@@ -32,6 +34,7 @@
     autoExpandForRun,
     expandForProjectChange,
     normalizeCwd,
+    type ConversationGroup,
   } from "$lib/utils/sidebar-groups";
   import { page } from "$app/stores";
   import { goto, afterNavigate } from "$app/navigation";
@@ -406,9 +409,22 @@
       // One-time migration: if platform_credentials is empty but api_key exists,
       // create an initial credential from current settings
       await migrateCredentialsIfNeeded(settings);
+      applyZoom(settings.ui_zoom);
     } catch {
       // Silently fail
     }
+  }
+
+  function applyZoom(zoom?: number) {
+    const factor = Math.min(1.5, Math.max(0.75, zoom ?? 1.0));
+    import("@tauri-apps/api/webviewWindow")
+      .then(({ getCurrentWebviewWindow }) => {
+        getCurrentWebviewWindow()
+          .setZoom(factor)
+          .then(() => dbg("layout", "applyZoom success", { factor }))
+          .catch((e) => dbgWarn("layout", "setZoom failed", e));
+      })
+      .catch((e) => dbgWarn("layout", "import webviewWindow failed", e));
   }
 
   /** Migrate existing api_key into platform_credentials (one-time). */
@@ -727,6 +743,38 @@
     const url = $page.url;
     return url.searchParams.get("run") ?? "";
   });
+
+  // ── Delete conversation confirm flow ──
+  let deleteConfirmOpen = $state(false);
+  let deleteTarget: ConversationGroup | null = $state(null);
+
+  function requestDeleteConversation(conv: ConversationGroup) {
+    deleteTarget = conv;
+    deleteConfirmOpen = true;
+  }
+
+  async function confirmDeleteConversation() {
+    const conv = deleteTarget;
+    deleteConfirmOpen = false;
+    deleteTarget = null;
+    if (!conv) return;
+    try {
+      const ids = conv.runs.map((r) => r.id);
+      await softDeleteRuns(ids);
+      dbg("layout", "deleteConversation success", { ids });
+      window.dispatchEvent(new Event("ocv:runs-changed"));
+      if (conv.runs.some((r) => r.id === selectedRunId)) {
+        goto("/chat");
+      }
+    } catch (e) {
+      dbgWarn("layout", "deleteConversation failed", e);
+    }
+  }
+
+  function cancelDeleteConversation() {
+    deleteConfirmOpen = false;
+    deleteTarget = null;
+  }
 
   // Build project folder tree for chats tab
   let projectFolders = $derived.by(() => buildProjectFolders(runs, favoriteRunIds, pinnedCwds));
@@ -1792,6 +1840,7 @@
                     onToggle={() => toggleProject(folder.folderKey)}
                     onSelectConversation={(runId) => goto(`/chat?run=${runId}`)}
                     onResume={(runId, mode) => goto(`/chat?run=${runId}&resume=${mode}`)}
+                    onDelete={requestDeleteConversation}
                   />
                 {/each}
                 <!-- Open folder... -->
@@ -1936,3 +1985,21 @@
     }}
   />
 {/if}
+
+<Modal bind:open={deleteConfirmOpen} title={t("sidebar_deleteConfirm")}>
+  <p class="text-sm text-muted-foreground mb-4">{t("sidebar_deleteDesc")}</p>
+  <div class="flex justify-end gap-2">
+    <button
+      class="px-3 py-1.5 text-sm rounded-md border border-border hover:bg-accent transition-colors"
+      onclick={cancelDeleteConversation}
+    >
+      {t("sidebar_deleteCancel")}
+    </button>
+    <button
+      class="px-3 py-1.5 text-sm rounded-md bg-destructive text-destructive-foreground hover:bg-destructive/90 transition-colors"
+      onclick={confirmDeleteConversation}
+    >
+      {t("sidebar_deleteOk")}
+    </button>
+  </div>
+</Modal>

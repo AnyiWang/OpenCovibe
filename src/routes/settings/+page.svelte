@@ -118,6 +118,90 @@
   let debugOn = $state(isDebugMode());
   let logCopied = $state(false);
   let debugFilter = $state(getDebugFilter() || "1");
+
+  // ── UI Zoom state ──
+  import type { WebviewWindow } from "@tauri-apps/api/webviewWindow";
+
+  let cachedWebview: WebviewWindow | null = null;
+  async function getWebview(): Promise<WebviewWindow> {
+    if (!cachedWebview) {
+      const { getCurrentWebviewWindow } = await import("@tauri-apps/api/webviewWindow");
+      cachedWebview = getCurrentWebviewWindow();
+    }
+    return cachedWebview;
+  }
+
+  let zoomPreview = $state(1.0);
+
+  $effect(() => {
+    if (settings) {
+      zoomPreview = Math.min(1.5, Math.max(0.75, settings.ui_zoom ?? 1.0));
+    }
+  });
+
+  function clampZoom(v: number): number | null {
+    if (!Number.isFinite(v)) return null;
+    return Math.min(1.5, Math.max(0.75, v));
+  }
+
+  let pendingZoom: number | null = null;
+  let zoomFlying = false;
+
+  async function applyZoomQueued(factor: number) {
+    if (zoomFlying) {
+      pendingZoom = factor;
+      return;
+    }
+
+    zoomFlying = true;
+    try {
+      const wv = await getWebview();
+      await wv.setZoom(factor);
+      dbg("settings", "applyZoomQueued", { factor });
+    } catch (e) {
+      dbgWarn("settings", "applyZoomQueued failed", e);
+    }
+    zoomFlying = false;
+
+    if (pendingZoom !== null) {
+      const next = pendingZoom;
+      pendingZoom = null;
+      void applyZoomQueued(next);
+    }
+  }
+
+  function previewZoom(raw: number) {
+    const factor = clampZoom(raw);
+    if (factor === null) return;
+    zoomPreview = factor;
+  }
+
+  let displaySaved = $state(false);
+
+  async function commitZoom(raw: number) {
+    const factor = clampZoom(raw);
+    if (factor === null) return;
+
+    // Persist
+    try {
+      settings = await api.updateUserSettings({ ui_zoom: factor });
+      dbg("settings", "commitZoom saved", { factor });
+      displaySaved = true;
+      setTimeout(() => (displaySaved = false), 1500);
+    } catch (e) {
+      dbgWarn("settings", "commitZoom save failed", e);
+      // Rollback to last persisted value
+      const fallback = Math.min(1.5, Math.max(0.75, settings?.ui_zoom ?? 1.0));
+      zoomPreview = fallback;
+      pendingZoom = null;
+      void applyZoomQueued(fallback);
+      return;
+    }
+
+    // Apply final value via queue (overrides any stale preview)
+    pendingZoom = null;
+    void applyZoomQueued(factor);
+  }
   let logCount = $state(getDebugLogCount());
   let rustCmdCopied = $state(false);
   let currentUsername = $state("");
@@ -1086,6 +1170,50 @@
                     >{/if}
                 </button>
               {/each}
+            </div>
+          </div>
+        </Card>
+
+        <!-- Display Card -->
+        <Card class="p-6 space-y-4">
+          <div class="flex items-center justify-between">
+            <h2 class="text-sm font-semibold text-muted-foreground uppercase tracking-wider">
+              {t("settings_general_display")}
+            </h2>
+            {#if displaySaved}
+              <span class="text-xs text-emerald-500 flex items-center gap-1 animate-fade-in">
+                <svg
+                  class="h-3 w-3"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"><path d="M20 6 9 17l-5-5" /></svg
+                >
+                {t("settings_general_saved")}
+              </span>
+            {/if}
+          </div>
+          <div class="flex items-center justify-between gap-4">
+            <div>
+              <p class="text-sm font-medium">{t("settings_general_uiZoom")}</p>
+              <p class="text-xs text-muted-foreground">{t("settings_general_uiZoomDesc")}</p>
+            </div>
+            <div class="flex items-center gap-3">
+              <input
+                type="range"
+                min="0.75"
+                max="1.5"
+                step="0.05"
+                value={zoomPreview}
+                class="w-28 accent-primary"
+                oninput={(e) => previewZoom(parseFloat((e.target as HTMLInputElement).value))}
+                onchange={(e) => commitZoom(parseFloat((e.target as HTMLInputElement).value))}
+              />
+              <span class="text-xs text-muted-foreground w-10 text-right">
+                {Math.round(zoomPreview * 100)}%
+              </span>
             </div>
           </div>
         </Card>

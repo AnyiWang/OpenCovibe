@@ -101,6 +101,12 @@ pub fn rename_run(id: String, name: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+pub fn soft_delete_runs(ids: Vec<String>) -> Result<u32, String> {
+    log::debug!("[cmd/runs] soft_delete_runs: ids={:?}", ids);
+    storage::runs::soft_delete_runs(&ids)
+}
+
+#[tauri::command]
 pub fn update_run_model(id: String, model: String) -> Result<(), String> {
     log::debug!("[runs] update_run_model: id={}, model={}", id, model);
     storage::runs::update_run_model(&id, &model)
