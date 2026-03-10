@@ -155,10 +155,15 @@ fn resolve_auth_env(remote: &Option<RemoteHost>, settings: &UserSettings) -> Res
         }
     }
 
+    // CLI mode: never inject a stale base_url — CLI manages its own connection
     ResolvedAuth {
         api_key: None,
         auth_token: None,
-        base_url,
+        base_url: if settings.auth_mode == "cli" {
+            None
+        } else {
+            base_url
+        },
         default_model: None,
         extra_env: None,
     }

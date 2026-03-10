@@ -1251,7 +1251,12 @@
                   : 'hover:bg-accent hover:border-ring/30'}"
                 onclick={() => {
                   authMode = "cli";
-                  saveGeneralPatch({ auth_mode: "cli" });
+                  saveGeneralPatch({
+                    auth_mode: "cli",
+                    anthropic_base_url: null,
+                    active_platform_id: null,
+                    auth_env_var: null,
+                  });
                   api
                     .getAuthOverview()
                     .then((ov) => (authOverview = ov))
