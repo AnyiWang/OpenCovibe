@@ -801,7 +801,7 @@
           <button
             class="text-foreground/30 hover:text-foreground/60 transition-colors hidden sm:inline"
             title={t("statusbar_cliVersionTitle", { version: cliVersion ?? "" })}
-            onclick={() => goto("/release-notes")}>v{cliVersion}</button
+            onclick={() => goto("/release-notes")}>CLI v{cliVersion}</button
           >
         {/if}
       </div>

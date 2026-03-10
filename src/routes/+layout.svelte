@@ -827,9 +827,12 @@
   });
 
   // Breadcrumb for non-chat pages
-  let pageName = $derived(
-    navItems.find((n) => currentPath.startsWith(n.path))?.label() ?? t("layout_appName"),
-  );
+  let pageName = $derived.by(() => {
+    const nav = navItems.find((n) => currentPath.startsWith(n.path));
+    if (nav) return nav.label();
+    if (currentPath.startsWith("/release-notes")) return t("release_cliChangelog");
+    return t("layout_appName");
+  });
 
   function newChat() {
     goto("/chat");

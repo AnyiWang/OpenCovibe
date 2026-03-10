@@ -78,12 +78,12 @@
           d="M14 2v4a2 2 0 0 0 2 2h4"
         /><path d="M10 9H8" /><path d="M16 13H8" /><path d="M16 17H8" /></svg
       >
-      <h1 class="text-sm font-medium">{t("release_title")}</h1>
+      <h1 class="text-sm font-medium">{t("release_cliChangelog")}</h1>
       {#if currentVersion}
         <span
           class="rounded bg-primary/15 px-1.5 py-0.5 text-[10px] font-mono font-medium text-primary"
         >
-          v{currentVersion}
+          Claude Code v{currentVersion}
         </span>
       {/if}
     </div>

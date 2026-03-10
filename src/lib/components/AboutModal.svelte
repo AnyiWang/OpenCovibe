@@ -92,7 +92,9 @@
       <!-- Header -->
       <div class="flex items-center justify-between border-b border-border px-6 py-4">
         <div class="flex items-center gap-3">
-          <span class="text-xs text-muted-foreground">{appVersion ? `v${appVersion}` : ""}</span>
+          <span class="text-xs text-muted-foreground"
+            >{appVersion ? `OpenCovibe v${appVersion}` : ""}</span
+          >
           <button
             class="rounded-md border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
             onclick={updateToLatest}

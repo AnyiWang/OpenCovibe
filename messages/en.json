@@ -628,6 +628,7 @@
 
   "release_goBack": "Go back",
   "release_title": "Release Notes",
+  "release_cliChangelog": "Claude Code Changelog",
   "release_searchPlaceholder": "Search changes...",
   "release_github": "GitHub",
   "release_loadFailed": "Failed to load release notes",
@@ -761,6 +762,7 @@
   "mcp_sessionInactive": "Session inactive — actions disabled",
 
   "notes_title": "Release Notes",
+  "notes_cliTitle": "CLI Release Notes",
   "notes_latest": "latest",
   "notes_viewAll": "View all {count} versions",
 

@@ -628,6 +628,7 @@
 
   "release_goBack": "返回",
   "release_title": "发布说明",
+  "release_cliChangelog": "Claude Code 更新日志",
   "release_searchPlaceholder": "搜索更改...",
   "release_github": "GitHub",
   "release_loadFailed": "加载发布说明失败",
@@ -761,6 +762,7 @@
   "mcp_sessionInactive": "会话未激活 — 操作已禁用",
 
   "notes_title": "发布说明",
+  "notes_cliTitle": "CLI 更新日志",
   "notes_latest": "最新",
   "notes_viewAll": "查看全部 {count} 个版本",
 
