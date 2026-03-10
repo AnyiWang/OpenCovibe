@@ -16,6 +16,7 @@
     defaultHighlightStyle,
     LanguageDescription,
   } from "@codemirror/language";
+  import { classHighlighter } from "@lezer/highlight";
   import { languages } from "@codemirror/language-data";
   import { oneDark } from "@codemirror/theme-one-dark";
   import { dbg, dbgWarn } from "$lib/utils/debug";
@@ -150,6 +151,10 @@
           ...historyKeymap,
         ]),
         syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
+        // Static tok-* class fallback: if style-mod CSS injection fails
+        // (observed on Intel Mac WKWebView), the static CSS in <style> below
+        // provides baseline syntax highlighting via classHighlighter.
+        syntaxHighlighting(classHighlighter),
         EditorView.editable.of(!readonly),
         EditorState.readOnly.of(readonly),
         themeCompartment.of(dark ? oneDark : []),
@@ -228,4 +233,181 @@
     height: 100%;
   }
   /* scroller flex layout is enforced globally in app.css */
+
+  /*
+   * Static tok-* fallback — provides syntax highlighting when style-mod
+   * dynamic CSS injection fails (Intel Mac WKWebView).
+   *
+   * These rules have lower specificity than style-mod's generated classes,
+   * so they only take visual effect when the dynamic styles are absent.
+   * Colors match oneDark (dark) / defaultHighlightStyle (light).
+   */
+
+  /* ── Light mode ── */
+  .code-editor-wrapper :global(.tok-keyword) {
+    color: #708;
+  }
+  .code-editor-wrapper :global(.tok-atom) {
+    color: #219;
+  }
+  .code-editor-wrapper :global(.tok-bool) {
+    color: #219;
+  }
+  .code-editor-wrapper :global(.tok-number) {
+    color: #164;
+  }
+  .code-editor-wrapper :global(.tok-string) {
+    color: #a11;
+  }
+  .code-editor-wrapper :global(.tok-string2) {
+    color: #e40;
+  }
+  .code-editor-wrapper :global(.tok-comment) {
+    color: #940;
+    font-style: italic;
+  }
+  .code-editor-wrapper :global(.tok-variableName) {
+    color: #05a;
+  }
+  .code-editor-wrapper :global(.tok-variableName2) {
+    color: #085;
+  }
+  .code-editor-wrapper :global(.tok-variableName.tok-definition) {
+    color: #00f;
+  }
+  .code-editor-wrapper :global(.tok-typeName) {
+    color: #085;
+  }
+  .code-editor-wrapper :global(.tok-namespace) {
+    color: #085;
+  }
+  .code-editor-wrapper :global(.tok-className) {
+    color: #167;
+  }
+  .code-editor-wrapper :global(.tok-macroName) {
+    color: #256;
+  }
+  .code-editor-wrapper :global(.tok-propertyName) {
+    color: #00c;
+  }
+  .code-editor-wrapper :global(.tok-propertyName.tok-definition) {
+    color: #00c;
+  }
+  .code-editor-wrapper :global(.tok-operator) {
+    color: #708;
+  }
+  .code-editor-wrapper :global(.tok-meta) {
+    color: #555;
+  }
+  .code-editor-wrapper :global(.tok-punctuation) {
+    color: #555;
+  }
+  .code-editor-wrapper :global(.tok-link) {
+    color: #219;
+    text-decoration: underline;
+  }
+  .code-editor-wrapper :global(.tok-heading) {
+    color: #00f;
+    font-weight: bold;
+  }
+  .code-editor-wrapper :global(.tok-emphasis) {
+    font-style: italic;
+  }
+  .code-editor-wrapper :global(.tok-strong) {
+    font-weight: bold;
+  }
+  .code-editor-wrapper :global(.tok-invalid) {
+    color: #f00;
+  }
+  .code-editor-wrapper :global(.tok-inserted) {
+    color: #164;
+  }
+  .code-editor-wrapper :global(.tok-deleted) {
+    color: #a11;
+    text-decoration: line-through;
+  }
+
+  /* ── Dark mode (oneDark-aligned) ── */
+  :global(.dark) .code-editor-wrapper :global(.tok-keyword) {
+    color: #c678dd;
+  }
+  :global(.dark) .code-editor-wrapper :global(.tok-atom) {
+    color: #d19a66;
+  }
+  :global(.dark) .code-editor-wrapper :global(.tok-bool) {
+    color: #d19a66;
+  }
+  :global(.dark) .code-editor-wrapper :global(.tok-number) {
+    color: #d19a66;
+  }
+  :global(.dark) .code-editor-wrapper :global(.tok-string) {
+    color: #98c379;
+  }
+  :global(.dark) .code-editor-wrapper :global(.tok-string2) {
+    color: #e06c75;
+  }
+  :global(.dark) .code-editor-wrapper :global(.tok-comment) {
+    color: #5c6370;
+    font-style: italic;
+  }
+  :global(.dark) .code-editor-wrapper :global(.tok-variableName) {
+    color: #e06c75;
+  }
+  :global(.dark) .code-editor-wrapper :global(.tok-variableName2) {
+    color: #e06c75;
+  }
+  :global(.dark) .code-editor-wrapper :global(.tok-variableName.tok-definition) {
+    color: #61afef;
+  }
+  :global(.dark) .code-editor-wrapper :global(.tok-typeName) {
+    color: #e5c07b;
+  }
+  :global(.dark) .code-editor-wrapper :global(.tok-namespace) {
+    color: #e5c07b;
+  }
+  :global(.dark) .code-editor-wrapper :global(.tok-className) {
+    color: #e5c07b;
+  }
+  :global(.dark) .code-editor-wrapper :global(.tok-macroName) {
+    color: #e06c75;
+  }
+  :global(.dark) .code-editor-wrapper :global(.tok-propertyName) {
+    color: #61afef;
+  }
+  :global(.dark) .code-editor-wrapper :global(.tok-propertyName.tok-definition) {
+    color: #61afef;
+  }
+  :global(.dark) .code-editor-wrapper :global(.tok-operator) {
+    color: #56b6c2;
+  }
+  :global(.dark) .code-editor-wrapper :global(.tok-meta) {
+    color: #abb2bf;
+  }
+  :global(.dark) .code-editor-wrapper :global(.tok-punctuation) {
+    color: #abb2bf;
+  }
+  :global(.dark) .code-editor-wrapper :global(.tok-link) {
+    color: #61afef;
+    text-decoration: underline;
+  }
+  :global(.dark) .code-editor-wrapper :global(.tok-heading) {
+    color: #e06c75;
+    font-weight: bold;
+  }
+  :global(.dark) .code-editor-wrapper :global(.tok-emphasis) {
+    font-style: italic;
+  }
+  :global(.dark) .code-editor-wrapper :global(.tok-strong) {
+    font-weight: bold;
+  }
+  :global(.dark) .code-editor-wrapper :global(.tok-invalid) {
+    color: #f44747;
+  }
+  :global(.dark) .code-editor-wrapper :global(.tok-inserted) {
+    color: #98c379;
+  }
+  :global(.dark) .code-editor-wrapper :global(.tok-deleted) {
+    color: #e06c75;
+    text-decoration: line-through;
+  }
 </style>

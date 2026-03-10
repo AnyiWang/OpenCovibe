@@ -282,6 +282,35 @@ describe("buildProjectFolders", () => {
     expect(folders).toHaveLength(1);
     expect(folders[0].cwd).toBe("C:/Users/proj");
   });
+
+  it("removed_cwd_not_in_folders", () => {
+    const runs = [makeRun({ id: "r1", cwd: "/projA" }), makeRun({ id: "r2", cwd: "/projB" })];
+    const folders = buildProjectFolders(runs, NO_FAVS, NO_PINS, ["/projA"]);
+    expect(folders).toHaveLength(1);
+    expect(folders[0].cwd).toBe("/projB");
+  });
+
+  it("uncategorized_never_removed", () => {
+    const runs = [makeRun({ id: "r1", cwd: "" }), makeRun({ id: "r2", cwd: "/proj" })];
+    // Attempt to remove "" (Uncategorized) — should have no effect
+    const folders = buildProjectFolders(runs, NO_FAVS, NO_PINS, [""]);
+    const uncat = folders.find((f) => f.isUncategorized);
+    expect(uncat).toBeDefined();
+    expect(uncat!.conversations).toHaveLength(1);
+  });
+
+  it("removed_cwd_in_pinnedCwds_no_empty_folder", () => {
+    // If a cwd is both pinned and removed, it should not generate a folder
+    const folders = buildProjectFolders([], NO_FAVS, ["/pinned/proj"], ["/pinned/proj"]);
+    expect(folders).toHaveLength(0);
+  });
+
+  it("removed_cwd_normalization_consistent", () => {
+    const runs = [makeRun({ id: "r1", cwd: "C:\\Users\\proj" })];
+    // Remove with different formatting — should still match after normalization
+    const folders = buildProjectFolders(runs, NO_FAVS, NO_PINS, ["c:\\Users\\proj\\"]);
+    expect(folders).toHaveLength(0);
+  });
 });
 
 // ── autoExpandForRun ──

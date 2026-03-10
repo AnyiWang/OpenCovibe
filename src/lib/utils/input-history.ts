@@ -68,6 +68,19 @@ export type HistoryAction =
   | null; // not applicable
 
 /**
+ * Whether textarea content spans multiple visual lines (hard newlines OR soft wrapping).
+ * Must be called with the actual textarea DOM element.
+ */
+export function hasMultipleVisualLines(textarea: HTMLTextAreaElement): boolean {
+  if (textarea.value.includes("\n")) return true;
+  // Check if text wraps visually by comparing scroll height to one line
+  const style = getComputedStyle(textarea);
+  const lineHeight = parseFloat(style.lineHeight) || parseFloat(style.fontSize) * 1.2;
+  // Tolerance for padding/border
+  return textarea.scrollHeight > lineHeight + 8;
+}
+
+/**
  * Determine what action to take for an Up/Down key press.
  * Returns null if the key should not be handled (wrong line position).
  */

@@ -11,6 +11,9 @@
     extractTaskToolMeta,
     shouldShowSubTimeline as _shouldShow,
     getToolRenderLevel,
+    getToolDetail,
+    isToolTerminal,
+    formatSuggestionLabel as _fmtSuggestion,
   } from "$lib/utils/tool-rendering";
   import MarkdownContent from "$lib/components/MarkdownContent.svelte";
   import ToolDetailView from "$lib/components/ToolDetailView.svelte";
@@ -29,6 +32,7 @@
     taskNotifications,
     planContent,
     latestPlanTool,
+    showPermissionInPanel,
   }: {
     tool: BusToolItem;
     subTimeline?: TimelineEntry[];
@@ -55,6 +59,8 @@
     planContent?: { content: string; fileName: string } | null;
     /** Whether this is the latest plan tool card (for auto-expand). */
     latestPlanTool?: boolean;
+    /** Whether generic tool permissions are handled by the floating PermissionPanel. */
+    showPermissionInPanel?: boolean;
   } = $props();
 
   // Look up the task notification for this specific Task tool
@@ -127,10 +133,14 @@
     submitting = false;
   });
 
+  let isAgentLike = $derived(tool.tool_name === "Agent" || tool.tool_name === "Task");
+
   // Auto-expand when input is streaming in (running + has input data)
+  // Skip Agent/Task — their input (full prompt) is too large to auto-expand.
   let isInputStreaming = $derived(
     tool.status === "running" &&
       !isAsk &&
+      !isAgentLike &&
       tool.input &&
       Object.keys(tool.input).length > 0 &&
       (tool as Record<string, unknown>)._inputJsonAccum != null,
@@ -167,29 +177,19 @@
     return count;
   });
 
+  let subToolCompleted = $derived.by(() => {
+    if (!subTimeline) return 0;
+    let count = 0;
+    for (const e of subTimeline) {
+      if (e.kind === "tool" && isToolTerminal(e.tool.status)) count++;
+    }
+    return count;
+  });
+
   let style = $derived(getToolColor(tool.tool_name));
 
   // Extract a human-readable detail from tool input (file path, command, pattern, etc.)
-  let detail = $derived.by(() => {
-    const input = tool.input;
-    if (!input || Object.keys(input).length === 0) return "";
-    return (
-      (input.file_path as string) ??
-      (input.path as string) ??
-      (input.command as string) ??
-      (input.pattern as string) ??
-      (input.query as string) ??
-      (input.url as string) ??
-      (input.team_name as string) ??
-      (input.subject as string) ??
-      (input.taskId != null || input.task_id != null
-        ? `#${input.taskId ?? input.task_id}`
-        : undefined) ??
-      (input.skill as string) ??
-      (input.recipient as string) ??
-      ""
-    );
-  });
+  let detail = $derived(getToolDetail(tool.input));
 
   let planLabel = $derived(planFileName(detail));
   let displayDetail = $derived(planLabel ? t("inline_planLabel", { name: planLabel }) : detail);
@@ -216,18 +216,34 @@
   let statusKind = $derived(
     tool.status === "success"
       ? "done"
-      : tool.status === "error" || tool.status === "denied"
+      : tool.status === "error" || tool.status === "denied" || tool.status === "permission_denied"
         ? "error"
-        : tool.status === "permission_denied"
-          ? "permission_denied"
-          : tool.status === "permission_prompt"
-            ? "permission_prompt"
-            : "running",
+        : tool.status === "permission_prompt"
+          ? "permission_prompt"
+          : "running",
   );
 
   // AskUserQuestion detection
   let isAsk = $derived(tool.tool_name === "AskUserQuestion");
-  let isAskDenied = $derived(isAsk && tool.status === "permission_denied");
+  // Denied detection: explicit permission_denied status, OR error with no selected option
+  // (handles old snapshots where finalizer overwrote permission_denied → error)
+  let isAskDenied = $derived.by(() => {
+    if (!isAsk) return false;
+    if (tool.status === "permission_denied") return true;
+    // Fallback: error status + no option selected = denied/interrupted
+    if (tool.status === "error") {
+      const opts = parsedQuestions[0]?.options.map((o) => o.label) ?? [];
+      const ansText = extractOutputText(tool.output);
+      const ansSet = new Set(
+        ansText
+          .split(", ")
+          .map((s) => s.trim())
+          .filter(Boolean),
+      );
+      return !opts.some((o) => ansSet.has(o));
+    }
+    return false;
+  });
 
   // Parse ALL questions from the input (supports multi-question)
   interface ParsedOption {
@@ -554,27 +570,15 @@
   }
 
   function formatSuggestionLabel(s: PermissionSuggestion): string {
-    if (s.type === "addRules" && s.rules?.length && s.behavior === "allow") {
-      return t("inline_alwaysAllow") + ` ${s.rules[0]}`;
-    }
-    if (s.type === "setMode" && s.mode) {
-      return t("inline_switchToMode", { mode: s.mode });
-    }
-    if (s.type === "addDirectories" && s.directories?.length) {
-      return t("inline_addDirectory", { dir: s.directories[0] });
-    }
-    if (s.type === "additionalContext") {
-      return t("inline_applyHookContext");
-    }
-    return `Apply: ${s.type}`;
+    return _fmtSuggestion(s, t);
   }
 </script>
 
 <!-- Inline tool card: three-level rendering -->
 <div class="animate-fade-in {renderLevel === 1 ? 'mb-0.5' : 'mb-2'}">
   {#if renderLevel === 3}
-    <!-- Level 3: interactive card, keep width constraint -->
-    <div class="max-w-[92%]">
+    <!-- Level 3: interactive card -->
+    <div>
       {#if isAsk && (tool.status === "running" || tool.status === "ask_pending") && askQuestion}
         <!-- AskUserQuestion: show question + option buttons -->
         <div class="rounded-lg border border-yellow-500/30 bg-yellow-500/5 px-4 py-3">
@@ -1395,6 +1399,14 @@
             </div>
           {/if}
         </div>
+      {:else if showPermissionInPanel && tool.status === "permission_prompt" && tool.permission_request_id && tool.tool_name !== "AskUserQuestion" && tool.tool_name !== "ExitPlanMode"}
+        <!-- Permission handled by floating panel — show lightweight placeholder -->
+        <div class="flex items-center gap-2 px-3 py-1.5 text-xs text-muted-foreground/60">
+          <div
+            class="h-2 w-2 rounded-full border border-amber-500/40 border-t-amber-500 animate-spin"
+          ></div>
+          <span>{t("inline_permissionPending")}</span>
+        </div>
       {:else if tool.status === "permission_prompt" && tool.permission_request_id}
         <!-- Inline permission prompt (--permission-prompt-tool stdio): amber card with Allow/Deny -->
         <div class="rounded-lg border border-amber-500/30 bg-amber-500/5 px-4 py-3">
@@ -1491,68 +1503,6 @@
             {/if}
           {/if}
         </div>
-      {:else if tool.status === "permission_denied"}
-        <!-- Permission denied (legacy: stop/restart flow): amber card with Allow/Deny -->
-        <div class="rounded-lg border border-amber-500/30 bg-amber-500/5 px-4 py-3">
-          <div class="flex items-center gap-2 mb-2">
-            <div class="flex h-5 w-5 shrink-0 items-center justify-center rounded {style.bg}">
-              <svg
-                class="h-3 w-3 {style.text}"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2"
-                stroke-linecap="round"
-                stroke-linejoin="round"><path d={style.icon} /></svg
-              >
-            </div>
-            <span class="text-xs font-medium text-foreground">{t("inline_permissionRequired")}</span
-            >
-            <svg
-              class="h-3.5 w-3.5 text-amber-500 shrink-0 ml-auto"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            >
-              <path
-                d="M12 9v4M12 17h.01M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"
-              />
-            </svg>
-          </div>
-          <p class="text-sm text-foreground mb-1">
-            {t("inline_claudeWantsToUse")} <strong>{tool.tool_name}</strong>
-          </p>
-          {#if detail}
-            <p
-              class="text-xs text-muted-foreground mb-3 truncate"
-              style:direction={isPathLikeDetail ? "rtl" : undefined}
-              style:text-align={isPathLikeDetail ? "left" : undefined}
-            >
-              {#if isPathLikeDetail}<bdi>{detail}</bdi>{:else}{detail}{/if}
-            </p>
-          {/if}
-          {#if onApprove}
-            <div class="flex gap-2">
-              <button
-                class="rounded-md bg-emerald-600 px-4 py-1.5 text-xs font-medium text-white hover:bg-emerald-500 transition-all disabled:opacity-50"
-                disabled={submitting}
-                onclick={() => {
-                  submitting = true;
-                  onApprove?.(tool.tool_name);
-                }}>{t("common_allow")}</button
-              >
-              <button
-                class="rounded-md border border-border px-4 py-1.5 text-xs font-medium text-foreground hover:bg-accent transition-all"
-                onclick={() => {
-                  /* no-op: user continues conversation */
-                }}>{t("common_deny")}</button
-              >
-            </div>
-          {/if}
-        </div>
       {/if}
     </div>
   {:else}
@@ -1561,7 +1511,7 @@
     <div
       role="button"
       tabindex="0"
-      class="flex items-center gap-2 py-1 cursor-pointer rounded
+      class="relative flex items-center gap-2 py-1 cursor-pointer rounded
         hover:bg-muted/30 transition-colors group
         {statusKind === 'done' && renderLevel === 1 ? 'opacity-60 hover:opacity-100' : ''}
         {expanded ? 'sticky top-0 z-10 bg-background/95 backdrop-blur-sm' : ''}"
@@ -1602,9 +1552,13 @@
           {#if taskMeta.description}
             <span class="text-xs text-muted-foreground truncate">{taskMeta.description}</span>
           {/if}
-          {#if subToolCount > 0 && !showSubTimeline}
+          {#if subToolCount > 0}
             <span class="text-[10px] px-1 py-0.5 rounded bg-muted text-muted-foreground">
-              {t("inline_toolCount", { count: String(subToolCount) })}
+              {#if tool.status === "running"}
+                {subToolCompleted}/{subToolCount} tools
+              {:else}
+                {t("inline_toolCount", { count: String(subToolCount) })}
+              {/if}
             </span>
           {/if}
         {:else}
@@ -1620,12 +1574,16 @@
             <span class="text-xs text-muted-foreground truncate">{bashDescription}</span>
           {:else if bashPreview}
             <span class="text-xs text-muted-foreground font-mono truncate">$ {bashPreview}</span>
-          {:else if tool.status === "running"}
+          {:else if tool.status === "running" && !isAgentLike}
             <span class="text-xs text-muted-foreground italic">{t("inline_starting")}</span>
           {/if}
-          {#if subToolCount > 0 && !showSubTimeline}
+          {#if subToolCount > 0}
             <span class="text-[10px] px-1 py-0.5 rounded bg-muted text-muted-foreground">
-              {t("inline_toolCount", { count: String(subToolCount) })}
+              {#if tool.status === "running"}
+                {subToolCompleted}/{subToolCount} tools
+              {:else}
+                {t("inline_toolCount", { count: String(subToolCount) })}
+              {/if}
             </span>
           {/if}
         {/if}
@@ -1676,9 +1634,9 @@
         </div>
       {/if}
 
-      <!-- Expand chevron: Level 1 shows only on hover -->
+      <!-- Expand chevron: absolute to not affect right-edge alignment of status icon -->
       <svg
-        class="h-3 w-3 shrink-0 transition-all
+        class="absolute -right-5 top-1/2 -translate-y-1/2 h-3 w-3 transition-all
           {renderLevel === 1 ? 'opacity-0 group-hover:opacity-40' : 'text-muted-foreground/40'}
           {(hasSubTimeline ? showSubTimeline : expanded) ? 'rotate-180' : ''}"
         viewBox="0 0 24 24"
@@ -1827,6 +1785,7 @@
             {onApprove}
             {onPermissionRespond}
             {taskNotifications}
+            {showPermissionInPanel}
           />
         {/if}
       {/each}

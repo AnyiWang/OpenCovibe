@@ -563,8 +563,8 @@ const LEVEL_2_TOOLS = new Set(["Bash", "bash", "Edit", "edit_file", "Write", "wr
 export function getToolRenderLevel(toolName: string, status: BusToolItem["status"]): 1 | 2 | 3 {
   // AskUserQuestion is always Level 3 (all states: active, done, denied)
   if (toolName === "AskUserQuestion") return 3;
-  // Interactive statuses: user must approve/deny/retry
-  if (status === "permission_prompt" || status === "permission_denied") return 3;
+  // Interactive statuses: user must approve/deny
+  if (status === "permission_prompt") return 3;
   // ExitPlanMode only needs Level 3 when it's a permission_prompt (plan approval card)
   // Other states (running, success, error) use Level 1 one-liner
   if (toolName === "ExitPlanMode" && status === "permission_prompt") return 3;
@@ -572,6 +572,52 @@ export function getToolRenderLevel(toolName: string, status: BusToolItem["status
   if (LEVEL_2_TOOLS.has(toolName)) return 2;
   // Everything else
   return 1;
+}
+
+// ── Permission / tool input utilities ──
+
+import type { PermissionSuggestion } from "$lib/types";
+
+/** Extract a human-readable detail string from tool input (file path, command, pattern, etc.). */
+export function getToolDetail(input: Record<string, unknown> | undefined): string {
+  if (!input || Object.keys(input).length === 0) return "";
+  return (
+    (input.file_path as string) ??
+    (input.path as string) ??
+    (input.command as string) ??
+    (input.pattern as string) ??
+    (input.query as string) ??
+    (input.url as string) ??
+    (input.team_name as string) ??
+    (input.subject as string) ??
+    (input.taskId != null || input.task_id != null
+      ? `#${input.taskId ?? input.task_id}`
+      : undefined) ??
+    (input.skill as string) ??
+    (input.recipient as string) ??
+    ""
+  );
+}
+
+/** Format a permission suggestion label for display.
+ *  Requires a `t` translation function since this runs outside Svelte component context. */
+export function formatSuggestionLabel(
+  s: PermissionSuggestion,
+  t: (key: string, params?: Record<string, string>) => string,
+): string {
+  if (s.type === "addRules" && s.rules?.length && s.behavior === "allow") {
+    return t("inline_alwaysAllow") + ` ${s.rules[0]}`;
+  }
+  if (s.type === "setMode" && s.mode) {
+    return t("inline_switchToMode", { mode: s.mode });
+  }
+  if (s.type === "addDirectories" && s.directories?.length) {
+    return t("inline_addDirectory", { dir: s.directories[0] });
+  }
+  if (s.type === "additionalContext") {
+    return t("inline_applyHookContext");
+  }
+  return `Apply: ${s.type}`;
 }
 
 /** Copy text to clipboard with legacy fallback for Tauri WebView. */

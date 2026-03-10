@@ -863,9 +863,10 @@ describe("getToolRenderLevel", () => {
     expect(getToolRenderLevel("Bash", "permission_prompt")).toBe(3);
     expect(getToolRenderLevel("Read", "permission_prompt")).toBe(3);
   });
-  it("returns 3 for permission_denied on any tool", () => {
-    expect(getToolRenderLevel("Bash", "permission_denied")).toBe(3);
-    expect(getToolRenderLevel("Write", "permission_denied")).toBe(3);
+  it("permission_denied uses normal level (not 3) for non-AskUser tools", () => {
+    expect(getToolRenderLevel("Bash", "permission_denied")).toBe(2);
+    expect(getToolRenderLevel("Write", "permission_denied")).toBe(2);
+    expect(getToolRenderLevel("Read", "permission_denied")).toBe(1);
   });
   it("returns 3 for ExitPlanMode only in permission_prompt", () => {
     expect(getToolRenderLevel("ExitPlanMode", "permission_prompt")).toBe(3);
@@ -898,10 +899,10 @@ describe("getToolRenderLevel", () => {
     expect(getToolRenderLevel("WebFetch", "error")).toBe(1);
   });
 
-  // Level 2 tools with interactive status → Level 3 wins
-  it("returns 3 when Level 2 tool has interactive status", () => {
+  // Level 2 tools with permission_prompt → Level 3 wins
+  it("returns 3 when Level 2 tool has permission_prompt", () => {
     expect(getToolRenderLevel("Bash", "permission_prompt")).toBe(3);
-    expect(getToolRenderLevel("Edit", "permission_denied")).toBe(3);
+    expect(getToolRenderLevel("Edit", "permission_prompt")).toBe(3);
   });
 
   // ── Template-alignment regression tests ──
@@ -912,8 +913,8 @@ describe("getToolRenderLevel", () => {
   //   B3: isAsk && permission_prompt
   //   B4: ExitPlanMode && permission_prompt
   //   B5: generic permission_prompt
-  //   B6: generic permission_denied
-  // Any Level 3 classification that doesn't match B1-B6 renders blank.
+  // permission_denied now renders as error (no separate Level 3 branch needed).
+  // Any Level 3 classification that doesn't match B1-B5 renders blank.
 
   it("ExitPlanMode running is Level 1 (no Level 3 template branch for it)", () => {
     // This was the original bug: ExitPlanMode + running → Level 3 → blank
@@ -925,12 +926,9 @@ describe("getToolRenderLevel", () => {
     expect(getToolRenderLevel("AskUserQuestion", "permission_denied")).toBe(3);
   });
 
-  it("non-Ask non-ExitPlanMode permission_denied is Level 3 (caught by B6)", () => {
-    expect(getToolRenderLevel("Read", "permission_denied")).toBe(3);
-    expect(getToolRenderLevel("Glob", "permission_denied")).toBe(3);
-  });
-
-  it("ExitPlanMode permission_denied is Level 3 (caught by B6 generic denied)", () => {
-    expect(getToolRenderLevel("ExitPlanMode", "permission_denied")).toBe(3);
+  it("non-Ask permission_denied uses normal level (resolved like error)", () => {
+    expect(getToolRenderLevel("Read", "permission_denied")).toBe(1);
+    expect(getToolRenderLevel("Glob", "permission_denied")).toBe(1);
+    expect(getToolRenderLevel("ExitPlanMode", "permission_denied")).toBe(1);
   });
 });

@@ -374,9 +374,57 @@ export class SessionStore {
     return this.tools.filter((e) => e.status === "running").at(-1)?.tool_name ?? "";
   }
 
-  /** Whether a permission prompt is pending user approval. */
+  /** Recursive walk: short-circuit check for any permission_prompt in timeline + subTimelines. */
+  private _hasPermission(predicate?: (t: BusToolItem) => boolean): boolean {
+    function walk(entries: TimelineEntry[]): boolean {
+      for (const entry of entries) {
+        if (entry.kind !== "tool") continue;
+        if (
+          entry.tool.status === "permission_prompt" &&
+          entry.tool.permission_request_id &&
+          (!predicate || predicate(entry.tool))
+        )
+          return true;
+        if (entry.subTimeline && walk(entry.subTimeline)) return true;
+      }
+      return false;
+    }
+    return walk(this.timeline);
+  }
+
+  /** Whether any permission prompt is pending user approval (recursive, includes subTimelines). */
   get hasPendingPermission(): boolean {
-    return this.timeline.some((e) => e.kind === "tool" && e.tool.status === "permission_prompt");
+    return this._hasPermission();
+  }
+
+  /** Whether an inline-only permission (AskUserQuestion / ExitPlanMode) is pending. */
+  get hasInlinePermission(): boolean {
+    return this._hasPermission(
+      (t) => t.tool_name === "AskUserQuestion" || t.tool_name === "ExitPlanMode",
+    );
+  }
+
+  /** Pending generic tool permission prompts (recursive, excludes AskUserQuestion/ExitPlanMode). */
+  get pendingToolPermissions(): Array<{ tool: BusToolItem; requestId: string }> {
+    const map = new Map<string, BusToolItem>();
+    function walk(entries: TimelineEntry[]) {
+      for (const entry of entries) {
+        if (entry.kind !== "tool") continue;
+        if (
+          entry.tool.status === "permission_prompt" &&
+          entry.tool.permission_request_id &&
+          entry.tool.tool_name !== "AskUserQuestion" &&
+          entry.tool.tool_name !== "ExitPlanMode"
+        ) {
+          const rid = entry.tool.permission_request_id;
+          map.delete(rid);
+          map.set(rid, entry.tool);
+        }
+        if (entry.subTimeline) walk(entry.subTimeline);
+      }
+    }
+    walk(this.timeline);
+    return Array.from(map, ([requestId, tool]) => ({ tool, requestId }));
   }
 
   get isThinking(): boolean {
@@ -744,12 +792,7 @@ export class SessionStore {
       runStatus === "failed" ||
       runStatus === "error";
     if (sessionDead) {
-      const staleStatuses = new Set([
-        "running",
-        "ask_pending",
-        "permission_denied",
-        "permission_prompt",
-      ]);
+      const staleStatuses = new Set(["running", "ask_pending", "permission_prompt"]);
       const finalizeTools = (tl: TimelineEntry[]): TimelineEntry[] => {
         let changed = false;
         const result = tl.map((e) => {
@@ -1733,94 +1776,91 @@ export class SessionStore {
   }
 
   /** Optimistic local update: resolve a permission_prompt tool to permission_denied.
-   *  CLI doesn't emit a separate event for AskUserQuestion deny. */
+   *  Traverses ALL timeline + subTimeline entries (no early return) to handle
+   *  duplicate requestId entries from fallback/synthetic sources. */
   resolvePermissionDeny(requestId: string): void {
     dbg("store", "resolvePermissionDeny", { requestId });
-    // Main timeline
-    const idx = this.timeline.findIndex(
-      (e) =>
-        e.kind === "tool" &&
-        e.tool.status === "permission_prompt" &&
-        e.tool.permission_request_id === requestId,
-    );
-    if (idx >= 0) {
-      const old = this.timeline[idx] as Extract<TimelineEntry, { kind: "tool" }>;
-      const u = [...this.timeline];
-      u[idx] = { ...old, tool: { ...old.tool, status: "permission_denied" as const } };
-      this.timeline = u;
-      return;
+    let changed = false;
+    const u = [...this.timeline];
+    for (let i = 0; i < u.length; i++) {
+      const entry = u[i];
+      if (entry.kind !== "tool") continue;
+      // Main timeline match
+      if (
+        entry.tool.status === "permission_prompt" &&
+        entry.tool.permission_request_id === requestId
+      ) {
+        u[i] = { ...entry, tool: { ...entry.tool, status: "permission_denied" as const } };
+        changed = true;
+      }
+      // subTimeline match
+      if (entry.subTimeline) {
+        let subChanged = false;
+        const newSub = [...entry.subTimeline];
+        for (let j = 0; j < newSub.length; j++) {
+          const sub = newSub[j];
+          if (
+            sub.kind === "tool" &&
+            sub.tool.status === "permission_prompt" &&
+            sub.tool.permission_request_id === requestId
+          ) {
+            newSub[j] = { ...sub, tool: { ...sub.tool, status: "permission_denied" as const } };
+            subChanged = true;
+          }
+        }
+        if (subChanged) {
+          u[i] = { ...u[i], subTimeline: newSub };
+          changed = true;
+        }
+      }
     }
-    // Try subTimelines (search all parents for a child with matching request_id)
-    for (let pIdx = 0; pIdx < this.timeline.length; pIdx++) {
-      const entry = this.timeline[pIdx];
-      if (entry.kind !== "tool" || !entry.subTimeline) continue;
-      const sub = entry.subTimeline;
-      const cIdx = sub.findIndex(
-        (e) =>
-          e.kind === "tool" &&
-          e.tool.status === "permission_prompt" &&
-          e.tool.permission_request_id === requestId,
-      );
-      if (cIdx < 0) continue;
-      const oldChild = sub[cIdx] as Extract<TimelineEntry, { kind: "tool" }>;
-      const newSub = [...sub];
-      newSub[cIdx] = {
-        ...oldChild,
-        tool: { ...oldChild.tool, status: "permission_denied" as const },
-      };
-      const u = [...this.timeline];
-      u[pIdx] = { ...entry, subTimeline: newSub };
-      this.timeline = u;
-      return;
-    }
+    if (changed) this.timeline = u;
   }
 
   /** Optimistic local update: resolve a permission_prompt tool to running.
-   *  Called after Allow IPC succeeds. Skips AskUserQuestion tools (interactive). */
+   *  Called after Allow IPC succeeds. Skips AskUserQuestion tools (interactive).
+   *  Traverses ALL timeline + subTimeline entries (no early return). */
   resolvePermissionAllow(requestId: string): void {
     dbg("store", "resolvePermissionAllow", { requestId });
-    // Main timeline
-    const idx = this.timeline.findIndex(
-      (e) =>
-        e.kind === "tool" &&
-        e.tool.status === "permission_prompt" &&
-        e.tool.permission_request_id === requestId,
-    );
-    if (idx >= 0) {
-      const old = this.timeline[idx] as Extract<TimelineEntry, { kind: "tool" }>;
-      // AskUserQuestion running = interactive question card, switching back would cause double-submit
-      if (old.tool.tool_name === "AskUserQuestion") return;
-      const u = [...this.timeline];
-      u[idx] = {
-        ...old,
-        tool: { ...old.tool, status: "running" as const },
-      };
-      this.timeline = u;
-      return;
+    let changed = false;
+    const u = [...this.timeline];
+    for (let i = 0; i < u.length; i++) {
+      const entry = u[i];
+      if (entry.kind !== "tool") continue;
+      // Main timeline match
+      if (
+        entry.tool.status === "permission_prompt" &&
+        entry.tool.permission_request_id === requestId
+      ) {
+        // AskUserQuestion running = interactive question card, switching back would cause double-submit
+        if (entry.tool.tool_name !== "AskUserQuestion") {
+          u[i] = { ...entry, tool: { ...entry.tool, status: "running" as const } };
+          changed = true;
+        }
+      }
+      // subTimeline match
+      if (entry.subTimeline) {
+        let subChanged = false;
+        const newSub = [...entry.subTimeline];
+        for (let j = 0; j < newSub.length; j++) {
+          const sub = newSub[j];
+          if (
+            sub.kind === "tool" &&
+            sub.tool.status === "permission_prompt" &&
+            sub.tool.permission_request_id === requestId &&
+            sub.tool.tool_name !== "AskUserQuestion"
+          ) {
+            newSub[j] = { ...sub, tool: { ...sub.tool, status: "running" as const } };
+            subChanged = true;
+          }
+        }
+        if (subChanged) {
+          u[i] = { ...u[i], subTimeline: newSub };
+          changed = true;
+        }
+      }
     }
-    // subTimeline
-    for (let pIdx = 0; pIdx < this.timeline.length; pIdx++) {
-      const entry = this.timeline[pIdx];
-      if (entry.kind !== "tool" || !entry.subTimeline) continue;
-      const cIdx = entry.subTimeline.findIndex(
-        (e) =>
-          e.kind === "tool" &&
-          e.tool.status === "permission_prompt" &&
-          e.tool.permission_request_id === requestId,
-      );
-      if (cIdx < 0) continue;
-      const oldChild = entry.subTimeline[cIdx] as Extract<TimelineEntry, { kind: "tool" }>;
-      if (oldChild.tool.tool_name === "AskUserQuestion") return;
-      const newSub = [...entry.subTimeline];
-      newSub[cIdx] = {
-        ...oldChild,
-        tool: { ...oldChild.tool, status: "running" as const },
-      };
-      const u = [...this.timeline];
-      u[pIdx] = { ...entry, subTimeline: newSub };
-      this.timeline = u;
-      return;
-    }
+    if (changed) this.timeline = u;
   }
 
   /** Handle PTY exit event. */
@@ -2573,7 +2613,7 @@ export class SessionStore {
       }
 
       case "permission_denied": {
-        // Retroactively update: find matching tool, change from "error" → "permission_denied"
+        // Retroactively update: find matching tool, change to "permission_denied"
         const tl = getTl();
         const tIdx = tl.findIndex((e) => e.kind === "tool" && e.id === ev.tool_use_id);
         if (tIdx >= 0) {
@@ -2601,6 +2641,13 @@ export class SessionStore {
       }
 
       case "permission_prompt": {
+        dbg("store", "permission_prompt received", {
+          tool_use_id: ev.tool_use_id,
+          request_id: ev.request_id,
+          tool_name: ev.tool_name,
+          parent: ev.parent_tool_use_id,
+          batch: !!ctx,
+        });
         // Subagent routing: update child tool inside parent's subTimeline
         if (ev.parent_tool_use_id) {
           if (
@@ -2652,6 +2699,11 @@ export class SessionStore {
             u[tIdx] = updated;
             this.timeline = u;
           }
+          dbg("store", "permission_prompt: updated existing entry", {
+            tIdx,
+            tool_use_id: ev.tool_use_id,
+            request_id: ev.request_id,
+          });
         } else {
           // Tool not in main timeline — check ALL subTimelines (CLI sometimes omits parent_tool_use_id)
           const foundInSub = this._updateToolInAnySubTimeline(
@@ -2668,6 +2720,11 @@ export class SessionStore {
           );
           if (!foundInSub) {
             // Truly new — create a synthetic tool entry in main timeline
+            dbg("store", "permission_prompt: creating synthetic entry", {
+              tool_use_id: ev.tool_use_id,
+              request_id: ev.request_id,
+              tool_name: ev.tool_name,
+            });
             const tlEntry: TimelineEntry = {
               kind: "tool",
               id: ev.tool_use_id,
@@ -2685,6 +2742,11 @@ export class SessionStore {
             };
             if (ctx) ctx.tl.push(tlEntry);
             else this.timeline = [...this.timeline, tlEntry];
+          } else {
+            dbg("store", "permission_prompt: updated in subTimeline", {
+              tool_use_id: ev.tool_use_id,
+              request_id: ev.request_id,
+            });
           }
         }
         break;

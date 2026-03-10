@@ -10,6 +10,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { dbg, dbgWarn } from "$lib/utils/debug";
 import type { BusEvent, HookEvent } from "$lib/types";
 import type { SessionStore } from "./session-store.svelte";
+import { markAttention, clearAttention } from "./attention-store.svelte";
 
 // ── Handler interfaces (page-level DOM callbacks) ──
 
@@ -200,6 +201,8 @@ export class EventMiddleware {
   // ── Internal ──
 
   private _handleBusEvent(ev: BusEvent): void {
+    this._trackAttention(ev);
+
     const store = this._subscriptions.get(ev.run_id);
     if (!store) return;
 
@@ -222,6 +225,49 @@ export class EventMiddleware {
     }
 
     this._scheduleFlush();
+  }
+
+  private _trackAttention(ev: BusEvent): void {
+    switch (ev.type) {
+      case "permission_prompt":
+        markAttention(ev.run_id, "permission");
+        break;
+      case "tool_end":
+        if (ev.tool_name === "AskUserQuestion" && ev.status === "error") {
+          markAttention(ev.run_id, "ask");
+        }
+        break;
+      case "permission_denied":
+        clearAttention(ev.run_id, "permission");
+        // AskUserQuestion denied: tool_end(error) arrives first and marks ask,
+        // but the question was denied, not pending — clear ask too.
+        if (ev.tool_name === "AskUserQuestion") {
+          clearAttention(ev.run_id, "ask");
+        }
+        break;
+      case "control_cancelled":
+        clearAttention(ev.run_id, "permission");
+        break;
+      case "user_message":
+        clearAttention(ev.run_id, "ask");
+        break;
+      case "run_state":
+        switch (ev.state) {
+          case "spawning":
+          case "idle":
+            clearAttention(ev.run_id, "permission");
+            break;
+          case "running":
+            clearAttention(ev.run_id, "ask");
+            break;
+          case "stopped":
+          case "completed":
+          case "failed":
+            clearAttention(ev.run_id);
+            break;
+        }
+        break;
+    }
   }
 
   private _handleHookEvent(event: HookEvent): void {

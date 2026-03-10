@@ -17,7 +17,6 @@
   import { formatKeyDisplay } from "$lib/stores/keybindings.svelte";
   import {
     PLATFORM_PRESETS,
-    PRESET_CATEGORIES,
     buildPlatformList,
     isCustomPlatform,
     findCredential,
@@ -81,7 +80,6 @@
   let generalSaved = $state(false);
   let platformModels = $state("");
   let selectedPlatformId = $state<string | null>(null);
-  let showPlatformPicker = $state(false);
   let platformCredentials = $state<PlatformCredential[]>([]);
   let platformExtraEnv = $state<Array<{ key: string; value: string }>>([]);
   // Track whether user manually edited extra_env (per platform ID).
@@ -102,12 +100,6 @@
   );
 
   // Custom endpoint editing state
-  let editingCustomId = $state<string | null>(null);
-  let customFormName = $state("");
-  let customFormBaseUrl = $state("");
-  let customFormAuthEnvVar = $state<"ANTHROPIC_API_KEY" | "ANTHROPIC_AUTH_TOKEN">(
-    "ANTHROPIC_AUTH_TOKEN",
-  );
   // ── Local proxy detection state ──
   let localProxyStatus = $state<import("$lib/types").LocalProxyStatus | null>(null);
   let localProxyChecking = $state(false);
@@ -976,17 +968,11 @@
     dbg("settings", "checkAllLocalProxies", statuses);
   }
 
-  function openPlatformPicker() {
-    showPlatformPicker = true;
-    checkAllLocalProxies();
-  }
-
   function applyPlatformPreset(preset: PlatformPreset) {
     // 1. Save current platform's data to credentials (if modified)
     saveCurrentToCredential();
     // 2. Switch to new platform
     selectedPlatformId = preset.id;
-    showPlatformPicker = false;
     localAdvancedOpen = false;
     localProxyStatus = null;
     // 3. Load new platform's data from credentials
@@ -1009,32 +995,31 @@
     }
   }
 
-  /** Add a new custom endpoint. */
+  /** Add a new custom endpoint — creates with defaults and immediately selects it. */
   function addCustomEndpoint() {
     const id = `custom-${Date.now()}`;
     const cred: PlatformCredential = {
       platform_id: id,
-      name: customFormName || "Custom",
-      base_url: customFormBaseUrl,
-      auth_env_var: customFormAuthEnvVar,
+      name: "Custom",
+      base_url: "",
+      auth_env_var: "ANTHROPIC_AUTH_TOKEN",
     };
     platformCredentials = [...platformCredentials, cred];
     saveGeneralPatch({ platform_credentials: platformCredentials });
-    // Select the newly created endpoint
+    // Select the newly created endpoint — opens full config form below
     const preset = buildPlatformList(platformCredentials).find((p) => p.id === id);
     if (preset) applyPlatformPreset(preset);
-    // Reset form
-    customFormName = "";
-    customFormBaseUrl = "";
-    editingCustomId = null;
   }
 
   /** Delete a custom endpoint. */
   function deleteCustomEndpoint(platformId: string) {
+    // Clear selection first so applyPlatformPreset won't re-save the deleted credential
+    const wasActive = selectedPlatformId === platformId;
+    if (wasActive) selectedPlatformId = null;
     platformCredentials = platformCredentials.filter((c) => c.platform_id !== platformId);
     saveGeneralPatch({ platform_credentials: platformCredentials });
     // If we deleted the active platform, switch to Anthropic
-    if (selectedPlatformId === platformId) {
+    if (wasActive) {
       const anthropic = PLATFORM_PRESETS.find((p) => p.id === "anthropic")!;
       applyPlatformPreset(anthropic);
     }
@@ -1107,7 +1092,7 @@
 </script>
 
 {#key currentLocale()}
-  <div class="max-w-2xl mx-auto p-6 animate-slide-up">
+  <div class="max-w-4xl mx-auto p-6 animate-slide-up">
     <h1 class="text-2xl font-bold mb-5">{t("settings_title")}</h1>
 
     <!-- Tab bar -->
@@ -1447,163 +1432,84 @@
                 <span class="text-sm font-medium mb-1.5 block"
                   >{t("settings_general_platform")}</span
                 >
-                {#if selectedPlatform && !showPlatformPicker}
-                  <!-- Selected platform badge -->
-                  <div
-                    class="flex items-center gap-2 rounded-lg border border-primary/30 bg-primary/5 px-3 py-2"
-                  >
-                    <span class="text-sm font-medium">{selectedPlatform.name}</span>
-                    <span class="text-xs text-muted-foreground">{selectedPlatform.description}</span
-                    >
+                <!-- Platform grid (always visible) -->
+                <div class="grid grid-cols-4 gap-1.5">
+                  {#each platformList.filter((p) => p.id !== "custom") as preset}
                     <button
-                      class="ml-auto text-xs text-muted-foreground hover:text-foreground transition-colors"
-                      onclick={openPlatformPicker}>{t("settings_general_changePlatform")}</button
+                      class="flex flex-col gap-0 rounded-md p-2 text-left transition-colors relative group
+                      {selectedPlatformId === preset.id
+                        ? 'bg-primary/10 ring-1 ring-primary'
+                        : 'bg-muted/40 hover:bg-muted/70'}"
+                      onclick={() => applyPlatformPreset(preset)}
                     >
-                  </div>
-                {:else}
-                  <!-- Platform grid picker -->
-                  <div
-                    class="flex flex-col gap-3 max-h-[40vh] overflow-y-auto rounded-lg border border-border p-3"
-                  >
-                    {#each PRESET_CATEGORIES as category}
-                      {@const presets =
-                        category.id === "custom"
-                          ? platformList.filter((p) => p.category === "custom")
-                          : platformList.filter((p) => p.category === category.id)}
-                      {#if presets.length > 0 || category.id === "custom"}
-                        <div>
-                          <p
-                            class="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1.5"
+                      <span class="text-xs font-medium truncate">{preset.name}</span>
+                      <span class="text-[10px] text-muted-foreground truncate"
+                        >{preset.description}</span
+                      >
+                      {#if isCustomPlatform(preset.id)}
+                        <span
+                          role="button"
+                          tabindex="0"
+                          class="absolute top-1 right-1 opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive transition-all p-0.5 cursor-pointer"
+                          onclick={(e: MouseEvent) => {
+                            e.stopPropagation();
+                            deleteCustomEndpoint(preset.id);
+                          }}
+                          onkeydown={(e: KeyboardEvent) => {
+                            if (e.key === "Enter" || e.key === " ") {
+                              e.stopPropagation();
+                              deleteCustomEndpoint(preset.id);
+                            }
+                          }}
+                          title={t("settings_general_deleteCustom")}
+                        >
+                          <svg
+                            class="h-3 w-3"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="2"><path d="M18 6 6 18" /><path d="m6 6 12 12" /></svg
                           >
-                            {category.label}
-                          </p>
-                          <div class="grid grid-cols-3 gap-1.5">
-                            {#each presets as preset}
-                              <button
-                                class="flex flex-col gap-0 rounded-md border p-2 text-left transition-colors relative group
-                                {selectedPlatformId === preset.id
-                                  ? 'border-primary bg-primary/5'
-                                  : 'border-border hover:border-primary/40 hover:bg-accent/50'}"
-                                onclick={() => applyPlatformPreset(preset)}
-                              >
-                                <span class="text-xs font-medium truncate">{preset.name}</span>
-                                <span class="text-[10px] text-muted-foreground truncate"
-                                  >{preset.description}</span
-                                >
-                                {#if isCustomPlatform(preset.id)}
-                                  <span
-                                    role="button"
-                                    tabindex="0"
-                                    class="absolute top-1 right-1 opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive transition-all p-0.5 cursor-pointer"
-                                    onclick={(e: MouseEvent) => {
-                                      e.stopPropagation();
-                                      deleteCustomEndpoint(preset.id);
-                                    }}
-                                    onkeydown={(e: KeyboardEvent) => {
-                                      if (e.key === "Enter" || e.key === " ") {
-                                        e.stopPropagation();
-                                        deleteCustomEndpoint(preset.id);
-                                      }
-                                    }}
-                                    title={t("settings_general_deleteCustom")}
-                                  >
-                                    <svg
-                                      class="h-3 w-3"
-                                      viewBox="0 0 24 24"
-                                      fill="none"
-                                      stroke="currentColor"
-                                      stroke-width="2"
-                                      ><path d="M18 6 6 18" /><path d="m6 6 12 12" /></svg
-                                    >
-                                  </span>
-                                {/if}
-                                {#if preset.category === "local"}
-                                  {@const ps = localProxyStatuses[preset.id]}
-                                  <span
-                                    class="absolute bottom-1 right-1 h-1.5 w-1.5 rounded-full {ps?.running &&
-                                    !ps.needsAuth
-                                      ? 'bg-green-500'
-                                      : ps?.running && ps.needsAuth
-                                        ? 'bg-amber-500'
-                                        : 'bg-muted-foreground/30'}"
-                                    title={ps?.running && !ps.needsAuth
-                                      ? t("settings_local_running")
-                                      : ps?.running && ps.needsAuth
-                                        ? t("settings_local_needsAuth")
-                                        : t("settings_local_notDetected")}
-                                  ></span>
-                                {:else if findCredential(platformCredentials, preset.id)?.api_key}
-                                  <span
-                                    class="absolute bottom-1 right-1 h-1.5 w-1.5 rounded-full bg-green-500"
-                                    title="Key saved"
-                                  ></span>
-                                {/if}
-                              </button>
-                            {/each}
-                          </div>
-                          {#if category.id === "custom"}
-                            <!-- Add custom endpoint inline form -->
-                            {#if editingCustomId === "new"}
-                              <div class="mt-2 rounded-md border border-border p-2 space-y-2">
-                                <Input
-                                  bind:value={customFormName}
-                                  placeholder={t("settings_general_customNamePlaceholder")}
-                                  class="text-xs"
-                                />
-                                <Input
-                                  bind:value={customFormBaseUrl}
-                                  placeholder="https://api.example.com"
-                                  class="text-xs font-mono"
-                                />
-                                <div class="flex gap-2">
-                                  <select
-                                    bind:value={customFormAuthEnvVar}
-                                    class="flex-1 rounded-md border border-input bg-background px-2 py-1.5 text-xs"
-                                  >
-                                    <option value="ANTHROPIC_AUTH_TOKEN">Bearer token</option>
-                                    <option value="ANTHROPIC_API_KEY">x-api-key</option>
-                                  </select>
-                                  <Button
-                                    size="sm"
-                                    onclick={() => addCustomEndpoint()}
-                                    disabled={!customFormBaseUrl.trim()}>{t("common_save")}</Button
-                                  >
-                                  <Button
-                                    size="sm"
-                                    variant="ghost"
-                                    onclick={() => (editingCustomId = null)}
-                                    >{t("common_cancel")}</Button
-                                  >
-                                </div>
-                              </div>
-                            {:else}
-                              <button
-                                class="mt-2 flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
-                                onclick={() => (editingCustomId = "new")}
-                              >
-                                <svg
-                                  class="h-3 w-3"
-                                  viewBox="0 0 24 24"
-                                  fill="none"
-                                  stroke="currentColor"
-                                  stroke-width="2"><path d="M12 5v14" /><path d="M5 12h14" /></svg
-                                >
-                                {t("settings_general_addCustom")}
-                              </button>
-                            {/if}
-                          {/if}
-                        </div>
+                        </span>
                       {/if}
-                    {/each}
-                  </div>
-                  {#if selectedPlatform}
-                    <button
-                      class="mt-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
-                      onclick={() => (showPlatformPicker = false)}
-                      >{t("settings_general_cancelChange")}</button
+                      {#if preset.category === "local"}
+                        {@const ps = localProxyStatuses[preset.id]}
+                        <span
+                          class="absolute bottom-1 right-1 h-1.5 w-1.5 rounded-full {ps?.running &&
+                          !ps.needsAuth
+                            ? 'bg-green-500'
+                            : ps?.running && ps.needsAuth
+                              ? 'bg-amber-500'
+                              : 'bg-muted-foreground/30'}"
+                          title={ps?.running && !ps.needsAuth
+                            ? t("settings_local_running")
+                            : ps?.running && ps.needsAuth
+                              ? t("settings_local_needsAuth")
+                              : t("settings_local_notDetected")}
+                        ></span>
+                      {:else if findCredential(platformCredentials, preset.id)?.api_key}
+                        <span
+                          class="absolute bottom-1 right-1 h-1.5 w-1.5 rounded-full bg-green-500"
+                          title="Key saved"
+                        ></span>
+                      {/if}
+                    </button>
+                  {/each}
+                  <!-- Add Custom -->
+                  <button
+                    class="flex flex-col items-center justify-center gap-1 rounded-md border border-dashed border-muted-foreground/30 p-2 text-muted-foreground hover:border-primary/50 hover:text-foreground hover:bg-muted/40 transition-colors"
+                    onclick={() => addCustomEndpoint()}
+                  >
+                    <svg
+                      class="h-4 w-4"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2"><path d="M12 5v14" /><path d="M5 12h14" /></svg
                     >
-                  {/if}
-                {/if}
+                    <span class="text-[10px]">{t("settings_general_addCustom")}</span>
+                  </button>
+                </div>
               </div>
 
               {#if selectedPlatform?.category === "local"}
@@ -1658,6 +1564,69 @@
               {/if}
 
               {#if selectedPlatform?.category !== "local" || localAdvancedOpen}
+                <!-- Custom endpoint: Name + Auth Type -->
+                {#if isCustomPlatform(selectedPlatformId ?? "")}
+                  <div class="flex gap-3">
+                    <div class="flex-1">
+                      <label class="text-sm font-medium mb-1.5 block"
+                        >{t("settings_general_customNameLabel")}</label
+                      >
+                      <Input
+                        value={findCredential(platformCredentials, selectedPlatformId ?? "")
+                          ?.name ?? ""}
+                        placeholder={t("settings_general_customNamePlaceholder")}
+                        class="mt-1 text-xs"
+                        onblur={(e) => {
+                          const val = e.currentTarget.value.trim();
+                          if (selectedPlatformId) {
+                            _upsertCredential(selectedPlatformId, { name: val || "Custom" });
+                            saveGeneralPatch({ platform_credentials: platformCredentials });
+                          }
+                        }}
+                      />
+                    </div>
+                    <div>
+                      <label class="text-sm font-medium mb-1.5 block"
+                        >{t("settings_general_authType")}</label
+                      >
+                      <div class="mt-1 flex rounded-md border border-input overflow-hidden">
+                        <button
+                          class="px-3 py-1.5 text-xs font-medium transition-colors {(findCredential(
+                            platformCredentials,
+                            selectedPlatformId ?? '',
+                          )?.auth_env_var ?? 'ANTHROPIC_AUTH_TOKEN') === 'ANTHROPIC_AUTH_TOKEN'
+                            ? 'bg-primary text-primary-foreground'
+                            : 'text-muted-foreground hover:text-foreground hover:bg-accent'}"
+                          onclick={() => {
+                            if (selectedPlatformId) {
+                              _upsertCredential(selectedPlatformId, {
+                                auth_env_var: "ANTHROPIC_AUTH_TOKEN",
+                              });
+                              saveGeneralPatch({ platform_credentials: platformCredentials });
+                            }
+                          }}>Bearer</button
+                        >
+                        <button
+                          class="px-3 py-1.5 text-xs font-medium transition-colors border-l border-input {(findCredential(
+                            platformCredentials,
+                            selectedPlatformId ?? '',
+                          )?.auth_env_var ?? 'ANTHROPIC_AUTH_TOKEN') === 'ANTHROPIC_API_KEY'
+                            ? 'bg-primary text-primary-foreground'
+                            : 'text-muted-foreground hover:text-foreground hover:bg-accent'}"
+                          onclick={() => {
+                            if (selectedPlatformId) {
+                              _upsertCredential(selectedPlatformId, {
+                                auth_env_var: "ANTHROPIC_API_KEY",
+                              });
+                              saveGeneralPatch({ platform_credentials: platformCredentials });
+                            }
+                          }}>x-api-key</button
+                        >
+                      </div>
+                    </div>
+                  </div>
+                {/if}
+
                 <!-- API Key input -->
                 <div>
                   <label class="text-sm font-medium mb-1.5 block" for="api-key"

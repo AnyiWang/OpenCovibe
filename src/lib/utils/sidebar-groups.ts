@@ -59,11 +59,16 @@ export function buildProjectFolders(
   runs: TaskRun[],
   favoriteRunIds: Set<string>,
   pinnedCwds: string[],
+  removedCwds: string[] = [],
 ): ProjectFolder[] {
-  // 1. Clean pinnedCwds — normalize + filter empty
-  const cleanPinned = pinnedCwds.map(normalizeCwd).filter((c) => c !== "");
+  // 1. Build removed set (empty string excluded — Uncategorized never removed)
+  const removedSet = new Set(removedCwds.map(normalizeCwd));
+  removedSet.delete("");
 
-  // 2. Bucket runs by normalized cwd
+  // 2. Clean pinnedCwds — normalize + filter empty + filter removed
+  const cleanPinned = pinnedCwds.map(normalizeCwd).filter((c) => c !== "" && !removedSet.has(c));
+
+  // 3. Bucket runs by normalized cwd
   const cwdBuckets = new Map<string, TaskRun[]>();
   for (const run of runs) {
     const cwd = normalizeCwd(run.cwd);
@@ -75,14 +80,19 @@ export function buildProjectFolders(
     bucket.push(run);
   }
 
-  // 3. Ensure pinned cwds have entries (even if empty)
+  // 4. Remove buckets in removedSet
+  for (const cwd of removedSet) {
+    cwdBuckets.delete(cwd);
+  }
+
+  // 5. Ensure pinned cwds have entries (even if empty)
   for (const cwd of cleanPinned) {
     if (!cwdBuckets.has(cwd)) {
       cwdBuckets.set(cwd, []);
     }
   }
 
-  // 4. Build folders
+  // 6. Build folders
   const folders: ProjectFolder[] = [];
 
   for (const [cwd, bucketRuns] of cwdBuckets) {
@@ -157,7 +167,7 @@ export function buildProjectFolders(
     });
   }
 
-  // 5. Sort: normal projects by latestActivityAt desc, Uncategorized always last
+  // 7. Sort: normal projects by latestActivityAt desc, Uncategorized always last
   folders.sort((a, b) => {
     if (a.isUncategorized && !b.isUncategorized) return 1;
     if (!a.isUncategorized && b.isUncategorized) return -1;

@@ -5,6 +5,7 @@
   import { relativeTime, truncate } from "$lib/utils/format";
   import { PLATFORM_PRESETS } from "$lib/utils/platform-presets";
   import { t } from "$lib/i18n/index.svelte";
+  import { hasAttention } from "$lib/stores/attention-store.svelte";
 
   function platformLabel(id: string): string {
     return PLATFORM_PRESETS.find((p) => p.id === id)?.name ?? id;
@@ -29,6 +30,7 @@
   const label = $derived(truncate(run.name || run.prompt, 28));
   const time = $derived(relativeTime(run.last_activity_at ?? run.started_at));
   const canResume = $derived(!!run.session_id && TERMINAL_PHASES.includes(run.status as any));
+  const needsAttention = $derived(hasAttention(run.id));
 
   let editing = $state(false);
   let editValue = $state("");
@@ -166,7 +168,7 @@
           >
         </button>
       {/if}
-      <StatusBadge status={run.status} class="shrink-0" />
+      <StatusBadge status={run.status} attention={needsAttention} class="shrink-0" />
     </div>
   </div>
   <div class="mt-0.5 flex items-center gap-2 text-xs text-muted-foreground">

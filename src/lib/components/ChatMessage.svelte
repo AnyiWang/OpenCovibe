@@ -10,10 +10,12 @@
     message,
     attachments,
     thinkingText,
+    onRewind,
   }: {
     message: ChatMessage;
     attachments?: Attachment[];
     thinkingText?: string;
+    onRewind?: () => void;
   } = $props();
 
   function isImage(att: Attachment): boolean {
@@ -101,8 +103,32 @@
         </div>
         <span class="text-sm font-semibold text-foreground">{t("chat_roleClaude")}</span>
       {/if}
+      {#if onRewind}
+        <button
+          class="ml-auto p-1 rounded-md text-muted-foreground/50 hover:bg-muted hover:text-foreground transition-all duration-150 {hovered
+            ? 'opacity-100'
+            : 'opacity-0'}"
+          onclick={onRewind}
+          title={t("rewind_toHere")}
+        >
+          <svg
+            class="h-3.5 w-3.5"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+            <path d="M3 3v5h5" />
+          </svg>
+        </button>
+      {/if}
       <button
-        class="ml-auto p-1 rounded-md text-muted-foreground/50 hover:bg-muted hover:text-foreground transition-all duration-150 {hovered ||
+        class="{onRewind
+          ? ''
+          : 'ml-auto'} p-1 rounded-md text-muted-foreground/50 hover:bg-muted hover:text-foreground transition-all duration-150 {hovered ||
         copied
           ? 'opacity-100'
           : 'opacity-0'}"

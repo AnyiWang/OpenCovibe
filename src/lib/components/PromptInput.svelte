@@ -57,11 +57,13 @@
   import type { PromptInputSnapshot } from "$lib/types";
   import {
     type HistoryState,
+    type HistoryAction,
     createHistoryState,
     checkAndReset,
     resetHistory,
     shouldIntercept,
     getHistoryAction,
+    hasMultipleVisualLines,
   } from "$lib/utils/input-history";
 
   let {
@@ -773,6 +775,63 @@
     }
   }
 
+  /** Apply a history action (shared by immediate and deferred paths). */
+  function applyHistoryAction(action: NonNullable<HistoryAction>) {
+    if (action.type === "boundary") {
+      dbg("prompt-history", "boundary", { index: histState.index });
+      return;
+    }
+
+    if (action.type === "enter") {
+      histState.draft = getInputSnapshot();
+      histState.index = action.index;
+      dbg("prompt-history", "up: enter history", { index: 0, total: userHistory.length });
+    } else if (action.type === "up") {
+      histState.index = action.index;
+      dbg("prompt-history", "up", { index: action.index });
+    } else if (action.type === "down") {
+      histState.index = action.index;
+      dbg("prompt-history", "down", { index: action.index });
+    } else if (action.type === "restore-draft") {
+      histState.index = -1;
+      if (histState.draft) {
+        dbg("prompt-history", "restore-draft", {
+          textLen: histState.draft.text.length,
+          atts: histState.draft.attachments.length,
+          pastes: histState.draft.pastedBlocks.length,
+        });
+        restoreSnapshot(histState.draft);
+        histState.draft = null;
+        return; // restoreSnapshot handles autoResize + focus
+      }
+      inputText = "";
+      pendingAttachments = [];
+      pastedBlocks = [];
+    }
+
+    if (action.type !== "restore-draft") {
+      // Bounds guard: if index is stale (timeline changed between events), bail out
+      if (histState.index >= userHistory.length) {
+        dbg("prompt-history", "stale index, resetting", {
+          index: histState.index,
+          len: userHistory.length,
+        });
+        resetHistory(histState);
+        return;
+      }
+      inputText = userHistory[histState.index];
+      pendingAttachments = [];
+      pastedBlocks = [];
+    }
+
+    requestAnimationFrame(() => {
+      autoResize();
+      if (textareaEl) {
+        textareaEl.selectionStart = textareaEl.selectionEnd = textareaEl.value.length;
+      }
+    });
+  }
+
   function handleKeydown(e: KeyboardEvent) {
     // Skip during IME composition (e.g., Chinese input confirming with Enter)
     if (e.isComposing || e.keyCode === 229) return;
@@ -925,6 +984,50 @@
       ) &&
       textareaEl
     ) {
+      // Multi-line or visually wrapped text: defer to next frame to let the
+      // browser move the cursor first. Only trigger history if cursor didn't
+      // move (meaning we're at the visual top/bottom edge).
+      if (hasMultipleVisualLines(textareaEl)) {
+        const posBefore = textareaEl.selectionStart;
+        const key = e.key;
+        // Immediate path: cursor at absolute start (Up) or end (Down)
+        // — guaranteed to be at the visual edge, no need to defer.
+        const atAbsoluteEdge =
+          (key === "ArrowUp" && posBefore === 0) ||
+          (key === "ArrowDown" && posBefore === textareaEl.value.length);
+        if (atAbsoluteEdge) {
+          const action = getHistoryAction(
+            key,
+            histState,
+            userHistory.length,
+            textareaEl.value,
+            posBefore,
+          );
+          if (action) {
+            e.preventDefault();
+            applyHistoryAction(action);
+            return;
+          }
+        }
+        // Let browser handle cursor movement, check on next frame
+        requestAnimationFrame(() => {
+          if (!textareaEl) return;
+          if (textareaEl.selectionStart !== posBefore) return; // cursor moved — normal nav
+          const action = getHistoryAction(
+            key,
+            histState,
+            userHistory.length,
+            textareaEl.value,
+            textareaEl.selectionStart,
+          );
+          if (action) {
+            applyHistoryAction(action);
+          }
+        });
+        return;
+      }
+
+      // Single visual line: handle immediately
       const action = getHistoryAction(
         e.key,
         histState,
@@ -932,64 +1035,9 @@
         textareaEl.value,
         textareaEl.selectionStart,
       );
-
       if (action) {
-        if (action.type === "boundary") {
-          dbg("prompt-history", "boundary", { index: histState.index });
-          e.preventDefault();
-          return;
-        }
-
         e.preventDefault();
-
-        if (action.type === "enter") {
-          histState.draft = getInputSnapshot();
-          histState.index = action.index;
-          dbg("prompt-history", "up: enter history", { index: 0, total: userHistory.length });
-        } else if (action.type === "up") {
-          histState.index = action.index;
-          dbg("prompt-history", "up", { index: action.index });
-        } else if (action.type === "down") {
-          histState.index = action.index;
-          dbg("prompt-history", "down", { index: action.index });
-        } else if (action.type === "restore-draft") {
-          histState.index = -1;
-          if (histState.draft) {
-            dbg("prompt-history", "restore-draft", {
-              textLen: histState.draft.text.length,
-              atts: histState.draft.attachments.length,
-              pastes: histState.draft.pastedBlocks.length,
-            });
-            restoreSnapshot(histState.draft);
-            histState.draft = null;
-            return; // restoreSnapshot handles autoResize + focus
-          }
-          inputText = "";
-          pendingAttachments = [];
-          pastedBlocks = [];
-        }
-
-        if (action.type !== "restore-draft") {
-          // Bounds guard: if index is stale (timeline changed between events), bail out
-          if (histState.index >= userHistory.length) {
-            dbg("prompt-history", "stale index, resetting", {
-              index: histState.index,
-              len: userHistory.length,
-            });
-            resetHistory(histState);
-            return;
-          }
-          inputText = userHistory[histState.index];
-          pendingAttachments = [];
-          pastedBlocks = [];
-        }
-
-        requestAnimationFrame(() => {
-          autoResize();
-          if (textareaEl) {
-            textareaEl.selectionStart = textareaEl.selectionEnd = textareaEl.value.length;
-          }
-        });
+        applyHistoryAction(action);
         return;
       }
     }

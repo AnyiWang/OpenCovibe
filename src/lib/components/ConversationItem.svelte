@@ -6,6 +6,7 @@
   import { PLATFORM_PRESETS } from "$lib/utils/platform-presets";
   import { t } from "$lib/i18n/index.svelte";
   import { dbg, dbgWarn } from "$lib/utils/debug";
+  import { hasAttention } from "$lib/stores/attention-store.svelte";
 
   function platformLabel(id: string): string {
     return PLATFORM_PRESETS.find((p) => p.id === id)?.name ?? id;
@@ -33,6 +34,7 @@
     conversation.runs.every((r) => TERMINAL_PHASES.includes(r.status as any)),
   );
   const runCount = $derived(conversation.runs.length);
+  const needsAttention = $derived(hasAttention(run.id));
 
   // ── Inline rename (self-contained, mirrors RunListItem) ──
 
@@ -194,7 +196,7 @@
           >
         </button>
       {/if}
-      <StatusBadge status={run.status} class="shrink-0" />
+      <StatusBadge status={run.status} attention={needsAttention} class="shrink-0" />
     </div>
   </div>
   <div class="mt-0.5 flex items-center gap-2 text-xs text-muted-foreground">

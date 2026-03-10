@@ -13,6 +13,7 @@
     expanded?: boolean;
     onToggle: () => void;
     showCount?: boolean;
+    onRemove?: () => void;
   };
 
   type ChatProps = BaseProps & {
@@ -37,6 +38,7 @@
     expanded = false,
     onToggle,
     showCount = true,
+    onRemove,
     children,
     selectedRunId = "",
     onSelectConversation,
@@ -94,12 +96,23 @@
   });
 </script>
 
-<div class="mb-0.5">
+<div class="group/folder mb-0.5">
   <!-- Folder header -->
-  <button
-    class="flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-medium text-sidebar-foreground hover:bg-sidebar-accent/50 transition-colors"
+  <div
+    class="flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-medium text-sidebar-foreground hover:bg-sidebar-accent/50 transition-colors cursor-pointer"
+    role="button"
+    tabindex="0"
     onclick={onToggle}
+    onkeydown={(e) => {
+      if (e.target !== e.currentTarget) return;
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        onToggle();
+      }
+    }}
     title={folder.isUncategorized ? label : folder.cwd}
+    aria-expanded={expanded}
+    aria-label={label}
   >
     <!-- Chevron -->
     <svg
@@ -151,12 +164,42 @@
     <!-- Count badge -->
     {#if showCount && folder.conversationCount > 0}
       <span
-        class="ml-auto shrink-0 inline-flex h-3.5 min-w-[14px] items-center justify-center rounded-full bg-muted px-1 text-[10px] font-medium text-muted-foreground"
+        class="shrink-0 inline-flex h-3.5 min-w-[14px] items-center justify-center rounded-full bg-muted px-1 text-[10px] font-medium text-muted-foreground {onRemove
+          ? ''
+          : 'ml-auto'}"
       >
         {folder.conversationCount}
       </span>
     {/if}
-  </button>
+    <!-- Remove button (×) -->
+    {#if onRemove}
+      <button
+        class="ml-auto shrink-0 flex h-4 w-4 items-center justify-center rounded opacity-0 text-muted-foreground hover:text-destructive hover:opacity-100 focus-visible:opacity-100 group-hover/folder:opacity-100 transition-opacity"
+        aria-label={t("sidebar_removeProject")}
+        onclick={(e) => {
+          e.stopPropagation();
+          onRemove?.();
+        }}
+        onkeydown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.stopPropagation();
+            e.preventDefault();
+            onRemove?.();
+          }
+        }}
+      >
+        <svg
+          class="h-3 w-3"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"><path d="M18 6 6 18" /><path d="m6 6 12 12" /></svg
+        >
+      </button>
+    {/if}
+  </div>
 
   <!-- Expanded children -->
   {#if expanded}

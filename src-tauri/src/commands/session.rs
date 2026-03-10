@@ -481,6 +481,12 @@ pub async fn start_session(
         platform_id.as_deref().or(meta.platform_id.as_deref())
     };
     let resolved = resolve_auth_env_for_platform(&remote, &user_settings, effective_pid);
+    let resolved = augment_with_shell_auth(
+        resolved,
+        &user_settings.auth_mode,
+        remote.is_some(),
+        &meta.cwd,
+    );
     if remote.is_some() {
         log::debug!(
             "[session] remote mode: host={:?}, remote_cwd={:?}, has_key={}",
@@ -868,8 +874,19 @@ pub async fn fork_session(
     let user_settings = storage::settings::get_user_settings();
     let adapter = adapter::build_adapter_settings(&agent_settings, &user_settings, None);
     let remote = resolve_remote_host(&source)?;
-    let resolved =
-        resolve_auth_env_for_platform(&remote, &user_settings, source.platform_id.as_deref());
+    // CLI Auth mode: ignore platform_id — CLI manages its own connection
+    let effective_pid = if user_settings.auth_mode == "cli" {
+        None
+    } else {
+        source.platform_id.as_deref()
+    };
+    let resolved = resolve_auth_env_for_platform(&remote, &user_settings, effective_pid);
+    let resolved = augment_with_shell_auth(
+        resolved,
+        &user_settings.auth_mode,
+        remote.is_some(),
+        &source.cwd,
+    );
     let effective_cwd = source.remote_cwd.as_deref().unwrap_or(&source.cwd);
 
     // 7. One-shot fork: get new session_id
@@ -990,6 +1007,7 @@ pub async fn approve_session_tool(
         meta.platform_id.as_deref()
     };
     let resolved = resolve_auth_env_for_platform(&remote, &user, effective_pid);
+    let resolved = augment_with_shell_auth(resolved, &user.auth_mode, remote.is_some(), &meta.cwd);
 
     // 4. Preflight — before killing old actor so session can recover on failure
     if remote.is_none() {
@@ -1250,6 +1268,131 @@ pub async fn cancel_control_request(
         .map_err(|_| "Actor dropped reply".to_string())??;
 
     Ok(())
+}
+
+// ── Shell config auth injection (CLI mode only) ──
+
+/// Pure decision: should we skip injecting shell auth based on existing process env?
+/// If EITHER ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN is in process env (non-empty),
+/// child inherits it — injecting the other would trigger env_remove mutual exclusion
+/// (see spawn_cli_process key/token branches).
+fn should_skip_env_injection(key_val: Option<&str>, token_val: Option<&str>) -> bool {
+    let has_key = key_val.is_some_and(|v| !v.trim().is_empty());
+    let has_token = token_val.is_some_and(|v| !v.trim().is_empty());
+    has_key || has_token
+}
+
+/// Read CLI auth env vars missing from process environment, using shell config as fallback.
+/// Only reads ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN (not BASE_URL — see augment_with_shell_auth doc).
+///
+/// Shell config parsing limitations (inherited from onboarding.rs:289 `read_env_from_shell_config`):
+/// - Supported: `export VAR=value`, `VAR=value`, single/double quoted values
+/// - NOT supported: variable expansion ($OTHER_VAR), command substitution $(cmd),
+///   multi-line values, conditional blocks (if/fi), sourced sub-files
+/// - Returns the FIRST match found across shell config files (.zshrc → .zprofile → .bashrc → .bash_profile → .profile)
+fn resolve_shell_auth() -> (Option<String>, Option<String>) {
+    use super::onboarding::read_env_from_shell_config;
+
+    let key_val = std::env::var("ANTHROPIC_API_KEY").ok();
+    let token_val = std::env::var("ANTHROPIC_AUTH_TOKEN").ok();
+    if should_skip_env_injection(key_val.as_deref(), token_val.as_deref()) {
+        log::trace!("[session] shell_auth: process env has auth var, skip injection");
+        return (None, None);
+    }
+
+    // Neither in process env — try shell config (key first, then token)
+    if let Some((val, path)) = read_env_from_shell_config("ANTHROPIC_API_KEY") {
+        log::debug!("[session] shell_auth: ANTHROPIC_API_KEY from {}", path);
+        return (Some(val), None);
+    }
+    if let Some((val, path)) = read_env_from_shell_config("ANTHROPIC_AUTH_TOKEN") {
+        log::debug!("[session] shell_auth: ANTHROPIC_AUTH_TOKEN from {}", path);
+        return (None, Some(val));
+    }
+
+    (None, None)
+}
+
+/// Pure function: check if a JSON config value contains a non-empty auth key.
+/// Checks both `apiKey` and `primaryApiKey` (used by Max/Team plans).
+/// See SENSITIVE_KEYS in cli_config.rs:78.
+fn config_value_has_auth_key(config: &serde_json::Value) -> bool {
+    const AUTH_KEYS: &[&str] = &["apiKey", "primaryApiKey"];
+    AUTH_KEYS.iter().any(|k| {
+        config
+            .get(k)
+            .and_then(|v| v.as_str())
+            .is_some_and(|s| !s.trim().is_empty())
+    })
+}
+
+/// Check if any CLI config (user-level or project-level) contains an API key.
+fn cli_config_has_auth_key(cwd: &str) -> bool {
+    let user_config = crate::storage::cli_config::load_cli_config();
+    if config_value_has_auth_key(&user_config) {
+        log::trace!("[session] shell_auth: user-level CLI config has auth key, skip");
+        return true;
+    }
+
+    let project_config = crate::storage::cli_config::load_project_cli_config(cwd);
+    if config_value_has_auth_key(&project_config) {
+        log::trace!("[session] shell_auth: project-level CLI config has auth key, skip");
+        return true;
+    }
+
+    false
+}
+
+/// In CLI auth mode (local only), supplement resolved auth with shell config credentials.
+///
+/// Guards:
+/// - CLI mode only (API mode manages its own credentials)
+/// - Local only (remote respects forward_api_key=false — never inject)
+/// - No existing credentials (don't override what resolve_auth_env produced)
+/// - CLI config has no apiKey/primaryApiKey (user-level + project-level)
+///
+/// OAuth safety: CLI's own auth priority is OAuth > settings.json > env vars.
+/// Even if we inject an env var, CLI will still prefer OAuth — the injected key
+/// is only used when CLI has no higher-priority auth source.
+///
+/// Does NOT inject ANTHROPIC_BASE_URL: injecting a base_url would (a) trigger
+/// preflight_check_base_url which blocks session start if unreachable, and
+/// (b) affect routing even when CLI has OAuth that doesn't need a custom URL.
+/// Users who need key+url together should use API mode in Settings.
+fn augment_with_shell_auth(
+    resolved: ResolvedAuth,
+    auth_mode: &str,
+    is_remote: bool,
+    cwd: &str,
+) -> ResolvedAuth {
+    if auth_mode != "cli" {
+        return resolved;
+    }
+    if is_remote {
+        return resolved;
+    }
+    if resolved.api_key.is_some() || resolved.auth_token.is_some() {
+        return resolved;
+    }
+    if cli_config_has_auth_key(cwd) {
+        return resolved;
+    }
+
+    let (key, token) = resolve_shell_auth();
+    if key.is_some() || token.is_some() {
+        log::debug!(
+            "[session] CLI+local: supplementing auth from shell config (key={}, token={})",
+            key.is_some(),
+            token.is_some()
+        );
+        ResolvedAuth {
+            api_key: key,
+            auth_token: token,
+            ..resolved
+        }
+    } else {
+        resolved
+    }
 }
 
 // ── CLI process spawning (extracted from claude_stream.rs) ──
@@ -1686,5 +1829,145 @@ mod tests {
             assert!(result.is_ok(), "405 should be treated as reachable");
         });
         timeout.await.expect("test timed out");
+    }
+
+    // ── augment_with_shell_auth tests ──
+
+    fn empty_resolved() -> ResolvedAuth {
+        ResolvedAuth {
+            api_key: None,
+            auth_token: None,
+            base_url: None,
+            default_model: None,
+            extra_env: None,
+        }
+    }
+
+    // ── Guard tests (pure logic, no filesystem dependency) ──
+
+    #[test]
+    fn augment_remote_never_injects() {
+        let r = augment_with_shell_auth(empty_resolved(), "cli", true, "/tmp");
+        assert!(r.api_key.is_none() && r.auth_token.is_none());
+    }
+
+    #[test]
+    fn augment_api_mode_never_injects() {
+        let r = augment_with_shell_auth(empty_resolved(), "api", false, "/tmp");
+        assert!(r.api_key.is_none() && r.auth_token.is_none());
+    }
+
+    #[test]
+    fn augment_preserves_existing_key() {
+        let existing = ResolvedAuth {
+            api_key: Some("k".into()),
+            ..empty_resolved()
+        };
+        let r = augment_with_shell_auth(existing, "cli", false, "/tmp");
+        assert_eq!(r.api_key.as_deref(), Some("k"));
+    }
+
+    #[test]
+    fn augment_preserves_existing_token() {
+        let existing = ResolvedAuth {
+            auth_token: Some("t".into()),
+            ..empty_resolved()
+        };
+        let r = augment_with_shell_auth(existing, "cli", false, "/tmp");
+        assert_eq!(r.auth_token.as_deref(), Some("t"));
+    }
+
+    // ── should_skip_env_injection tests (pure function, zero env dependency) ──
+
+    #[test]
+    fn skip_env_injection_when_key_present() {
+        assert!(should_skip_env_injection(Some("sk-123"), None));
+    }
+
+    #[test]
+    fn skip_env_injection_when_token_present() {
+        assert!(should_skip_env_injection(None, Some("oauth-token")));
+    }
+
+    #[test]
+    fn skip_env_injection_when_both_present() {
+        assert!(should_skip_env_injection(
+            Some("sk-123"),
+            Some("oauth-token")
+        ));
+    }
+
+    #[test]
+    fn no_skip_when_both_none() {
+        assert!(!should_skip_env_injection(None, None));
+    }
+
+    #[test]
+    fn no_skip_when_whitespace_only() {
+        assert!(!should_skip_env_injection(Some("  "), Some("")));
+    }
+
+    // ── config_value_has_auth_key tests (pure function, zero filesystem dependency) ──
+
+    #[test]
+    fn config_value_detects_api_key() {
+        let config = serde_json::json!({"apiKey": "sk-ant-123"});
+        assert!(config_value_has_auth_key(&config));
+    }
+
+    #[test]
+    fn config_value_detects_primary_api_key() {
+        let config = serde_json::json!({"primaryApiKey": "pk-team-456"});
+        assert!(config_value_has_auth_key(&config));
+    }
+
+    #[test]
+    fn config_value_empty_config_returns_false() {
+        let config = serde_json::json!({});
+        assert!(!config_value_has_auth_key(&config));
+    }
+
+    #[test]
+    fn config_value_whitespace_only_key_returns_false() {
+        let config = serde_json::json!({"apiKey": "  ", "primaryApiKey": ""});
+        assert!(!config_value_has_auth_key(&config));
+    }
+
+    // ── Integration: project config loading + auth key detection ──
+    // Tests load_project_cli_config → config_value_has_auth_key pipeline directly,
+    // bypassing cli_config_has_auth_key to avoid false-positive from user-level config
+    // on dev machines that have a real ~/.claude/settings.json with apiKey.
+
+    #[test]
+    fn project_config_with_api_key_detected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let claude_dir = tmp.path().join(".claude");
+        std::fs::create_dir_all(&claude_dir).unwrap();
+        std::fs::write(claude_dir.join("settings.json"), r#"{"apiKey":"proj-key"}"#).unwrap();
+
+        let config =
+            crate::storage::cli_config::load_project_cli_config(tmp.path().to_str().unwrap());
+        assert!(config_value_has_auth_key(&config));
+    }
+
+    #[test]
+    fn project_config_without_api_key_not_detected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let claude_dir = tmp.path().join(".claude");
+        std::fs::create_dir_all(&claude_dir).unwrap();
+        std::fs::write(claude_dir.join("settings.json"), r#"{"model":"sonnet"}"#).unwrap();
+
+        let config =
+            crate::storage::cli_config::load_project_cli_config(tmp.path().to_str().unwrap());
+        assert!(!config_value_has_auth_key(&config));
+    }
+
+    #[test]
+    fn project_config_missing_dir_not_detected() {
+        let tmp = tempfile::tempdir().unwrap();
+        // No .claude/ dir at all
+        let config =
+            crate::storage::cli_config::load_project_cli_config(tmp.path().to_str().unwrap());
+        assert!(!config_value_has_auth_key(&config));
     }
 }

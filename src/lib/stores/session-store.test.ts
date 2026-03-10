@@ -699,6 +699,62 @@ describe("SessionStore reducer", () => {
       }
     });
 
+    it("preserves permission_denied status in terminal runs (not finalized to error)", () => {
+      // Denied AskUserQuestion: permission_denied is a terminal status, not stale.
+      // It should NOT be overwritten to "error" by the finalizer.
+      const events: BusEvent[] = [
+        { type: "user_message", run_id: "run-pd", text: "Ask me" },
+        {
+          type: "run_state",
+          run_id: "run-pd",
+          state: "running",
+          error: null,
+          exit_code: null,
+        } as BusEvent,
+        {
+          type: "tool_start",
+          run_id: "run-pd",
+          tool_use_id: "ask-pd",
+          tool_name: "AskUserQuestion",
+          input: { question: "Pick one", options: ["A", "B"] },
+        },
+        {
+          type: "permission_prompt",
+          run_id: "run-pd",
+          tool_use_id: "ask-pd",
+          tool_name: "AskUserQuestion",
+          request_id: "req-pd",
+          tool_input: { question: "Pick one", options: ["A", "B"] },
+        },
+        {
+          type: "tool_end",
+          run_id: "run-pd",
+          tool_use_id: "ask-pd",
+          tool_name: "AskUserQuestion",
+          output: { error: "User denied" },
+          status: "error",
+        },
+        {
+          type: "permission_denied",
+          run_id: "run-pd",
+          tool_use_id: "ask-pd",
+          tool_name: "AskUserQuestion",
+          tool_input: { question: "Pick one", options: ["A", "B"] },
+        },
+      ];
+
+      store.run = makeRun("run-pd", { status: "stopped" });
+      store.phase = "stopped";
+      store.applyEventBatch(events as BusEvent[], { replayOnly: true });
+
+      const toolEntry = store.timeline.find(
+        (e) => e.kind === "tool" && e.id === "ask-pd",
+      ) as Extract<TimelineEntry, { kind: "tool" }>;
+      expect(toolEntry).toBeDefined();
+      // permission_denied is terminal — should NOT be overwritten to "error"
+      expect(toolEntry.tool.status).toBe("permission_denied");
+    });
+
     it("permission_prompt with missing parent_tool_use_id updates subTimeline instead of creating duplicate", () => {
       const events: BusEvent[] = [
         { type: "user_message", run_id: "run-8", text: "Do it" },
@@ -3920,6 +3976,465 @@ describe("SessionStore reducer", () => {
         expect(subAssistant).toBeDefined();
         expect(subAssistant!.thinkingText).toBe("Sub thinking...");
       });
+    });
+  });
+
+  // ── Permission panel getters + resolve method improvements ──
+
+  describe("permission panel getters", () => {
+    function setupPermissionStore() {
+      const s = new SessionStore();
+      s.run = makeRun("run-perm") as any;
+      s.phase = "running";
+      return s;
+    }
+
+    function makeToolEntry(
+      id: string,
+      toolName: string,
+      status: string,
+      requestId?: string,
+      subTimeline?: TimelineEntry[],
+    ): TimelineEntry {
+      return {
+        kind: "tool",
+        id,
+        ts: new Date().toISOString(),
+        tool: {
+          tool_use_id: id,
+          tool_name: toolName,
+          status,
+          permission_request_id: requestId,
+          input: { file_path: `/src/${id}.ts` },
+        } as any,
+        subTimeline,
+      } as any;
+    }
+
+    it("pendingToolPermissions collects top-level permission_prompt entries", () => {
+      const s = setupPermissionStore();
+      s.timeline = [
+        makeToolEntry("t1", "Read", "permission_prompt", "req-1"),
+        makeToolEntry("t2", "Write", "permission_prompt", "req-2"),
+      ];
+      const pending = s.pendingToolPermissions;
+      expect(pending).toHaveLength(2);
+      expect(pending[0].requestId).toBe("req-1");
+      expect(pending[1].requestId).toBe("req-2");
+    });
+
+    it("pendingToolPermissions collects subTimeline permission_prompt entries", () => {
+      const s = setupPermissionStore();
+      s.timeline = [
+        makeToolEntry("parent", "Task", "running", undefined, [
+          makeToolEntry("child", "Bash", "permission_prompt", "req-child"),
+        ]),
+      ];
+      const pending = s.pendingToolPermissions;
+      expect(pending).toHaveLength(1);
+      expect(pending[0].requestId).toBe("req-child");
+      expect(pending[0].tool.tool_name).toBe("Bash");
+    });
+
+    it("pendingToolPermissions excludes AskUserQuestion and ExitPlanMode", () => {
+      const s = setupPermissionStore();
+      s.timeline = [
+        makeToolEntry("t1", "AskUserQuestion", "permission_prompt", "req-ask"),
+        makeToolEntry("t2", "ExitPlanMode", "permission_prompt", "req-exit"),
+        makeToolEntry("t3", "Read", "permission_prompt", "req-read"),
+      ];
+      const pending = s.pendingToolPermissions;
+      expect(pending).toHaveLength(1);
+      expect(pending[0].requestId).toBe("req-read");
+    });
+
+    it("pendingToolPermissions excludes non-permission_prompt status", () => {
+      const s = setupPermissionStore();
+      s.timeline = [
+        makeToolEntry("t1", "Read", "running"),
+        makeToolEntry("t2", "Write", "success"),
+        makeToolEntry("t3", "Edit", "permission_prompt", "req-edit"),
+      ];
+      const pending = s.pendingToolPermissions;
+      expect(pending).toHaveLength(1);
+      expect(pending[0].requestId).toBe("req-edit");
+    });
+
+    it("pendingToolPermissions excludes entries without permission_request_id", () => {
+      const s = setupPermissionStore();
+      s.timeline = [
+        makeToolEntry("t1", "Read", "permission_prompt"), // no requestId
+        makeToolEntry("t2", "Write", "permission_prompt", "req-write"),
+      ];
+      const pending = s.pendingToolPermissions;
+      expect(pending).toHaveLength(1);
+      expect(pending[0].requestId).toBe("req-write");
+    });
+
+    it("pendingToolPermissions deduplicates by requestId (last wins)", () => {
+      const s = setupPermissionStore();
+      s.timeline = [
+        makeToolEntry("t1", "Read", "permission_prompt", "req-dup"),
+        makeToolEntry("parent", "Task", "running", undefined, [
+          makeToolEntry("t2", "Read", "permission_prompt", "req-dup"),
+        ]),
+      ];
+      const pending = s.pendingToolPermissions;
+      expect(pending).toHaveLength(1);
+      expect(pending[0].requestId).toBe("req-dup");
+      // Last one wins (subTimeline entry)
+      expect(pending[0].tool.tool_use_id).toBe("t2");
+    });
+
+    it("hasPendingPermission recursively detects subTimeline permission_prompt", () => {
+      const s = setupPermissionStore();
+      s.timeline = [
+        makeToolEntry("parent", "Task", "running", undefined, [
+          makeToolEntry("child", "Read", "permission_prompt", "req-sub"),
+        ]),
+      ];
+      expect(s.hasPendingPermission).toBe(true);
+    });
+
+    it("hasInlinePermission only matches AskUserQuestion and ExitPlanMode", () => {
+      const s = setupPermissionStore();
+      s.timeline = [
+        makeToolEntry("t1", "Read", "permission_prompt", "req-1"),
+        makeToolEntry("t2", "Write", "permission_prompt", "req-2"),
+      ];
+      expect(s.hasInlinePermission).toBe(false);
+
+      s.timeline = [
+        ...s.timeline,
+        makeToolEntry("t3", "AskUserQuestion", "permission_prompt", "req-ask"),
+      ];
+      expect(s.hasInlinePermission).toBe(true);
+    });
+
+    it("hasInlinePermission recursively detects AskUserQuestion in subTimeline", () => {
+      const s = setupPermissionStore();
+      s.timeline = [
+        makeToolEntry("parent", "Task", "running", undefined, [
+          makeToolEntry("child", "AskUserQuestion", "permission_prompt", "req-ask-sub"),
+        ]),
+      ];
+      expect(s.hasInlinePermission).toBe(true);
+    });
+  });
+
+  describe("resolvePermissionDeny full traversal", () => {
+    function makeToolEntry(
+      id: string,
+      toolName: string,
+      status: string,
+      requestId?: string,
+      subTimeline?: TimelineEntry[],
+    ): TimelineEntry {
+      return {
+        kind: "tool",
+        id,
+        ts: new Date().toISOString(),
+        tool: {
+          tool_use_id: id,
+          tool_name: toolName,
+          status,
+          permission_request_id: requestId,
+          input: {},
+        } as any,
+        subTimeline,
+      } as any;
+    }
+
+    it("updates all entries matching requestId (no early return)", () => {
+      const s = new SessionStore();
+      s.run = makeRun("run-deny") as any;
+      s.phase = "running";
+      s.timeline = [
+        makeToolEntry("t1", "Read", "permission_prompt", "req-dup"),
+        makeToolEntry("parent", "Task", "running", undefined, [
+          makeToolEntry("t2", "Read", "permission_prompt", "req-dup"),
+        ]),
+      ];
+
+      s.resolvePermissionDeny("req-dup");
+
+      // Both should be updated
+      const top = s.timeline[0] as Extract<TimelineEntry, { kind: "tool" }>;
+      expect(top.tool.status).toBe("permission_denied");
+
+      const parent = s.timeline[1] as Extract<TimelineEntry, { kind: "tool" }>;
+      const child = parent.subTimeline![0] as Extract<TimelineEntry, { kind: "tool" }>;
+      expect(child.tool.status).toBe("permission_denied");
+    });
+  });
+
+  describe("resolvePermissionAllow full traversal", () => {
+    function makeToolEntry(
+      id: string,
+      toolName: string,
+      status: string,
+      requestId?: string,
+      subTimeline?: TimelineEntry[],
+    ): TimelineEntry {
+      return {
+        kind: "tool",
+        id,
+        ts: new Date().toISOString(),
+        tool: {
+          tool_use_id: id,
+          tool_name: toolName,
+          status,
+          permission_request_id: requestId,
+          input: {},
+        } as any,
+        subTimeline,
+      } as any;
+    }
+
+    it("updates all entries matching requestId (no early return)", () => {
+      const s = new SessionStore();
+      s.run = makeRun("run-allow") as any;
+      s.phase = "running";
+      s.timeline = [
+        makeToolEntry("t1", "Read", "permission_prompt", "req-dup"),
+        makeToolEntry("parent", "Task", "running", undefined, [
+          makeToolEntry("t2", "Read", "permission_prompt", "req-dup"),
+        ]),
+      ];
+
+      s.resolvePermissionAllow("req-dup");
+
+      const top = s.timeline[0] as Extract<TimelineEntry, { kind: "tool" }>;
+      expect(top.tool.status).toBe("running");
+
+      const parent = s.timeline[1] as Extract<TimelineEntry, { kind: "tool" }>;
+      const child = parent.subTimeline![0] as Extract<TimelineEntry, { kind: "tool" }>;
+      expect(child.tool.status).toBe("running");
+    });
+
+    it("skips AskUserQuestion but updates normal tools", () => {
+      const s = new SessionStore();
+      s.run = makeRun("run-allow-mix") as any;
+      s.phase = "running";
+      s.timeline = [
+        makeToolEntry("t1", "AskUserQuestion", "permission_prompt", "req-mix"),
+        makeToolEntry("t2", "Read", "permission_prompt", "req-mix"),
+      ];
+
+      s.resolvePermissionAllow("req-mix");
+
+      const ask = s.timeline[0] as Extract<TimelineEntry, { kind: "tool" }>;
+      expect(ask.tool.status).toBe("permission_prompt"); // unchanged
+
+      const read = s.timeline[1] as Extract<TimelineEntry, { kind: "tool" }>;
+      expect(read.tool.status).toBe("running"); // updated
+    });
+
+    it("skips AskUserQuestion in subTimeline", () => {
+      const s = new SessionStore();
+      s.run = makeRun("run-allow-sub") as any;
+      s.phase = "running";
+      s.timeline = [
+        makeToolEntry("parent", "Task", "running", undefined, [
+          makeToolEntry("ask-sub", "AskUserQuestion", "permission_prompt", "req-sub"),
+          makeToolEntry("read-sub", "Read", "permission_prompt", "req-sub"),
+        ]),
+      ];
+
+      s.resolvePermissionAllow("req-sub");
+
+      const parent = s.timeline[0] as Extract<TimelineEntry, { kind: "tool" }>;
+      const askChild = parent.subTimeline![0] as Extract<TimelineEntry, { kind: "tool" }>;
+      expect(askChild.tool.status).toBe("permission_prompt"); // unchanged
+
+      const readChild = parent.subTimeline![1] as Extract<TimelineEntry, { kind: "tool" }>;
+      expect(readChild.tool.status).toBe("running"); // updated
+    });
+  });
+
+  describe("multiple simultaneous permission_prompts via applyEvent (live mode)", () => {
+    it("pendingToolPermissions returns 2 when two permission_prompts arrive sequentially", () => {
+      const s = new SessionStore();
+      s.run = makeRun("run-multi") as any;
+      s.phase = "running";
+
+      // tool_start A
+      s.applyEvent({
+        type: "tool_start",
+        run_id: "run-multi",
+        tool_use_id: "write-a",
+        tool_name: "Write",
+        input: { file_path: "/a.ts" },
+      } as BusEvent);
+      expect(s.timeline).toHaveLength(1);
+
+      // permission_prompt A
+      s.applyEvent({
+        type: "permission_prompt",
+        run_id: "run-multi",
+        tool_use_id: "write-a",
+        tool_name: "Write",
+        request_id: "req-a",
+        tool_input: { file_path: "/a.ts" },
+        decision_reason: "",
+      } as BusEvent);
+      expect(s.pendingToolPermissions).toHaveLength(1);
+      expect(s.pendingToolPermissions[0].requestId).toBe("req-a");
+
+      // tool_start B
+      s.applyEvent({
+        type: "tool_start",
+        run_id: "run-multi",
+        tool_use_id: "write-b",
+        tool_name: "Write",
+        input: { file_path: "/b.ts" },
+      } as BusEvent);
+      expect(s.timeline).toHaveLength(2);
+
+      // permission_prompt B
+      s.applyEvent({
+        type: "permission_prompt",
+        run_id: "run-multi",
+        tool_use_id: "write-b",
+        tool_name: "Write",
+        request_id: "req-b",
+        tool_input: { file_path: "/b.ts" },
+        decision_reason: "",
+      } as BusEvent);
+
+      // Both should be pending
+      expect(s.pendingToolPermissions).toHaveLength(2);
+      expect(s.pendingToolPermissions[0].requestId).toBe("req-a");
+      expect(s.pendingToolPermissions[1].requestId).toBe("req-b");
+      expect(s.hasPendingPermission).toBe(true);
+    });
+
+    it("pendingToolPermissions returns 2 via applyEventBatch (batched mode)", () => {
+      const s = new SessionStore();
+      s.run = makeRun("run-batch") as any;
+      s.phase = "running";
+
+      s.applyEventBatch([
+        {
+          type: "tool_start",
+          run_id: "run-batch",
+          tool_use_id: "read-1",
+          tool_name: "Read",
+          input: { file_path: "/x.ts" },
+        },
+        {
+          type: "tool_start",
+          run_id: "run-batch",
+          tool_use_id: "read-2",
+          tool_name: "Read",
+          input: { file_path: "/y.ts" },
+        },
+        {
+          type: "permission_prompt",
+          run_id: "run-batch",
+          tool_use_id: "read-1",
+          tool_name: "Read",
+          request_id: "req-1",
+          tool_input: { file_path: "/x.ts" },
+          decision_reason: "",
+        },
+        {
+          type: "permission_prompt",
+          run_id: "run-batch",
+          tool_use_id: "read-2",
+          tool_name: "Read",
+          request_id: "req-2",
+          tool_input: { file_path: "/y.ts" },
+          decision_reason: "",
+        },
+      ] as BusEvent[]);
+
+      expect(s.pendingToolPermissions).toHaveLength(2);
+      expect(s.pendingToolPermissions[0].requestId).toBe("req-1");
+      expect(s.pendingToolPermissions[1].requestId).toBe("req-2");
+    });
+
+    it("resolving one permission_prompt does not affect the other", () => {
+      const s = new SessionStore();
+      s.run = makeRun("run-resolve") as any;
+      s.phase = "running";
+
+      // Create two permission_prompts
+      s.applyEventBatch([
+        {
+          type: "tool_start",
+          run_id: "run-resolve",
+          tool_use_id: "w1",
+          tool_name: "Write",
+          input: { file_path: "/a.ts" },
+        },
+        {
+          type: "tool_start",
+          run_id: "run-resolve",
+          tool_use_id: "w2",
+          tool_name: "Write",
+          input: { file_path: "/b.ts" },
+        },
+        {
+          type: "permission_prompt",
+          run_id: "run-resolve",
+          tool_use_id: "w1",
+          tool_name: "Write",
+          request_id: "req-w1",
+          tool_input: { file_path: "/a.ts" },
+          decision_reason: "",
+        },
+        {
+          type: "permission_prompt",
+          run_id: "run-resolve",
+          tool_use_id: "w2",
+          tool_name: "Write",
+          request_id: "req-w2",
+          tool_input: { file_path: "/b.ts" },
+          decision_reason: "",
+        },
+      ] as BusEvent[]);
+
+      expect(s.pendingToolPermissions).toHaveLength(2);
+
+      // Allow only the first one
+      s.resolvePermissionAllow("req-w1");
+
+      // Only w2 should remain pending
+      expect(s.pendingToolPermissions).toHaveLength(1);
+      expect(s.pendingToolPermissions[0].requestId).toBe("req-w2");
+      expect(s.pendingToolPermissions[0].tool.tool_name).toBe("Write");
+    });
+
+    it("synthetic permission_prompt (no preceding tool_start) still collected", () => {
+      const s = new SessionStore();
+      s.run = makeRun("run-synth") as any;
+      s.phase = "running";
+
+      // permission_prompt without preceding tool_start → creates synthetic entry
+      s.applyEvent({
+        type: "permission_prompt",
+        run_id: "run-synth",
+        tool_use_id: "synth-1",
+        tool_name: "Bash",
+        request_id: "req-synth-1",
+        tool_input: { command: "ls" },
+        decision_reason: "",
+      } as BusEvent);
+
+      s.applyEvent({
+        type: "permission_prompt",
+        run_id: "run-synth",
+        tool_use_id: "synth-2",
+        tool_name: "Bash",
+        request_id: "req-synth-2",
+        tool_input: { command: "cat foo" },
+        decision_reason: "",
+      } as BusEvent);
+
+      expect(s.pendingToolPermissions).toHaveLength(2);
+      expect(s.pendingToolPermissions[0].requestId).toBe("req-synth-1");
+      expect(s.pendingToolPermissions[1].requestId).toBe("req-synth-2");
     });
   });
 });

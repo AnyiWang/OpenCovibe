@@ -36,6 +36,7 @@
     normalizeCwd,
     type ConversationGroup,
   } from "$lib/utils/sidebar-groups";
+  import { loadRemovedCwds } from "$lib/utils/removed-cwds";
   import { page } from "$app/stores";
   import { goto, afterNavigate } from "$app/navigation";
   import { onMount, setContext, untrack } from "svelte";
@@ -102,6 +103,7 @@
   );
   let effectiveDark = $derived(themeMode === "system" ? systemDark : themeMode === "dark");
   let pinnedCwds = $state<string[]>([]);
+  let removedCwds = $state<string[]>([]);
 
   let panelTab = $state<"chats" | "teams">("chats");
   let runSearchQuery = $state("");
@@ -498,6 +500,7 @@
     } catch {
       /* ignore parse errors */
     }
+    removedCwds = loadRemovedCwds();
 
     // Poll for runs every 60s (fallback only — primary updates via ocv:runs-changed event)
     const interval = setInterval(loadRuns, 60000);
@@ -776,11 +779,79 @@
     deleteTarget = null;
   }
 
+  // ── Remove project folder confirm flow ──
+  let removeProjectConfirmOpen = $state(false);
+  let removeProjectTarget = $state("");
+
+  function persistRemovedCwds() {
+    localStorage.setItem("ocv:removed-cwds", JSON.stringify(removedCwds));
+  }
+
+  function requestRemoveProject(cwd: string) {
+    removeProjectTarget = normalizeCwd(cwd);
+    removeProjectConfirmOpen = true;
+  }
+
+  function confirmRemoveProject() {
+    const normalized = removeProjectTarget;
+    removeProjectConfirmOpen = false;
+    removeProjectTarget = "";
+    if (!normalized) return;
+
+    // Add to removedCwds
+    if (!removedCwds.includes(normalized)) {
+      removedCwds = [...removedCwds, normalized];
+      persistRemovedCwds();
+    }
+
+    // Remove from pinnedCwds (compare normalized)
+    const newPinned = pinnedCwds.filter((c) => normalizeCwd(c) !== normalized);
+    if (newPinned.length !== pinnedCwds.length) {
+      pinnedCwds = newPinned;
+      localStorage.setItem("ocv:pinned-cwds", JSON.stringify(pinnedCwds));
+    }
+
+    // If currently viewing this project, switch to All Projects
+    if (normalizeCwd(projectCwd) === normalized) {
+      projectCwd = "";
+    }
+
+    dbg("layout", "removeProject", { cwd: normalized });
+  }
+
+  function cancelRemoveProject() {
+    removeProjectConfirmOpen = false;
+    removeProjectTarget = "";
+  }
+
   // Build project folder tree for chats tab
-  let projectFolders = $derived.by(() => buildProjectFolders(runs, favoriteRunIds, pinnedCwds));
+  let projectFolders = $derived.by(() =>
+    buildProjectFolders(runs, favoriteRunIds, pinnedCwds, removedCwds),
+  );
 
   // Selectable folders: real project folders (exclude Uncategorized)
   const selectableFolders = $derived(projectFolders.filter((f) => !f.isUncategorized));
+
+  // Removed cwd set for O(1) lookup in search filtering
+  let removedCwdSet = $derived(new Set(removedCwds.map(normalizeCwd)));
+
+  // Filter search results to exclude removed project cwds
+  let visibleSearchResults = $derived.by(() => {
+    if (removedCwdSet.size === 0) return searchResults;
+    // Build runId→cwd mapping from runs
+    const runCwdMap = new Map<string, string>();
+    for (const run of runs) {
+      runCwdMap.set(run.id, normalizeCwd(run.cwd));
+    }
+    return searchResults.filter((result) => {
+      const cwd = runCwdMap.get(result.runId);
+      // Unknown runId (not in runs yet) → show by default (avoid async timing issues)
+      if (cwd === undefined) return true;
+      // "" = Uncategorized → always show
+      if (!cwd) return true;
+      return !removedCwdSet.has(cwd);
+    });
+  });
 
   // Debug log when folder tree rebuilds
   $effect(() => {
@@ -849,7 +920,16 @@
     try {
       const { open } = await import("@tauri-apps/plugin-dialog");
       const selected = await open({ directory: true, title: t("layout_selectProjectFolder") });
-      if (selected) projectCwd = normalizeCwd(selected as string) || "";
+      if (selected) {
+        const normalized = normalizeCwd(selected as string) || "";
+        // Un-remove if it was previously removed
+        if (normalized && removedCwds.includes(normalized)) {
+          removedCwds = removedCwds.filter((c) => c !== normalized);
+          persistRemovedCwds();
+          dbg("layout", "pickFolder: un-removed cwd", { cwd: normalized });
+        }
+        projectCwd = normalized;
+      }
     } catch (e) {
       dbgWarn("layout", "failed to open folder dialog:", e);
     }
@@ -1788,9 +1868,9 @@
                   <p class="text-xs text-muted-foreground px-1 pt-0.5">
                     {t("runs_searching")}
                   </p>
-                {:else if searchResults.length > 0}
+                {:else if visibleSearchResults.length > 0}
                   <p class="text-xs text-muted-foreground px-1 pt-0.5">
-                    {t("runs_resultsCount", { count: String(searchResults.length) })}
+                    {t("runs_resultsCount", { count: String(visibleSearchResults.length) })}
                   </p>
                 {/if}
               {/if}
@@ -1799,18 +1879,18 @@
             {#if runSearchQuery.trim()}
               <!-- Search results -->
               <div class="flex-1 overflow-y-auto">
-                {#if searching && searchResults.length === 0}
+                {#if searching && visibleSearchResults.length === 0}
                   <div class="flex items-center justify-center py-10">
                     <div
                       class="h-4 w-4 border-2 border-primary/30 border-t-primary rounded-full animate-spin"
                     ></div>
                   </div>
-                {:else if !searching && searchResults.length === 0}
+                {:else if !searching && visibleSearchResults.length === 0}
                   <div class="flex items-center justify-center px-3 py-10 text-center">
                     <p class="text-xs text-muted-foreground">{t("runs_noMatching")}</p>
                   </div>
                 {:else}
-                  {#each searchResults as result}
+                  {#each visibleSearchResults as result}
                     <a
                       href="/chat?run={result.runId}"
                       class="flex flex-col gap-0.5 px-3 py-2 hover:bg-sidebar-accent/50 transition-colors no-underline text-sidebar-foreground"
@@ -1844,6 +1924,9 @@
                     onSelectConversation={(runId) => goto(`/chat?run=${runId}`)}
                     onResume={(runId, mode) => goto(`/chat?run=${runId}&resume=${mode}`)}
                     onDelete={requestDeleteConversation}
+                    onRemove={folder.isUncategorized
+                      ? undefined
+                      : () => requestRemoveProject(folder.cwd)}
                   />
                 {/each}
                 <!-- Open folder... -->
@@ -1979,7 +2062,7 @@
 
 {#if showCliBrowser}
   <CliSessionBrowser
-    cwd={projectCwd || "/"}
+    cwd="/"
     onclose={() => (showCliBrowser = false)}
     onimported={(runId) => {
       showCliBrowser = false;
@@ -2001,6 +2084,24 @@
     <button
       class="px-3 py-1.5 text-sm rounded-md bg-destructive text-destructive-foreground hover:bg-destructive/90 transition-colors"
       onclick={confirmDeleteConversation}
+    >
+      {t("sidebar_deleteOk")}
+    </button>
+  </div>
+</Modal>
+
+<Modal bind:open={removeProjectConfirmOpen} title={t("sidebar_removeProjectConfirm")}>
+  <p class="text-sm text-muted-foreground mb-4">{t("sidebar_removeProjectDesc")}</p>
+  <div class="flex justify-end gap-2">
+    <button
+      class="px-3 py-1.5 text-sm rounded-md border border-border hover:bg-accent transition-colors"
+      onclick={cancelRemoveProject}
+    >
+      {t("sidebar_deleteCancel")}
+    </button>
+    <button
+      class="px-3 py-1.5 text-sm rounded-md bg-destructive text-destructive-foreground hover:bg-destructive/90 transition-colors"
+      onclick={confirmRemoveProject}
     >
       {t("sidebar_deleteOk")}
     </button>

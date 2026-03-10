@@ -28,9 +28,17 @@ vi.mock("$lib/utils/debug", () => ({
   dbgWarn: vi.fn(),
 }));
 
+vi.mock("./attention-store.svelte", () => ({
+  markAttention: vi.fn(),
+  clearAttention: vi.fn(),
+  hasAttention: vi.fn(),
+  _resetForTest: vi.fn(),
+}));
+
 // Import after mocks
 import { EventMiddleware } from "./event-middleware";
 import { dbgWarn } from "$lib/utils/debug";
+import { markAttention, clearAttention } from "./attention-store.svelte";
 
 // ── Helpers ──
 
@@ -373,6 +381,119 @@ describe("EventMiddleware", () => {
         expect.stringContaining("failed to register listener"),
         expect.any(Error),
       );
+    });
+  });
+
+  // ── Attention tracking ──
+
+  describe("attention tracking", () => {
+    const markMock = vi.mocked(markAttention);
+    const clearMock = vi.mocked(clearAttention);
+
+    beforeEach(() => {
+      markMock.mockClear();
+      clearMock.mockClear();
+    });
+
+    it("tracks attention for unsubscribed runs", async () => {
+      await mw.start();
+      // No subscription for "run-other"
+      fireBusEvent(makeBusEvent("run-other", "permission_prompt", { request_id: "r1" }));
+      expect(markMock).toHaveBeenCalledWith("run-other", "permission");
+    });
+
+    it("permission_prompt → markAttention('permission')", async () => {
+      await mw.start();
+      const store = mockStore();
+      mw.subscribeCurrent("run-1", store as any);
+      fireBusEvent(makeBusEvent("run-1", "permission_prompt", { request_id: "r1" }));
+      expect(markMock).toHaveBeenCalledWith("run-1", "permission");
+    });
+
+    it("tool_end(AskUserQuestion, error) → markAttention('ask')", async () => {
+      await mw.start();
+      fireBusEvent(
+        makeBusEvent("run-1", "tool_end", {
+          tool_use_id: "t1",
+          tool_name: "AskUserQuestion",
+          status: "error",
+          output: {},
+        }),
+      );
+      expect(markMock).toHaveBeenCalledWith("run-1", "ask");
+    });
+
+    it("tool_end for other tool does not trigger mark", async () => {
+      await mw.start();
+      fireBusEvent(
+        makeBusEvent("run-1", "tool_end", {
+          tool_use_id: "t1",
+          tool_name: "Bash",
+          status: "error",
+          output: {},
+        }),
+      );
+      expect(markMock).not.toHaveBeenCalled();
+    });
+
+    it("permission_denied → clearAttention('permission')", async () => {
+      await mw.start();
+      fireBusEvent(makeBusEvent("run-1", "permission_denied", { tool_use_id: "t1" }));
+      expect(clearMock).toHaveBeenCalledWith("run-1", "permission");
+    });
+
+    it("permission_denied(AskUserQuestion) → clears both permission and ask", async () => {
+      await mw.start();
+      fireBusEvent(
+        makeBusEvent("run-1", "permission_denied", {
+          tool_use_id: "t1",
+          tool_name: "AskUserQuestion",
+        }),
+      );
+      expect(clearMock).toHaveBeenCalledWith("run-1", "permission");
+      expect(clearMock).toHaveBeenCalledWith("run-1", "ask");
+    });
+
+    it("control_cancelled → clearAttention('permission')", async () => {
+      await mw.start();
+      fireBusEvent(makeBusEvent("run-1", "control_cancelled", { request_id: "r1" }));
+      expect(clearMock).toHaveBeenCalledWith("run-1", "permission");
+    });
+
+    it("run_state(spawning) → clearAttention('permission')", async () => {
+      await mw.start();
+      fireBusEvent(makeBusEvent("run-1", "run_state", { state: "spawning" }));
+      expect(clearMock).toHaveBeenCalledWith("run-1", "permission");
+    });
+
+    it("run_state(idle) → clearAttention('permission')", async () => {
+      await mw.start();
+      fireBusEvent(makeBusEvent("run-1", "run_state", { state: "idle" }));
+      expect(clearMock).toHaveBeenCalledWith("run-1", "permission");
+    });
+
+    it("run_state(running) → clearAttention('ask')", async () => {
+      await mw.start();
+      fireBusEvent(makeBusEvent("run-1", "run_state", { state: "running" }));
+      expect(clearMock).toHaveBeenCalledWith("run-1", "ask");
+    });
+
+    it("run_state(stopped) → clearAttention() (all)", async () => {
+      await mw.start();
+      fireBusEvent(makeBusEvent("run-1", "run_state", { state: "stopped" }));
+      expect(clearMock).toHaveBeenCalledWith("run-1");
+    });
+
+    it("user_message → clearAttention('ask')", async () => {
+      await mw.start();
+      fireBusEvent(makeBusEvent("run-1", "user_message", { text: "hello" }));
+      expect(clearMock).toHaveBeenCalledWith("run-1", "ask");
+    });
+
+    it("run_state with unknown value does not call clearAttention", async () => {
+      await mw.start();
+      fireBusEvent(makeBusEvent("run-1", "run_state", { state: "some_future_state" }));
+      expect(clearMock).not.toHaveBeenCalled();
     });
   });
 });

@@ -49,6 +49,7 @@
   import SessionStatusBar from "$lib/components/SessionStatusBar.svelte";
   import McpStatusPanel from "$lib/components/McpStatusPanel.svelte";
   import PromptInput from "$lib/components/PromptInput.svelte";
+  import PermissionPanel from "$lib/components/PermissionPanel.svelte";
   import AuthSourceBadge from "$lib/components/AuthSourceBadge.svelte";
 
   import ToolActivity from "$lib/components/ToolActivity.svelte";
@@ -65,6 +66,7 @@
   import ReleaseNotesCard from "$lib/components/ReleaseNotesCard.svelte";
   import { t } from "$lib/i18n/index.svelte";
   import { dbg, dbgWarn } from "$lib/utils/debug";
+  import { resolvePermissionOptimistic } from "$lib/utils/resolve-permission";
   import { getToolColor } from "$lib/utils/tool-colors";
   import { ansiToHtml, hasAnsiCodes } from "$lib/utils/ansi";
   import { randomSpinnerVerb } from "$lib/utils/spinner-verbs";
@@ -593,6 +595,8 @@
   let welcomeVisible = $derived(store.timeline.length === 0 && !store.streamingText && !store.run);
 
   let inputBlockedByPermission = $derived(store.hasPendingPermission);
+  let pendingToolPermissions = $derived(store.pendingToolPermissions);
+  let showPermissionPanel = $derived(pendingToolPermissions.length > 0 && store.sessionAlive);
 
   /** Skill info for SkillSelector: merge preloaded details with session skill names. */
   let skillItems = $derived.by(() => {
@@ -644,6 +648,27 @@
       }
     }
     return map;
+  });
+
+  /**
+   * Indices where a Claude turn starts (first tool after a user message).
+   * Used to render a "Claude" header before tool cards.
+   */
+  let claudeTurnStarts = $derived.by(() => {
+    const starts = new Set<number>();
+    const vt = visibleTimeline;
+    for (let i = 0; i < vt.length; i++) {
+      if (vt[i].kind !== "tool") continue;
+      if (burstHiddenIndices.has(i)) continue;
+      // Look back for the previous visible non-tool entry
+      for (let j = i - 1; j >= 0; j--) {
+        if (burstHiddenIndices.has(j)) continue;
+        if (vt[j].kind === "tool") continue;
+        if (vt[j].kind === "user") starts.add(i);
+        break;
+      }
+    }
+    return starts;
   });
 
   /** Usage for the last (current/latest) turn — shown after all entries. */
@@ -1403,28 +1428,44 @@
     }
   }
 
-  // ── Permission pending auto-scroll ──
+  // ── Permission pending auto-scroll (only for inline AskUserQuestion/ExitPlanMode) ──
   let prevPermissionRunId = "";
   let prevHadPermission = false;
 
   $effect(() => {
     const runId = store.run?.id ?? "";
-    const has = store.hasPendingPermission;
+    const hasInline = store.hasInlinePermission;
 
     if (runId !== prevPermissionRunId) {
       prevPermissionRunId = runId;
       prevHadPermission = false;
     }
 
-    if (has && !prevHadPermission) {
+    if (hasInline && !prevHadPermission) {
       if (!chatAreaRef) return;
       requestAnimationFrame(() => {
         scrollChatToBottom();
       });
-      dbg("chat", "permission pending -> autoscroll", { runId });
+      dbg("chat", "inline permission pending -> autoscroll", { runId });
     }
 
-    prevHadPermission = has;
+    prevHadPermission = hasInline;
+  });
+
+  // ── Permission panel visibility log ──
+  let _prevPanelCount = 0;
+  $effect(() => {
+    const count = pendingToolPermissions.length;
+    if (count !== _prevPanelCount) {
+      if (count > 0)
+        dbg("chat", "permissionPanel visible", {
+          count,
+          ids: pendingToolPermissions.map((p) => p.requestId),
+          tools: pendingToolPermissions.map((p) => p.tool.tool_name),
+        });
+      else if (_prevPanelCount > 0) dbg("chat", "permissionPanel hidden");
+      _prevPanelCount = count;
+    }
   });
 
   // ── Send message ──
@@ -2505,9 +2546,10 @@
     denyMessage?: string,
     interrupt?: boolean,
   ) {
-    if (!store.run) return;
+    if (!store.run || !store.sessionAlive) return;
+    const runId = store.run.id; // snapshot — store.run may change after await
     dbg("chat", "inline permission respond", {
-      runId: store.run.id,
+      runId,
       requestId,
       behavior,
       updatedPermissions,
@@ -2526,7 +2568,7 @@
       }
 
       await api.respondPermission(
-        store.run.id,
+        runId,
         requestId,
         behavior,
         updatedPermissions,
@@ -2534,20 +2576,14 @@
         denyMessage,
         interrupt,
       );
-      // Optimistic local update: CLI doesn't emit a separate event for deny
-      if (behavior === "deny") {
-        store.resolvePermissionDeny(requestId);
-      }
-      // Optimistic local update: switch permission_prompt → running so UI shows progress
-      if (behavior === "allow") {
-        store.resolvePermissionAllow(requestId);
-      }
+      // Optimistic resolve + clear attention flag
+      resolvePermissionOptimistic(store, runId, requestId, behavior);
     } catch (e) {
       dbgWarn("chat", "permission respond failed:", e);
       // If the CLI rejected the response (e.g. session already idle after interrupt),
       // still resolve the card locally so buttons are removed.
       if (behavior === "deny") {
-        store.resolvePermissionDeny(requestId);
+        resolvePermissionOptimistic(store, runId, requestId, "deny");
       }
       // allow failure: don't change status — submitting timeout auto-resets (§5)
       store.error = String(e);
@@ -2635,7 +2671,7 @@
         [{ type: "setMode", mode: "acceptEdits", destination: "session" }],
         exitPlanEntry.tool.input,
       );
-      store.resolvePermissionAllow(requestId);
+      resolvePermissionOptimistic(store, runId, requestId, "allow");
 
       // 3. Wait for tool_end to deliver plan content (via pendingClearContextPlan)
       //    Poll briefly — tool_end should arrive within a few hundred ms
@@ -3183,34 +3219,10 @@
                           timestamp: entry.ts,
                         }}
                         attachments={entry.attachments}
+                        onRewind={entry.cliUuid && store.sessionAlive && !store.isRunning
+                          ? () => handleRewindToMessage(entry)
+                          : undefined}
                       />
-                      {#if entry.cliUuid && store.sessionAlive && !store.isRunning}
-                        <div class="relative chat-content-width pl-7 h-0">
-                          <button
-                            type="button"
-                            class="absolute top-0 flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px]
-                              opacity-0 pointer-events-none transition-all
-                              group-hover/msg:opacity-100 group-hover/msg:pointer-events-auto
-                              text-muted-foreground/40 hover:text-muted-foreground hover:bg-muted/50"
-                            onclick={() => handleRewindToMessage(entry)}
-                            title={t("rewind_toHere")}
-                          >
-                            <svg
-                              class="h-3 w-3"
-                              viewBox="0 0 24 24"
-                              fill="none"
-                              stroke="currentColor"
-                              stroke-width="2"
-                              stroke-linecap="round"
-                              stroke-linejoin="round"
-                            >
-                              <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
-                              <path d="M3 3v5h5" />
-                            </svg>
-                            {t("rewind_toHere")}
-                          </button>
-                        </div>
-                      {/if}
                     {:else if entry.kind === "assistant"}
                       <ChatMessage
                         message={{
@@ -3222,9 +3234,12 @@
                         thinkingText={entry.thinkingText}
                       />
                     {:else if entry.kind === "tool"}
+                      {#if claudeTurnStarts.has(i)}
+                        <div class="pt-3"></div>
+                      {/if}
                       {#if !burstHiddenIndices.has(i)}
                         <div class="w-full py-1" id="tool-{entry.tool.tool_use_id}">
-                          <div class="chat-content-width pl-7">
+                          <div class="chat-content-width">
                             <InlineToolCard
                               tool={entry.tool}
                               subTimeline={entry.subTimeline}
@@ -3246,6 +3261,7 @@
                                 : undefined}
                               latestPlanTool={entry.kind === "tool" &&
                                 entry.tool.tool_use_id === latestPlanToolId}
+                              showPermissionInPanel={showPermissionPanel}
                             />
                           </div>
                         </div>
@@ -3765,6 +3781,14 @@
       </div>
     {/if}
 
+    <!-- Floating permission panel (above input bar) -->
+    {#if showPermissionPanel}
+      <PermissionPanel
+        pendingTools={pendingToolPermissions}
+        onPermissionRespond={handlePermissionRespond}
+      />
+    {/if}
+
     <!-- Input bar -->
     {#if !store.ptySpawned || store.sessionAlive}
       <PromptInput
@@ -3772,7 +3796,7 @@
         agent={store.agent}
         running={store.isActivelyRunning}
         disabled={inputBlockedByPermission}
-        pendingPermission={inputBlockedByPermission}
+        pendingPermission={store.hasInlinePermission}
         hasRun={!!store.run}
         sessionAlive={store.sessionAlive}
         canResume={!store.sessionAlive && !!store.run?.session_id && store.useStreamSession}
@@ -3841,7 +3865,7 @@
   <!-- CLI session browser modal -->
   {#if showCliBrowser}
     <CliSessionBrowser
-      cwd={localStorage.getItem("ocv:project-cwd") || "/"}
+      cwd="/"
       onclose={() => (showCliBrowser = false)}
       onimported={(runId) => {
         showCliBrowser = false;
