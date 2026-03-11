@@ -3,7 +3,6 @@ name: CI
 on:
   pull_request:
     branches: [master]
-    types: [opened, synchronize, reopened, labeled]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -12,7 +11,6 @@ concurrency:
 jobs:
   frontend:
     name: Frontend
-    if: github.event.action != 'labeled'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -56,7 +54,6 @@ jobs:
 
   rust:
     name: Rust
-    if: github.event.action != 'labeled'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -100,8 +97,9 @@ jobs:
   build-test:
     name: Build Test (${{ matrix.target }})
     if: >-
-      github.event.action == 'labeled' &&
-      startsWith(github.event.label.name, 'build-')
+      contains(github.event.pull_request.labels.*.name, 'build-test') ||
+      contains(github.event.pull_request.labels.*.name, 'build-windows') ||
+      contains(github.event.pull_request.labels.*.name, 'build-macos')
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -116,7 +114,14 @@ jobs:
             asset_glob: src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
             platform: windows
         exclude:
-          - platform: ${{ github.event.label.name == 'build-windows' && 'macos' || github.event.label.name == 'build-macos' && 'windows' || 'none' }}
+          - platform: >-
+              ${{
+                !contains(github.event.pull_request.labels.*.name, 'build-test') &&
+                !contains(github.event.pull_request.labels.*.name, 'build-macos') &&
+                'macos' || !contains(github.event.pull_request.labels.*.name, 'build-test') &&
+                !contains(github.event.pull_request.labels.*.name, 'build-windows') &&
+                'windows' || 'none'
+              }}
     steps:
       - uses: actions/checkout@v4
 
