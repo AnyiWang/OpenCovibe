@@ -5,6 +5,7 @@ use crate::models::{
     ConfigIssue, DiagnosticsReport, LocalProxyStatus, ProjectDiagnostics, ProjectInitStatus,
     RemoteTestResult, ServicesDiagnostics, SshKeyInfo, SystemDiagnostics,
 };
+use crate::process_ext::HideConsole;
 use std::path::Path;
 use std::process::Command;
 
@@ -30,6 +31,7 @@ pub async fn check_agent_cli(agent: String) -> Result<CliCheckResult, String> {
         let ver_output = Command::new(binary)
             .arg("--version")
             .env("PATH", &aug_path)
+            .hide_console()
             .output();
         match ver_output {
             Ok(output) if output.status.success() => {
@@ -197,7 +199,9 @@ pub async fn test_remote_host(
     ssh_cmd.arg(&target).arg("echo ok");
     ssh_cmd
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
+        .stderr(std::process::Stdio::piped())
+        .hide_console()
+        .kill_on_drop(true);
 
     let ssh_result =
         tokio::time::timeout(std::time::Duration::from_secs(15), ssh_cmd.output()).await;
@@ -249,7 +253,9 @@ pub async fn test_remote_host(
     cli_cmd.arg(&target).arg(&check_cmd_str);
     cli_cmd
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
+        .stderr(std::process::Stdio::piped())
+        .hide_console()
+        .kill_on_drop(true);
 
     let cli_result =
         tokio::time::timeout(std::time::Duration::from_secs(15), cli_cmd.output()).await;
@@ -425,6 +431,7 @@ async fn check_cli_inner() -> CliDiagnostics {
         match Command::new("claude")
             .arg("--version")
             .env("PATH", &aug_path)
+            .hide_console()
             .output()
         {
             Ok(output) if output.status.success() => {
@@ -442,6 +449,7 @@ async fn check_cli_inner() -> CliDiagnostics {
         .env("PATH", &aug_path)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
+        .hide_console()
         .status()
         .map(|s| s.success())
         .unwrap_or(false);
@@ -1282,6 +1290,7 @@ pub fn generate_ssh_key() -> Result<SshKeyInfo, String> {
 
     // Get hostname for comment
     let hostname = Command::new("hostname")
+        .hide_console()
         .output()
         .ok()
         .and_then(|o| {
@@ -1305,6 +1314,7 @@ pub fn generate_ssh_key() -> Result<SshKeyInfo, String> {
     let output = Command::new("ssh-keygen")
         .args(["-t", "ed25519", "-N", "", "-C", &comment, "-f", &key_path])
         .env("PATH", &aug_path)
+        .hide_console()
         .output()
         .map_err(|e| format!("Failed to run ssh-keygen: {}", e))?;
 

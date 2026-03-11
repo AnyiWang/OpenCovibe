@@ -849,7 +849,9 @@
   "toolActivity_tabContext": "Context",
   "toolActivity_tabFiles": "Files",
   "toolActivity_tabInfo": "Info",
+  "toolActivity_tabTasks": "Tasks",
 
+  "bgTask_empty": "No background tasks",
   "filesPanel_noFiles": "No file operations yet",
   "filesPanel_notLocatable": "Cannot locate the corresponding tool call",
 
@@ -1118,6 +1120,8 @@
   "toast_verboseOff": "Verbose output disabled",
   "toast_permissionMode": "Permission: {mode}",
   "toast_permissionFailed": "Permission mode change failed",
+  "toast_permissionPersistFailed": "Mode active for this session only — save failed",
+  "toast_permissionChangeFailed": "Permission mode change failed — save error",
   "toast_rewindSuccess": "Changes reverted",
   "error_rewindNoCheckpoint": "No file checkpoint found to rewind to",
   "error_rewindFailed": "Failed to rewind files",

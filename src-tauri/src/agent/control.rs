@@ -1,5 +1,6 @@
 use crate::agent::claude_stream::{augmented_path, resolve_claude_path};
 use crate::models::{now_iso, CliAccount, CliCommand, CliInfo, CliInfoError, CliModelInfo};
+use crate::process_ext::HideConsole;
 use serde_json::Value;
 use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
@@ -68,7 +69,9 @@ pub async fn get_cli_info(cache: &CliInfoCache, force: bool) -> Result<CliInfo, 
         .env_remove("CLAUDECODE") // Allow running inside a Claude Code session
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null());
+        .stderr(std::process::Stdio::null())
+        .hide_console()
+        .kill_on_drop(true);
 
     let mut child = cmd.spawn().map_err(|e| {
         log::error!("[control] failed to spawn claude: {}", e);

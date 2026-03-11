@@ -173,6 +173,14 @@ export class SessionStore {
   // ── CLI verbose fields (from session_init / usage_update) ──
   cliVersion = $state<string>("");
   permissionMode = $state<string>("");
+  /** True when permissionMode was set by user/settings AND successfully persisted.
+   *  Prevents session_init / snapshot from overwriting.
+   *  NOT cleared by _clearContentState() unless permissionModePersistFailed is true. */
+  permissionModeSetByUser = $state<boolean>(false);
+  /** True when mode was switched via control protocol but settings persist failed.
+   *  Cleared on _clearContentState() (new run/session), allowing session_init to
+   *  re-sync from CLI's actual startup mode. */
+  permissionModePersistFailed = $state<boolean>(false);
   fastModeState = $state<string>("");
   apiKeySource = $state<string>("");
   availableAgents = $state<string[]>([]);
@@ -930,7 +938,13 @@ export class SessionStore {
     this.sessionCommands = [];
     this.mcpServers = [];
     this.cliVersion = "";
-    this.permissionMode = "";
+    // NOTE: permissionMode intentionally NOT cleared — user-level preference, same as platformId.
+    // However, if persist had failed, reset the flag so next session_init can re-sync.
+    if (this.permissionModePersistFailed) {
+      this.permissionModeSetByUser = false;
+      this.permissionModePersistFailed = false;
+      dbg("store", "permissionMode flag reset — persist had failed, allowing session_init re-sync");
+    }
     this.fastModeState = "";
     this.apiKeySource = "";
     this.availableAgents = [];
@@ -985,8 +999,7 @@ export class SessionStore {
       systemStatus: this.systemStatus,
       authStatus: this.authStatus,
       cliVersion: this.cliVersion,
-      permissionMode: this.permissionMode,
-      previousPermissionMode: this.previousPermissionMode,
+      // NOTE: permissionMode intentionally excluded — user-level preference, not snapshot state.
       fastModeState: this.fastModeState,
       apiKeySource: this.apiKeySource,
       sessionCommands: this.sessionCommands,
@@ -1040,8 +1053,7 @@ export class SessionStore {
       this.systemStatus = (obj.systemStatus as typeof this.systemStatus) ?? null;
       this.authStatus = (obj.authStatus as typeof this.authStatus) ?? null;
       this.cliVersion = (obj.cliVersion as string) ?? "";
-      this.permissionMode = (obj.permissionMode as string) ?? "";
-      this.previousPermissionMode = (obj.previousPermissionMode as string) ?? "";
+      // NOTE: permissionMode intentionally NOT restored from snapshot — user-level preference.
       this.fastModeState = (obj.fastModeState as string) ?? "";
       this.apiKeySource = (obj.apiKeySource as string) ?? "";
       this.sessionCommands = (obj.sessionCommands ?? []) as CliCommand[];
@@ -2025,7 +2037,14 @@ export class SessionStore {
             }
           }
         }
-        if (ev.permissionMode) this.permissionMode = ev.permissionMode;
+        if (ev.permissionMode && !this.permissionModeSetByUser) {
+          this.permissionMode = ev.permissionMode;
+        } else if (ev.permissionMode && this.permissionModeSetByUser) {
+          dbg("store", "session_init permissionMode skipped — user already set", {
+            cliValue: ev.permissionMode,
+            userValue: this.permissionMode,
+          });
+        }
         if (ev.fast_mode_state) this.fastModeState = ev.fast_mode_state;
         if (ev.apiKeySource) this.apiKeySource = ev.apiKeySource;
         if (ev.agents && ev.agents.length > 0) this.availableAgents = ev.agents;
@@ -2888,7 +2907,10 @@ export class SessionStore {
         const existing = this.taskNotifications.get(ev.task_id);
         const rawData = ev.data as Record<string, unknown> | undefined;
         const message =
-          (rawData?.message as string) ?? (rawData?.task_description as string) ?? ev.task_id;
+          (rawData?.summary as string) ??
+          (rawData?.message as string) ??
+          (rawData?.task_description as string) ??
+          ev.task_id;
         const updated = new Map(this.taskNotifications);
         updated.set(ev.task_id, {
           task_id: ev.task_id,

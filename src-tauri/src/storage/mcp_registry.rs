@@ -3,6 +3,7 @@ use crate::models::{
     ConfiguredMcpServer, McpRegistrySearchResult, McpRegistryServer, PluginOperationResult,
     ProviderHealth,
 };
+use crate::process_ext::HideConsole;
 use reqwest::Client;
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -517,6 +518,7 @@ pub async fn add_server(
         scope
     );
 
+    cmd.hide_console().kill_on_drop(true);
     let child = cmd.spawn().map_err(|e| {
         log::error!("[mcp_registry] failed to spawn claude: {}", e);
         format!("Failed to spawn claude: {e}")
@@ -617,6 +619,7 @@ pub async fn remove_server(
         scope
     );
 
+    cmd.hide_console().kill_on_drop(true);
     let child = cmd.spawn().map_err(|e| {
         log::error!("[mcp_registry] failed to spawn claude: {}", e);
         format!("Failed to spawn claude: {e}")

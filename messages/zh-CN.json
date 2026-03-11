@@ -849,7 +849,9 @@
   "toolActivity_tabContext": "上下文",
   "toolActivity_tabFiles": "文件",
   "toolActivity_tabInfo": "信息",
+  "toolActivity_tabTasks": "任务",
 
+  "bgTask_empty": "暂无后台任务",
   "filesPanel_noFiles": "暂无文件操作",
   "filesPanel_notLocatable": "无法定位到对应工具调用",
 
@@ -1118,6 +1120,8 @@
   "toast_verboseOff": "详细输出已关闭",
   "toast_permissionMode": "权限模式: {mode}",
   "toast_permissionFailed": "权限模式切换失败",
+  "toast_permissionPersistFailed": "模式仅当前会话生效 — 保存失败",
+  "toast_permissionChangeFailed": "权限模式切换失败 — 保存错误",
   "toast_rewindSuccess": "文件已回退",
   "error_rewindNoCheckpoint": "没有可回退的文件检查点",
   "error_rewindFailed": "文件回退失败",

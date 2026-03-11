@@ -1,3 +1,4 @@
+use crate::process_ext::HideConsole;
 use serde::Serialize;
 use std::process::Command;
 
@@ -26,6 +27,7 @@ pub async fn get_git_summary(cwd: String) -> Result<GitSummary, String> {
     let branch = Command::new("git")
         .current_dir(&cwd)
         .args(["branch", "--show-current"])
+        .hide_console()
         .output()
         .ok()
         .and_then(|o| {
@@ -41,6 +43,7 @@ pub async fn get_git_summary(cwd: String) -> Result<GitSummary, String> {
     let numstat_output = Command::new("git")
         .current_dir(&cwd)
         .args(["diff", "--numstat", "HEAD"])
+        .hide_console()
         .output()
         .map_err(|e| format!("Failed to run git diff --numstat: {}", e))?;
 
@@ -48,6 +51,7 @@ pub async fn get_git_summary(cwd: String) -> Result<GitSummary, String> {
     let status_output = Command::new("git")
         .current_dir(&cwd)
         .args(["status", "--short"])
+        .hide_console()
         .output()
         .map_err(|e| format!("Failed to run git status: {}", e))?;
 
@@ -141,6 +145,7 @@ pub async fn get_git_branch(cwd: String) -> Result<String, String> {
     let check = match Command::new("git")
         .current_dir(&cwd)
         .args(["rev-parse", "--is-inside-work-tree"])
+        .hide_console()
         .output()
     {
         Err(e) => {
@@ -187,6 +192,7 @@ pub async fn get_git_branch(cwd: String) -> Result<String, String> {
     let output = Command::new("git")
         .current_dir(&cwd)
         .args(["branch", "--show-current"])
+        .hide_console()
         .output()
         .map_err(|e| {
             log::warn!("[git] get_git_branch: branch cmd I/O error: {}", e);
@@ -208,6 +214,7 @@ pub async fn get_git_branch(cwd: String) -> Result<String, String> {
         let sha = Command::new("git")
             .current_dir(&cwd)
             .args(["rev-parse", "--short", "HEAD"])
+            .hide_console()
             .output()
             .ok()
             .filter(|o| o.status.success())
@@ -249,6 +256,7 @@ pub async fn get_git_diff(
         cmd.arg("--").arg(f);
     }
     let output = cmd
+        .hide_console()
         .output()
         .map_err(|e| format!("Failed to run git diff: {}", e))?;
     if !output.status.success() {
@@ -264,6 +272,7 @@ pub async fn get_git_status(cwd: String) -> Result<String, String> {
     let output = Command::new("git")
         .current_dir(&cwd)
         .args(["status", "--short"])
+        .hide_console()
         .output()
         .map_err(|e| format!("Failed to run git status: {}", e))?;
     if !output.status.success() {

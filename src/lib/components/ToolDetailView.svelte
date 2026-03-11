@@ -1,6 +1,8 @@
 <script lang="ts">
   import { t } from "$lib/i18n/index.svelte";
   import { dbg } from "$lib/utils/debug";
+  import { ansiToHtml, hasAnsiCodes, escapeHtml, stripAnsi } from "$lib/utils/ansi";
+  import { colorizeCommand } from "$lib/utils/shell-colorize";
   import type { BusToolItem } from "$lib/types";
   import {
     extractOutputText,
@@ -37,14 +39,6 @@
   } = $props();
 
   // ── Helpers ──
-
-  function escapeHtml(str: string): string {
-    return str
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;");
-  }
 
   /** Highlight entire code block — safe, never throws. */
   function highlightBlock(code: string, lang: string): string {
@@ -224,6 +218,65 @@
       ? (tool.tool_use_result as unknown as BashResultMeta)
       : undefined,
   );
+
+  // ── Bash terminal rendering: colorize + ANSI → HTML + stripped plaintext ──
+
+  // Command line syntax-colored HTML
+  let commandHtml = $derived(
+    tool.input?.command ? colorizeCommand(tool.input.command as string) : "",
+  );
+
+  // Unified plain text source for Bash (stripped of ANSI codes)
+  let terminalPlainText = $derived.by(() => {
+    let raw: string;
+    if (bashResult) {
+      const parts: string[] = [];
+      if (bashResult.stdout) parts.push(bashResult.stdout);
+      if (bashResult.stderr) parts.push(bashResult.stderr);
+      raw = parts.join("\n");
+    } else {
+      raw = outputText;
+    }
+    return stripAnsi(raw);
+  });
+
+  const ANSI_SIZE_LIMIT = 200_000;
+
+  function safeAnsiHtml(raw: string | undefined, label: string): string | null {
+    if (!raw || !hasAnsiCodes(raw)) return null;
+    if (raw.length > ANSI_SIZE_LIMIT) {
+      dbg("ToolDetailView", `ansi-skip-${label}`, {
+        len: raw.length,
+        reason: "size-limit",
+      });
+      return null;
+    }
+    dbg("ToolDetailView", `ansi-${label}`, { len: raw.length });
+    return ansiToHtml(raw);
+  }
+
+  // stdout ANSI → HTML (only when completed, has ANSI, <200KB)
+  let stdoutHtml = $derived.by(() => {
+    if (tool.status === "running") return null;
+    return safeAnsiHtml(bashResult?.stdout, "stdout");
+  });
+
+  // stderr ANSI → HTML
+  let stderrHtml = $derived.by(() => {
+    if (tool.status === "running") return null;
+    return safeAnsiHtml(bashResult?.stderr, "stderr");
+  });
+
+  // fallback outputText ANSI → HTML (when no bashResult)
+  let outputHtml = $derived.by(() => {
+    if (bashResult || tool.status === "running") return null;
+    return safeAnsiHtml(outputText, "fallback");
+  });
+
+  // Stripped plain text fallbacks (for running / >200KB degradation)
+  let stdoutStripped = $derived(bashResult?.stdout ? stripAnsi(bashResult.stdout) : "");
+  let stderrStripped = $derived(bashResult?.stderr ? stripAnsi(bashResult.stderr) : "");
+  let outputStripped = $derived(outputText ? stripAnsi(outputText) : "");
 
   // Structured Edit result from tool_use_result (structuredPatch)
   interface PatchHunk {
@@ -424,7 +477,11 @@
 
   // Output expand/collapse
   let outputExpanded = $state(false);
-  let outputLineCount = $derived(countLines(outputText));
+  let outputLineCount = $derived(
+    tool.tool_name === "Bash" || tool.tool_name === "bash"
+      ? countLines(terminalPlainText)
+      : countLines(outputText),
+  );
   let needsExpand = $derived(outputLineCount > 20);
 
   // Fallback overflow detection (for containers without line-count-based expand)
@@ -489,19 +546,31 @@
       <div
         class="tool-terminal relative group/copy {outputExpanded ? '' : 'max-h-96 overflow-hidden'}"
       >
-        <div class="text-emerald-400/80">$ {tool.input.command}</div>
+        <div>{@html commandHtml}</div>
         {#if bashResult}
           {#if bashResult.stdout}
-            <div class="mt-1 text-neutral-300/80">{bashResult.stdout}</div>
+            {#if stdoutHtml}
+              <div class="mt-1 text-neutral-300/80">{@html stdoutHtml}</div>
+            {:else}
+              <div class="mt-1 text-neutral-300/80">{stdoutStripped}</div>
+            {/if}
           {/if}
           {#if bashResult.stderr}
-            <div class="mt-1 text-red-400/80">{bashResult.stderr}</div>
+            {#if stderrHtml}
+              <div class="mt-1 text-red-400/80">{@html stderrHtml}</div>
+            {:else}
+              <div class="mt-1 text-red-400/80">{stderrStripped}</div>
+            {/if}
           {/if}
           {#if bashResult.interrupted}
             <div class="mt-1 text-amber-400/80 text-[10px]">{t("tool_interrupted")}</div>
           {/if}
         {:else if outputText}
-          <div class="mt-1 text-neutral-300/80">{outputText}</div>
+          {#if outputHtml}
+            <div class="mt-1 text-neutral-300/80">{@html outputHtml}</div>
+          {:else}
+            <div class="mt-1 text-neutral-300/80">{outputStripped}</div>
+          {/if}
         {/if}
         {#if isInputStreaming || tool.status === "running"}
           <span class="inline-block w-1.5 h-3 ml-0.5 bg-emerald-400/50 animate-pulse align-middle"
@@ -509,7 +578,7 @@
         {/if}
         <button
           class="absolute top-1.5 right-1.5 text-xs text-neutral-500 hover:text-neutral-300 opacity-0 group-hover/copy:opacity-100 transition-opacity"
-          onclick={() => handleCopy(`$ ${tool.input?.command}\n${outputText}`)}
+          onclick={() => handleCopy(`$ ${tool.input?.command}\n${terminalPlainText}`)}
           >{copyFeedback ?? t("common_copy")}</button
         >
         {@render truncateOverlay(needsExpand)}

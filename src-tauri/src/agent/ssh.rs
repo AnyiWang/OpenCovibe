@@ -4,6 +4,7 @@
 //! All remote commands are shell-escaped to prevent injection.
 
 use crate::models::RemoteHost;
+use crate::process_ext::HideConsole;
 use tokio::process::Command;
 
 /// Shell-escape a string using single quotes (POSIX-safe).
@@ -38,6 +39,7 @@ pub fn expand_local_tilde(path: &str) -> String {
 /// Build an SSH `Command` that runs `remote_shell_command` on the remote host.
 pub fn build_ssh_command(remote: &RemoteHost, remote_shell_command: &str) -> Command {
     let mut cmd = Command::new("ssh");
+    cmd.hide_console();
     cmd.arg("-o").arg("BatchMode=yes");
     cmd.arg("-o").arg("ServerAliveInterval=30");
     cmd.arg("-o").arg("StrictHostKeyChecking=accept-new");
