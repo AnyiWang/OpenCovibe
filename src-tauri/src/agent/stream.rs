@@ -1,5 +1,6 @@
 use crate::agent::codex_parser::extract_codex_delta;
 use crate::models::{ChatDelta, ChatDone, RunEventType};
+use crate::process_ext::HideConsole;
 use crate::storage;
 use std::collections::HashMap;
 use std::process::Stdio;
@@ -61,6 +62,8 @@ pub async fn run_agent(
         .env("OPENCOVIBE_TASK_ID", &run_id)
         .env("OPENCOVIBE_RUN_ID", &run_id)
         .env_remove("CLAUDECODE") // Allow running inside a Claude Code session
+        .hide_console()
+        .kill_on_drop(true)
         .spawn()
         .map_err(|e| {
             let msg = if e.kind() == std::io::ErrorKind::NotFound {
@@ -197,22 +200,26 @@ pub async fn run_agent(
         stderr_text
     });
 
-    // Wait for process
-    let exit_code = {
-        let mut map = process_map.lock().await;
-        if let Some(mut child) = map.remove(&run_id) {
-            match child.wait().await {
-                Ok(status) => status.code().unwrap_or(1),
-                Err(_) => 1,
-            }
-        } else {
-            // Was killed by stop_run
-            -1
-        }
-    };
-
+    // Wait for stdout/stderr to close (= process exited or pipes broken).
+    // This completes without holding the ProcessMap lock.
     let assistant_text = stdout_handle.await.unwrap_or_default();
     let _stderr_text = stderr_handle.await.unwrap_or_default();
+
+    // Short lock: remove child from map, then wait() outside the lock.
+    // If stop_process already removed+killed the child, we get None → exit_code -1.
+    let removed_child = {
+        let mut map = process_map.lock().await;
+        map.remove(&run_id)
+    };
+    let exit_code = if let Some(mut child) = removed_child {
+        match child.wait().await {
+            Ok(status) => status.code().unwrap_or(1),
+            Err(_) => 1,
+        }
+    } else {
+        // Was killed by stop_run
+        -1
+    };
 
     // Save assistant event
     if !assistant_text.trim().is_empty() {
@@ -276,8 +283,12 @@ pub async fn run_agent(
 
 pub async fn stop_process(process_map: &ProcessMap, run_id: &str) -> bool {
     log::debug!("[stream] stop_process: run_id={}", run_id);
-    let mut map = process_map.lock().await;
-    if let Some(mut child) = map.remove(run_id) {
+    // Short lock: remove child, then kill+wait outside the lock.
+    let removed = {
+        let mut map = process_map.lock().await;
+        map.remove(run_id)
+    };
+    if let Some(mut child) = removed {
         let _ = child.kill().await;
         let _ = child.wait().await;
         log::debug!("[stream] stop_process: killed run_id={}", run_id);

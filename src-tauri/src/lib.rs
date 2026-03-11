@@ -3,6 +3,7 @@ pub mod commands;
 pub mod hooks;
 pub mod models;
 pub mod pricing;
+pub mod process_ext;
 pub mod storage;
 
 use agent::adapter::new_actor_session_map;
@@ -17,6 +18,28 @@ use tauri::tray::TrayIconEvent;
 use tauri::Manager;
 use tokio_util::sync::CancellationToken;
 
+/// One-shot gate to prevent concurrent shutdown tasks.
+/// CAS ensures only the first caller proceeds; subsequent quit/close events are no-ops.
+pub struct ShutdownGate(AtomicBool);
+
+impl Default for ShutdownGate {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ShutdownGate {
+    pub fn new() -> Self {
+        Self(AtomicBool::new(false))
+    }
+    /// Returns `true` if this call entered the gate (first caller wins).
+    pub fn try_enter(&self) -> bool {
+        self.0
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+    }
+}
+
 pub fn run() {
     // Initialize logging — our crate at debug level by default
     // Override with RUST_LOG env var, e.g. RUST_LOG=warn cargo tauri dev
@@ -27,6 +50,10 @@ pub fn run() {
     .init();
 
     log::info!("OpenCovibe Desktop starting");
+
+    // Set up Windows Job Object so child processes are killed on crash/force-quit.
+    // No-op on non-Windows.
+    process_ext::setup_job_kill_on_close();
 
     // Reconcile orphaned runs on startup
     storage::runs::reconcile_orphaned_runs();
@@ -52,6 +79,7 @@ pub fn run() {
         .manage(CliInfoCache::new())
         .manage(Arc::new(EventWriter::new()))
         .manage(SpawnLocks::new())
+        .manage(ShutdownGate::new())
         .manage(cancel_token)
         // NOTE: Currently ~60 IPC commands. If approaching 80+, consider grouping
         // into Tauri command modules or using a single dispatch command with typed payloads.
@@ -214,14 +242,27 @@ pub fn run() {
         .on_window_event(move |window, event| {
             match event {
                 tauri::WindowEvent::CloseRequested { api, .. } => {
+                    api.prevent_close(); // always prevent default close
                     if tray_ok_for_event.load(Ordering::Relaxed) {
                         // Hide to tray instead of quitting
                         let _ = window.hide();
-                        api.prevent_close();
                         log::debug!("[app] window hidden to tray");
                     } else {
-                        log::debug!("[app] tray unavailable, allowing close (app will quit)");
-                        // Don't call prevent_close → normal quit
+                        // No tray — graceful shutdown
+                        log::debug!("[app] tray unavailable, starting graceful shutdown");
+                        let app = window.app_handle().clone();
+                        if let Some(gate) = app.try_state::<ShutdownGate>() {
+                            if !gate.try_enter() {
+                                return; // shutdown already in progress
+                            }
+                        }
+                        if let Some(ct) = app.try_state::<CancellationToken>() {
+                            ct.cancel();
+                        }
+                        tauri::async_runtime::spawn(async move {
+                            graceful_shutdown_actors(&app).await;
+                            app.exit(0);
+                        });
                     }
                 }
                 tauri::WindowEvent::Destroyed => {
@@ -286,10 +327,19 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                 show_main_window(app);
             }
             "quit" => {
+                if let Some(gate) = app.try_state::<ShutdownGate>() {
+                    if !gate.try_enter() {
+                        return; // shutdown already in progress
+                    }
+                }
                 if let Some(ct) = app.try_state::<CancellationToken>() {
                     ct.cancel();
                 }
-                app.exit(0);
+                let app = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    graceful_shutdown_actors(&app).await;
+                    app.exit(0);
+                });
             }
             _ => {}
         })
@@ -307,4 +357,113 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
 
     log::debug!("[app] system tray created");
     Ok(())
+}
+
+/// Graceful shutdown: wait for actors to self-clean, then force-kill remaining processes.
+///
+/// Two-phase approach:
+/// - Phase 1: Wait up to 3s for actors to exit (cancel token already fired → handle_stop → kill+wait).
+/// - Phase 2: Drain remaining actors, try_send Stop, join with 2s timeout, abort if stuck.
+/// - Then drain ProcessMap (stream processes) and PtyMap (terminal processes).
+async fn graceful_shutdown_actors(app: &tauri::AppHandle) {
+    use crate::agent::adapter::ActorSessionMap;
+    use crate::agent::pty::PtyMap;
+    use crate::agent::session_actor::ActorCommand;
+    use crate::agent::stream::ProcessMap;
+
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
+
+    // ── Phase 1: Wait for actors to self-cleanup (cancel already fired) ──
+    if let Some(sessions) = app.try_state::<ActorSessionMap>() {
+        loop {
+            let count = sessions.lock().await.len();
+            if count == 0 {
+                break;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                log::warn!(
+                    "[app] graceful shutdown: {} actors still alive, force stopping",
+                    count
+                );
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+
+        // ── Phase 2: Force-stop remaining actors ──
+        let remaining: Vec<_> = {
+            let mut map = sessions.lock().await;
+            map.drain().collect()
+        };
+        for (run_id, handle) in remaining {
+            log::debug!("[app] force stopping actor: {}", run_id);
+            // try_send avoids blocking if mailbox is full (bounded channel, 64 slots)
+            let (reply_tx, _reply_rx) = tokio::sync::oneshot::channel();
+            let _ = handle
+                .cmd_tx
+                .try_send(ActorCommand::Stop { reply: reply_tx });
+            // Get AbortHandle before consuming JoinHandle in timeout
+            let abort = handle.join_handle.abort_handle();
+            match tokio::time::timeout(std::time::Duration::from_secs(2), handle.join_handle).await
+            {
+                Ok(Ok(())) => {
+                    log::debug!("[app] actor {} exited cleanly", run_id);
+                }
+                Ok(Err(e)) => {
+                    log::warn!("[app] actor {} join error: {}", run_id, e);
+                }
+                Err(_) => {
+                    log::warn!("[app] actor {} did not exit in 2s, aborting task", run_id);
+                    abort.abort();
+                }
+            }
+        }
+    }
+
+    // ── Kill remaining stream processes ──
+    // ProcessMap lock is only held briefly (run_agent/stop_process do remove-then-await),
+    // but we keep a timeout as a defensive fallback.
+    if let Some(process_map) = app.try_state::<ProcessMap>() {
+        let to_kill = match tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            let mut map = process_map.lock().await;
+            map.drain().collect::<Vec<_>>()
+        })
+        .await
+        {
+            Ok(vec) => vec,
+            Err(_) => {
+                log::warn!(
+                    "[app] graceful shutdown: ProcessMap lock timeout, \
+                     skipping (kill_on_drop / Job Object may handle)"
+                );
+                Vec::new()
+            }
+        };
+        for (run_id, mut child) in to_kill {
+            log::debug!("[app] graceful shutdown: killing stream process {}", run_id);
+            let _ = child.kill().await;
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(2), child.wait()).await;
+        }
+    }
+
+    // ── Kill remaining PTY processes (std sync Mutex) ──
+    // Drain to Vec, release lock, then kill. Don't wait — portable_pty::Child::wait()
+    // is synchronous blocking; spawn_blocking during runtime shutdown can hang.
+    if let Some(pty_map) = app.try_state::<PtyMap>() {
+        let to_kill: Vec<_> = match pty_map.lock() {
+            Ok(mut map) => map.drain().collect(),
+            Err(e) => {
+                log::warn!("[app] graceful shutdown: failed to lock PTY map: {}", e);
+                Vec::new()
+            }
+        };
+        for (run_id, mut session) in to_kill {
+            log::debug!("[app] graceful shutdown: killing PTY process {}", run_id);
+            let _ = session.child.kill();
+            // No wait — synchronous blocking wait is unsafe during shutdown.
+            // Process exit / Job Object handles cleanup.
+        }
+    }
+
+    log::debug!("[app] graceful shutdown complete");
 }

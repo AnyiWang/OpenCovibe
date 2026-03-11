@@ -53,7 +53,6 @@
   import AuthSourceBadge from "$lib/components/AuthSourceBadge.svelte";
 
   import ToolActivity from "$lib/components/ToolActivity.svelte";
-  import BackgroundTaskPanel from "$lib/components/BackgroundTaskPanel.svelte";
   import ShortcutHelpPanel from "$lib/components/ShortcutHelpPanel.svelte";
   import type { PromptInputSnapshot } from "$lib/types";
   import MarkdownContent from "$lib/components/MarkdownContent.svelte";
@@ -197,8 +196,7 @@
   let shortcutHelpOpen = $state(false);
   let statusBarRef: SessionStatusBar | undefined = $state();
   let stashedInput: PromptInputSnapshot | null = $state(null);
-  let taskPanelCollapsed = $state(false);
-  let sidebarRequestedTab = $state<"tools" | "context" | "files" | "info" | null>(null);
+  let sidebarRequestedTab = $state<"tools" | "context" | "files" | "info" | "tasks" | null>(null);
 
   // ── Verbose state (chat page level) ──
   let verboseEnabled = $state(false);
@@ -877,11 +875,15 @@
     }
     // Initialize permission mode from saved settings (before session_init arrives)
     // Agent plan_mode=true overrides user permission_mode (legacy compat)
-    if (agentSettings?.plan_mode) {
-      store.permissionMode = "plan";
-    } else if (settings?.permission_mode) {
-      const cliName = APP_TO_CLI_MODE[settings.permission_mode] ?? settings.permission_mode;
-      store.permissionMode = cliName;
+    if (!store.permissionModeSetByUser) {
+      if (agentSettings?.plan_mode) {
+        store.permissionMode = "plan";
+        store.permissionModeSetByUser = true;
+      } else if (settings?.permission_mode) {
+        const cliName = APP_TO_CLI_MODE[settings.permission_mode] ?? settings.permission_mode;
+        store.permissionMode = cliName;
+        store.permissionModeSetByUser = true;
+      }
     }
     // Find most recent run with session_id for "Continue last session"
     try {
@@ -1201,7 +1203,8 @@
     });
     keybindingStore.registerCallback("chat:toggleTasks", () => {
       if (store.hasBackgroundTasks) {
-        taskPanelCollapsed = !taskPanelCollapsed;
+        if (sidebarCollapsed) sidebarCollapsed = false;
+        sidebarRequestedTab = "tasks";
       }
     });
     keybindingStore.registerCallback("chat:undoLastTurn", () => {
@@ -1628,24 +1631,36 @@
     return map[mode]?.() ?? mode;
   }
 
+  let permissionModeChangeSeq = 0;
+  let pendingPersist: Promise<void> = Promise.resolve();
+
   async function handlePermissionModeChange(
     newMode: string,
     opts?: { toast?: boolean },
   ): Promise<boolean> {
+    const seq = ++permissionModeChangeSeq;
     const oldMode = store.permissionMode;
-    dbg("chat", "permission mode change", { from: oldMode, to: newMode });
+    const oldFlag = store.permissionModeSetByUser;
+    const oldPersistFailed = store.permissionModePersistFailed;
+    const hadActiveSession = store.sessionAlive; // capture at entry, before awaits
+    dbg("chat", "permission mode change", { from: oldMode, to: newMode, seq, hadActiveSession });
 
-    // Optimistic UI update
+    // Optimistic UI + protect from session_init during awaits
     store.permissionMode = newMode;
+    store.permissionModeSetByUser = true;
+    store.permissionModePersistFailed = false;
 
-    if (store.sessionAlive && store.run) {
+    if (hadActiveSession && store.run) {
       // Active session: hot-switch via control protocol (CLI expects CLI names)
       try {
         await api.setPermissionMode(store.run.id, newMode);
         dbg("chat", "permission mode changed via control protocol", { newMode });
       } catch (e) {
-        // Revert on failure
+        if (seq !== permissionModeChangeSeq) return false;
+        // Restore mode, flag, AND persistFailed
         store.permissionMode = oldMode;
+        store.permissionModeSetByUser = oldFlag;
+        store.permissionModePersistFailed = oldPersistFailed;
         dbgWarn("chat", "permission mode change failed:", e);
         store.error = t("chat_permModeFailed", { mode: newMode, error: String(e) });
         if (opts?.toast !== false) {
@@ -1655,26 +1670,58 @@
       }
     }
 
+    if (seq !== permissionModeChangeSeq) return false;
+
     if (opts?.toast !== false) {
       showChatToast(t("toast_permissionMode", { mode: getPermModeLabel(newMode) }));
     }
 
-    // Persist to user settings (uses app names for adapter.rs compatibility)
+    // Persist — serialized to prevent concurrent writes overwriting each other.
+    // persistFailed flag signals whether the no-active-session branch reverted.
+    let persistFailed = false;
     const appName = CLI_TO_APP_MODE[newMode] ?? newMode;
-    try {
-      await api.updateUserSettings({ permission_mode: appName });
-    } catch (e) {
-      dbgWarn("chat", "permission mode persist failed:", e);
+
+    pendingPersist = pendingPersist
+      .then(async () => {
+        if (seq !== permissionModeChangeSeq) return;
+        try {
+          await api.updateUserSettings({ permission_mode: appName });
+          dbg("chat", "permission mode persisted", { appName });
+        } catch (e) {
+          if (seq !== permissionModeChangeSeq) return;
+          dbgWarn("chat", "permission mode persist failed:", e);
+          if (hadActiveSession) {
+            // CLI was already switched via control protocol → current session correct.
+            // Mark persist-failed so _clearContentState() resets flag on next run,
+            // allowing new session's session_init to re-sync from CLI's startup mode.
+            store.permissionModePersistFailed = true;
+            if (opts?.toast !== false) showChatToast(t("toast_permissionPersistFailed"));
+          } else {
+            // No active session → persist was ONLY path for mode to take effect.
+            // Revert everything.
+            persistFailed = true;
+            store.permissionMode = oldMode;
+            store.permissionModeSetByUser = oldFlag;
+            store.permissionModePersistFailed = oldPersistFailed;
+            dbgWarn("chat", "no active session — reverting UI to match persisted settings");
+            if (opts?.toast !== false) showChatToast(t("toast_permissionChangeFailed"));
+          }
+        }
+      })
+      .catch(() => {}); // ensure chain never breaks
+
+    await pendingPersist;
+
+    if (persistFailed) return false;
+
+    // Sync legacy plan_mode (fire-and-forget)
+    if (seq === permissionModeChangeSeq) {
+      api.updateAgentSettings("claude", { plan_mode: newMode === "plan" }).catch((e) => {
+        dbgWarn("chat", "plan_mode sync failed:", e);
+      });
     }
 
-    // Sync legacy plan_mode boolean for backward compat
-    try {
-      await api.updateAgentSettings("claude", { plan_mode: newMode === "plan" });
-    } catch (e) {
-      dbgWarn("chat", "plan_mode sync failed:", e);
-    }
-
-    return true;
+    return seq === permissionModeChangeSeq;
   }
 
   async function handleModelChange(newModel: string) {
@@ -2994,14 +3041,6 @@
       }}
     />
 
-    {#if store.hasBackgroundTasks}
-      <BackgroundTaskPanel
-        tasks={store.taskNotifications}
-        activeTasks={store.activeBackgroundTasks}
-        bind:collapsed={taskPanelCollapsed}
-      />
-    {/if}
-
     <!-- MCP panel (floating below status bar) -->
     {#if mcpPanelOpen && store.mcpServers.length > 0}
       <div class="absolute {statusBarExpanded ? 'top-16' : 'top-9'} right-3 z-30">
@@ -3859,6 +3898,8 @@
       onToggle={toggleSidebar}
       onScrollToTool={scrollToTool}
       bind:requestedTab={sidebarRequestedTab}
+      backgroundTasks={store.taskNotifications}
+      activeBackgroundTasks={store.activeBackgroundTasks}
     />
   {/if}
 

@@ -3204,7 +3204,7 @@ describe("SessionStore reducer", () => {
       store.reset();
 
       expect(store.cliVersion).toBe("");
-      expect(store.permissionMode).toBe("");
+      expect(store.permissionMode).toBe("default"); // retains pre-reset value (user-level preference)
       expect(store.fastModeState).toBe("");
       expect(store.apiKeySource).toBe("");
       expect(store.availableAgents).toEqual([]);
@@ -3448,6 +3448,76 @@ describe("SessionStore reducer", () => {
       expect(store.previousPermissionMode).toBe("");
       expect(store.sessionInitReceived).toBe(false);
     });
+
+    it("session_init does not overwrite permissionMode when permissionModeSetByUser is true", () => {
+      store.run = makeRun("run-1");
+      store.phase = "running";
+      store.permissionMode = "bypassPermissions";
+      store.permissionModeSetByUser = true;
+      store.applyEventBatch([
+        {
+          type: "session_init",
+          run_id: "run-1",
+          session_id: "s1",
+          permissionMode: "default",
+        },
+      ] as BusEvent[]);
+      expect(store.permissionMode).toBe("bypassPermissions");
+    });
+
+    it("session_init fills permissionMode when permissionModeSetByUser is false", () => {
+      store.run = makeRun("run-1");
+      store.phase = "running";
+      store.permissionMode = "bypassPermissions";
+      store.permissionModeSetByUser = false;
+      store.applyEventBatch([
+        {
+          type: "session_init",
+          run_id: "run-1",
+          session_id: "s1",
+          permissionMode: "default",
+        },
+      ] as BusEvent[]);
+      expect(store.permissionMode).toBe("default");
+    });
+
+    it("_clearContentState resets permissionModeSetByUser when permissionModePersistFailed", () => {
+      store.permissionMode = "bypassPermissions";
+      store.permissionModeSetByUser = true;
+      store.permissionModePersistFailed = true;
+
+      // Simulate loadRun (calls _clearContentState)
+      (store as unknown as { _clearContentState(): void })._clearContentState();
+
+      // Flag should be reset, mode retained
+      expect(store.permissionModeSetByUser).toBe(false);
+      expect(store.permissionModePersistFailed).toBe(false);
+      expect(store.permissionMode).toBe("bypassPermissions"); // NOT cleared
+
+      // Now session_init can re-sync
+      store.run = makeRun("run-2");
+      store.phase = "running";
+      store.applyEventBatch([
+        {
+          type: "session_init",
+          run_id: "run-2",
+          session_id: "s2",
+          permissionMode: "default",
+        },
+      ] as BusEvent[]);
+      expect(store.permissionMode).toBe("default"); // re-synced from CLI
+    });
+
+    it("_clearContentState preserves permissionModeSetByUser when persist succeeded", () => {
+      store.permissionMode = "bypassPermissions";
+      store.permissionModeSetByUser = true;
+      store.permissionModePersistFailed = false; // persist succeeded
+
+      (store as unknown as { _clearContentState(): void })._clearContentState();
+
+      expect(store.permissionModeSetByUser).toBe(true); // preserved
+      expect(store.permissionMode).toBe("bypassPermissions"); // preserved
+    });
   });
 
   // ── Strict fixture replay (Phase 3 contract tests) ──
@@ -3582,7 +3652,7 @@ describe("SessionStore reducer", () => {
         expect(hitStore.compactCount).toBe(missStore.compactCount);
         expect(hitStore.sessionInitReceived).toBe(missStore.sessionInitReceived);
         expect(hitStore.cliVersion).toBe(missStore.cliVersion);
-        expect(hitStore.permissionMode).toBe(missStore.permissionMode);
+        // NOTE: permissionMode intentionally excluded from snapshot — user-level preference
       });
 
       it("includes sentinel values through snapshot round-trip", () => {

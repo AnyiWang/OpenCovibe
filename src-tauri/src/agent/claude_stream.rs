@@ -6,6 +6,7 @@
 
 use crate::agent::adapter;
 use crate::models::RemoteHost;
+use crate::process_ext::HideConsole;
 use serde_json::Value;
 use std::path::PathBuf;
 use tokio::process::Command;
@@ -201,6 +202,7 @@ fn which_binary_inner(name: &str) -> Option<String> {
         let output = std::process::Command::new("where")
             .arg(name)
             .env("PATH", augmented_path())
+            .hide_console()
             .output()
             .ok()?;
         if output.status.success() {
@@ -288,7 +290,9 @@ pub async fn fork_oneshot(
         let mut ssh_cmd = super::ssh::build_ssh_command(remote, &remote_cmd);
         ssh_cmd
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped());
+            .stderr(std::process::Stdio::piped())
+            .hide_console()
+            .kill_on_drop(true);
         log::debug!(
             "[fork_oneshot] spawning remote fork process via SSH, flags={:?}",
             flag_args
@@ -341,6 +345,7 @@ pub async fn fork_oneshot(
         local_cmd
     };
 
+    cmd.hide_console().kill_on_drop(true);
     let output = tokio::time::timeout(Duration::from_secs(60), cmd.output())
         .await
         .map_err(|_| "fork_oneshot timed out after 60s".to_string())?

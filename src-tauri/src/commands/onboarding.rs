@@ -1,5 +1,6 @@
 use crate::agent::claude_stream;
 use crate::models::{AuthCheckResult, AuthOverview, InstallMethod};
+use crate::process_ext::HideConsole;
 use crate::storage;
 use tauri::{AppHandle, Emitter};
 use tokio::process::Command;
@@ -116,6 +117,8 @@ pub async fn run_claude_login(app: AppHandle) -> Result<bool, String> {
         .env("PATH", &path_env)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
+        .hide_console()
+        .kill_on_drop(true)
         .spawn()
         .map_err(|e| format!("Failed to spawn claude login: {}", e))?;
 
@@ -337,6 +340,8 @@ pub(crate) async fn check_cli_oauth() -> (bool, Option<String>) {
                 .env("PATH", claude_stream::augmented_path())
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())
+                .hide_console()
+                .kill_on_drop(true)
                 .output(),
         )
         .await
@@ -536,6 +541,7 @@ async fn check_npm_available() -> bool {
         .env("PATH", claude_stream::augmented_path())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
+        .hide_console()
         .output()
         .await;
     match output {

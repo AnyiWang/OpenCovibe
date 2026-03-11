@@ -15,6 +15,7 @@
     mergeFileEntries,
   } from "$lib/utils/file-entries";
   import { extractTaskToolMeta, type TaskToolMeta } from "$lib/utils/tool-rendering";
+  import type { TaskNotificationItem } from "$lib/stores/session-store.svelte";
 
   let {
     timeline = [],
@@ -26,7 +27,9 @@
     collapsed = false,
     onToggle,
     onScrollToTool,
-    requestedTab = $bindable(null as "tools" | "context" | "files" | "info" | null),
+    requestedTab = $bindable(null as "tools" | "context" | "files" | "info" | "tasks" | null),
+    backgroundTasks = new Map(),
+    activeBackgroundTasks = [],
   }: {
     timeline: TimelineEntry[];
     tools: HookEvent[];
@@ -37,11 +40,13 @@
     collapsed: boolean;
     onToggle: () => void;
     onScrollToTool?: (toolUseId: string) => void;
-    requestedTab?: "tools" | "context" | "files" | "info" | null;
+    requestedTab?: "tools" | "context" | "files" | "info" | "tasks" | null;
+    backgroundTasks?: Map<string, TaskNotificationItem>;
+    activeBackgroundTasks?: TaskNotificationItem[];
   } = $props();
 
   // ── Tab state ──
-  type SidebarPanel = "tools" | "context" | "files" | "info";
+  type SidebarPanel = "tools" | "context" | "files" | "info" | "tasks";
   let activeTab: SidebarPanel = $state("tools");
 
   // ── External tab request ──
@@ -206,6 +211,26 @@
   }
 
   // ── Dual-source strategy ──
+
+  // ── Background tasks (sorted: active first, then by recency) ──
+
+  let sortedBgTasks = $derived.by(() => {
+    const items = [...backgroundTasks.values()];
+    return items.sort((a, b) => {
+      const aActive =
+        a.status !== "completed" && a.status !== "failed" && a.status !== "error" ? 0 : 1;
+      const bActive =
+        b.status !== "completed" && b.status !== "failed" && b.status !== "error" ? 0 : 1;
+      if (aActive !== bActive) return aActive - bActive;
+      return b.startedAt - a.startedAt;
+    });
+  });
+
+  function bgElapsed(startedAt: number): string {
+    const ms = Date.now() - startedAt;
+    if (ms < 1000) return "<1s";
+    return `${Math.floor(ms / 1000)}s`;
+  }
 
   let hasTimelineTools = $derived(timeline.some((e) => e.kind === "tool"));
   let useTimeline = $derived(hasTimelineTools);
@@ -550,11 +575,7 @@
               <polyline points="14 2 14 8 20 8" />
             </svg>
             {#if fileEntries.length > 0}
-              <span
-                class="absolute -top-0.5 -right-0.5 text-[10px] font-bold leading-none min-w-[14px] h-[14px] flex items-center justify-center rounded-full bg-muted-foreground/20 text-muted-foreground"
-              >
-                {fileEntries.length > 99 ? "99+" : fileEntries.length}
-              </span>
+              <span class="absolute top-0.5 right-0.5 h-1.5 w-1.5 rounded-full bg-amber-400"></span>
             {/if}
           </button>
           <!-- Info icon -->
@@ -579,6 +600,32 @@
               <line x1="12" y1="8" x2="12.01" y2="8" />
             </svg>
           </button>
+          <!-- Tasks icon -->
+          <button
+            class="p-1.5 rounded transition-colors relative {activeTab === 'tasks'
+              ? 'bg-accent text-foreground'
+              : 'text-muted-foreground hover:text-foreground hover:bg-accent/50'}"
+            onclick={() => (activeTab = "tasks")}
+            title={t("toolActivity_tabTasks")}
+          >
+            <svg
+              class="h-3.5 w-3.5"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <rect x="3" y="3" width="18" height="18" rx="2" />
+              <path d="M9 12l2 2 4-4" />
+            </svg>
+            {#if activeBackgroundTasks.length > 0}
+              <span
+                class="absolute top-0.5 right-0.5 h-1.5 w-1.5 rounded-full bg-blue-400 animate-pulse"
+              ></span>
+            {/if}
+          </button>
         </div>
         <button
           class="text-muted-foreground hover:text-foreground transition-colors p-0.5 rounded hover:bg-accent"
@@ -600,7 +647,95 @@
       </div>
     </div>
 
-    {#if activeTab === "context"}
+    {#if activeTab === "tasks"}
+      <!-- Background tasks panel -->
+      <div class="flex-1 overflow-y-auto">
+        {#if backgroundTasks.size === 0}
+          <div class="flex items-center justify-center h-32 text-xs text-muted-foreground/50">
+            {t("bgTask_empty")}
+          </div>
+        {:else}
+          <div class="py-1 space-y-0.5">
+            {#each sortedBgTasks as item (item.task_id)}
+              {@const isDone = item.status === "completed"}
+              {@const isFailed = item.status === "failed" || item.status === "error"}
+              {@const isActive = !isDone && !isFailed}
+              {@const rawData = (item.data as Record<string, unknown> | undefined)?.data as
+                | Record<string, unknown>
+                | undefined}
+              {@const usage = rawData?.usage as
+                | { duration_ms?: number; tool_uses?: number; total_tokens?: number }
+                | undefined}
+              {@const toolUseId = item.tool_use_id}
+              <button
+                class="w-full text-left mx-1.5 rounded px-2 py-1.5 transition-colors {isDone
+                  ? 'text-foreground/40 hover:bg-accent/30'
+                  : isFailed
+                    ? 'bg-destructive/5 text-foreground/50 hover:bg-destructive/10'
+                    : 'bg-blue-500/5 text-foreground/70 hover:bg-blue-500/10'}"
+                onclick={() => {
+                  if (toolUseId) onScrollToTool?.(toolUseId);
+                }}
+                title={toolUseId ? t("toolActivity_scrollToTool") : ""}
+              >
+                <div class="flex items-center gap-2">
+                  {#if isActive}
+                    <div
+                      class="h-3 w-3 shrink-0 rounded-full border-2 border-border border-t-muted-foreground animate-spin"
+                    ></div>
+                  {:else if isDone}
+                    <svg
+                      class="h-3 w-3 shrink-0 text-emerald-500"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2.5"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                    >
+                      <path d="M20 6 9 17l-5-5" />
+                    </svg>
+                  {:else}
+                    <svg
+                      class="h-3 w-3 shrink-0 text-destructive"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2.5"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                    >
+                      <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+                    </svg>
+                  {/if}
+                  <span class="flex-1 min-w-0 truncate text-[11px]"
+                    >{item.summary || item.message}</span
+                  >
+                  {#if isActive}
+                    <span class="shrink-0 text-[10px] text-foreground/30 tabular-nums"
+                      >{bgElapsed(item.startedAt)}</span
+                    >
+                  {/if}
+                </div>
+                {#if usage && (usage.tool_uses || usage.total_tokens || usage.duration_ms)}
+                  <div class="mt-0.5 text-[10px] text-muted-foreground/60 pl-5">
+                    {#if usage.tool_uses}{usage.tool_uses} tools{/if}
+                    {#if usage.tool_uses && usage.duration_ms}
+                      ·
+                    {/if}
+                    {#if usage.duration_ms}{(usage.duration_ms / 1000).toFixed(1)}s{/if}
+                    {#if (usage.tool_uses || usage.duration_ms) && usage.total_tokens}
+                      ·
+                    {/if}
+                    {#if usage.total_tokens}{formatTokens(usage.total_tokens)} tok{/if}
+                  </div>
+                {/if}
+              </button>
+            {/each}
+          </div>
+        {/if}
+      </div>
+    {:else if activeTab === "context"}
       <ContextHistoryPanel history={contextHistory} {turnUsages} {sessionInfo} />
     {:else if activeTab === "files"}
       <FilesPanel {fileEntries} {onScrollToTool} />
@@ -961,6 +1096,33 @@
         <line x1="12" y1="16" x2="12" y2="12" />
         <line x1="12" y1="8" x2="12.01" y2="8" />
       </svg>
+    </button>
+    <button
+      class="p-1 rounded transition-colors relative {activeTab === 'tasks'
+        ? 'text-foreground bg-accent'
+        : 'text-muted-foreground/50 hover:text-muted-foreground'}"
+      onclick={() => {
+        activeTab = "tasks";
+        onToggle();
+      }}
+      title={t("toolActivity_tabTasks")}
+    >
+      <svg
+        class="h-3.5 w-3.5"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      >
+        <rect x="3" y="3" width="18" height="18" rx="2" />
+        <path d="M9 12l2 2 4-4" />
+      </svg>
+      {#if activeBackgroundTasks.length > 0}
+        <span class="absolute top-0 right-0 h-1.5 w-1.5 rounded-full bg-blue-400 animate-pulse"
+        ></span>
+      {/if}
     </button>
     {#if totalToolCount > 0}
       <span class="mt-1 text-[10px] text-muted-foreground" style="writing-mode: vertical-rl;"

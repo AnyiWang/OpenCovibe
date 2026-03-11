@@ -3,6 +3,7 @@ use crate::agent::claude_stream;
 use crate::agent::session_actor::{self, ActorCommand, AttachmentData};
 use crate::agent::spawn_locks::SpawnLocks;
 use crate::models::{BusEvent, RemoteHost, RunMeta, RunStatus, SessionMode, UserSettings};
+use crate::process_ext::HideConsole;
 use crate::storage;
 use crate::storage::events::EventWriter;
 use std::sync::Arc;
@@ -1491,10 +1492,14 @@ async fn spawn_cli_process(
             effective_remote_cwd
         );
 
-        ssh_cmd.spawn().map_err(|e| {
-            log::error!("[session] Failed to spawn ssh: {}", e);
-            format!("Failed to spawn ssh: {}", e)
-        })?
+        ssh_cmd
+            .hide_console()
+            .kill_on_drop(true)
+            .spawn()
+            .map_err(|e| {
+                log::error!("[session] Failed to spawn ssh: {}", e);
+                format!("Failed to spawn ssh: {}", e)
+            })?
     } else {
         // Local branch: existing logic
         let claude_bin = claude_stream::resolve_claude_path();
@@ -1560,7 +1565,7 @@ async fn spawn_cli_process(
             }
         }
 
-        cmd.spawn().map_err(|e| {
+        cmd.hide_console().kill_on_drop(true).spawn().map_err(|e| {
             log::error!("[session] Failed to spawn claude: {}", e);
             format!("Failed to spawn claude: {}", e)
         })?

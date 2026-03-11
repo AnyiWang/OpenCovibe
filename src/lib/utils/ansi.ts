@@ -68,7 +68,25 @@ function hasStyle(s: Style): boolean {
   return !!(s.fg || s.bg || s.bold || s.dim || s.italic || s.underline);
 }
 
-function escapeHtml(str: string): string {
+/**
+ * Comprehensive ANSI escape sequence regex (4 alternations):
+ * 1. CSI: \x1b[ + parameter bytes (0x30-0x3f, incl ? ; digits) + intermediate (0x20-0x2f) + final (0x40-0x7e)
+ * 2. OSC: \x1b] + ... + ST (\x07 or \x1b\\)
+ * 3. Charset designation: \x1b + intermediate (0x20-0x2f) + final (0x30-0x7e)
+ * 4. Fe sequences: \x1b + byte in 0x40-0x5f
+ */
+
+/* eslint-disable no-control-regex */
+const ANSI_RE =
+  /\x1b(?:\[[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[\x20-\x2f][\x30-\x7e]|[\x40-\x5f])/g;
+/* eslint-enable no-control-regex */
+
+/** Strip all ANSI escape sequences, returning clean plain text. */
+export function stripAnsi(text: string): string {
+  return text.replace(ANSI_RE, "");
+}
+
+export function escapeHtml(str: string): string {
   return str
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
@@ -168,9 +186,8 @@ export function ansiToHtml(input: string): string {
     result += "</span>";
   }
 
-  // Strip any remaining non-SGR escape sequences (cursor movement, etc.)
-  // eslint-disable-next-line no-control-regex
-  return result.replace(/\x1b\[[0-9;]*[A-HJKSTfhilmnsu]/g, "");
+  // Strip any remaining non-SGR escape sequences (cursor movement, OSC, charset, etc.)
+  return result.replace(ANSI_RE, "");
 }
 
 /** Map 256-color index to hex. */
@@ -216,6 +233,7 @@ function color256ToHex(n: number): string {
  * Check if a string contains ANSI escape sequences.
  */
 export function hasAnsiCodes(text: string): boolean {
+  // Use fresh regex to avoid lastIndex state from global ANSI_RE
   // eslint-disable-next-line no-control-regex
-  return /\x1b\[/.test(text);
+  return /\x1b/.test(text);
 }

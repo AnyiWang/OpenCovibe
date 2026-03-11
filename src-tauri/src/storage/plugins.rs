@@ -352,6 +352,7 @@ pub fn read_skill_content(path: &str, cwd: &str) -> Result<String, String> {
 // ── CLI plugin command execution ──
 
 use crate::agent::claude_stream::{augmented_path, resolve_claude_path};
+use crate::process_ext::HideConsole;
 use tokio::process::Command;
 use tokio::time::{timeout, Duration};
 
@@ -393,6 +394,7 @@ pub async fn run_plugin_command(args: &[&str]) -> Result<PluginCommandResult, St
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
 
+    cmd.hide_console().kill_on_drop(true);
     let child = cmd.spawn().map_err(|e| {
         log::error!("[plugins] failed to spawn claude: {}", e);
         format!("Failed to spawn claude: {}", e)
