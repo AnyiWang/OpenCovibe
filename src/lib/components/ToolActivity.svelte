@@ -575,8 +575,7 @@
               <polyline points="14 2 14 8 20 8" />
             </svg>
             {#if fileEntries.length > 0}
-              <span class="absolute top-0.5 right-0.5 h-1.5 w-1.5 rounded-full bg-amber-400"
-              ></span>
+              <span class="absolute top-0.5 right-0.5 h-1.5 w-1.5 rounded-full bg-amber-400"></span>
             {/if}
           </button>
           <!-- Info icon -->
