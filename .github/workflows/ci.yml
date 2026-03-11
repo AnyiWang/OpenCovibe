@@ -94,34 +94,10 @@ jobs:
       - name: Clippy
         run: cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
 
-  build-test:
-    name: Build Test (${{ matrix.target }})
-    if: >-
-      contains(github.event.pull_request.labels.*.name, 'build-test') ||
-      contains(github.event.pull_request.labels.*.name, 'build-windows') ||
-      contains(github.event.pull_request.labels.*.name, 'build-macos')
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: macos-latest
-            target: universal-apple-darwin
-            asset_glob: src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
-            platform: macos
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            asset_glob: src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
-            platform: windows
-        exclude:
-          - platform: >-
-              ${{
-                !contains(github.event.pull_request.labels.*.name, 'build-test') &&
-                !contains(github.event.pull_request.labels.*.name, 'build-macos') &&
-                'macos' || !contains(github.event.pull_request.labels.*.name, 'build-test') &&
-                !contains(github.event.pull_request.labels.*.name, 'build-windows') &&
-                'windows' || 'none'
-              }}
+  build-windows:
+    name: Build Windows
+    if: contains(github.event.pull_request.labels.*.name, 'build-windows') || contains(github.event.pull_request.labels.*.name, 'build-test')
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -134,22 +110,58 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target == 'universal-apple-darwin' && 'aarch64-apple-darwin,x86_64-apple-darwin' || matrix.target }}
+          targets: x86_64-pc-windows-msvc
 
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
-          key: ${{ matrix.target }}
+          key: x86_64-pc-windows-msvc
 
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
         with:
-          args: --target ${{ matrix.target }}
+          args: --target x86_64-pc-windows-msvc
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: test-build-${{ matrix.target }}
-          path: ${{ matrix.asset_glob }}
+          name: test-build-windows
+          path: src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
+          if-no-files-found: error
+          retention-days: 7
+
+  build-macos:
+    name: Build macOS
+    if: contains(github.event.pull_request.labels.*.name, 'build-macos') || contains(github.event.pull_request.labels.*.name, 'build-test')
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: universal-apple-darwin
+
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
+        with:
+          args: --target universal-apple-darwin
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-build-macos
+          path: src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
           if-no-files-found: error
           retention-days: 7
