@@ -99,7 +99,7 @@ jobs:
 
   build-test:
     name: Build Test (${{ matrix.target }})
-    if: contains(github.event.pull_request.labels.*.name, 'build-test')
+    if: github.event.action == 'labeled' && github.event.label.name == 'build-test'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
