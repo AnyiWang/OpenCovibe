@@ -1,6 +1,9 @@
 name: Build Test
 
 on:
+  pull_request:
+    branches: [master]
+    types: [labeled]
   workflow_dispatch:
     inputs:
       target:
@@ -19,6 +22,9 @@ concurrency:
 jobs:
   build:
     name: Build (${{ matrix.target }})
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' && github.event.label.name == 'build-test')
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -33,7 +39,7 @@ jobs:
             asset_glob: src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
             platform: windows
         exclude:
-          - platform: ${{ inputs.target == 'windows' && 'macos' || inputs.target == 'macos' && 'windows' || 'none' }}
+          - platform: ${{ (inputs.target || 'windows') == 'windows' && 'macos' || (inputs.target || 'windows') == 'macos' && 'windows' || 'none' }}
 
     steps:
       - uses: actions/checkout@v4
