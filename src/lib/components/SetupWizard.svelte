@@ -252,26 +252,33 @@
         {#if availableMethods.length > 0}
           <div class="flex flex-col gap-3">
             {#each availableMethods as method, i}
-              <div class="flex items-center gap-3 rounded-lg border border-border p-3 bg-muted/30">
-                <code class="flex-1 text-sm font-mono text-foreground/90 select-all"
-                  >$ {method.command}</code
-                >
-                {#if i === 0}
-                  <span
-                    class="rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary whitespace-nowrap"
-                    >{t("setup_recommended")}</span
+              <div class="rounded-lg border border-border p-3 bg-muted/30">
+                <div class="flex items-center gap-3">
+                  <code class="flex-1 text-sm font-mono text-foreground/90 select-all"
+                    >$ {method.command}</code
                   >
+                  {#if i === 0}
+                    <span
+                      class="rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary whitespace-nowrap"
+                      >{t("setup_recommended")}</span
+                    >
+                  {/if}
+                  <button
+                    class="rounded-md border border-border px-2.5 py-1 text-xs hover:bg-accent transition-colors whitespace-nowrap {copyStates[
+                      method.id
+                    ] === 'copied'
+                      ? 'text-green-600 border-green-500/30'
+                      : 'text-muted-foreground'}"
+                    onclick={() => copyCommand(method)}
+                  >
+                    {copyStates[method.id] === "copied"
+                      ? t("setup_copied")
+                      : t("setup_copyCommand")}
+                  </button>
+                </div>
+                {#if method.note}
+                  <p class="text-[10px] text-muted-foreground/70 mt-1">{method.note}</p>
                 {/if}
-                <button
-                  class="rounded-md border border-border px-2.5 py-1 text-xs hover:bg-accent transition-colors whitespace-nowrap {copyStates[
-                    method.id
-                  ] === 'copied'
-                    ? 'text-green-600 border-green-500/30'
-                    : 'text-muted-foreground'}"
-                  onclick={() => copyCommand(method)}
-                >
-                  {copyStates[method.id] === "copied" ? t("setup_copied") : t("setup_copyCommand")}
-                </button>
               </div>
             {/each}
           </div>

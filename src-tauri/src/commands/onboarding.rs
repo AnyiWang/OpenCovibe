@@ -60,6 +60,7 @@ pub async fn detect_install_methods() -> Result<Vec<InstallMethod>, String> {
             } else {
                 Some("Homebrew not installed".into())
             },
+            note: None,
         });
     }
 
@@ -79,9 +80,9 @@ pub async fn detect_install_methods() -> Result<Vec<InstallMethod>, String> {
             id: "powershell".into(),
             name: "PowerShell".into(),
             command: if let Some(bin) = ps_bin {
-                format!("{bin} -NoProfile -ExecutionPolicy Bypass -Command \"Invoke-RestMethod https://claude.ai/install.ps1 | Invoke-Expression\"")
+                format!("{bin} -NoProfile -ExecutionPolicy Bypass -Command \"[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; irm https://claude.ai/install.ps1 | iex\"")
             } else {
-                "powershell -NoProfile -ExecutionPolicy Bypass -Command \"Invoke-RestMethod https://claude.ai/install.ps1 | Invoke-Expression\"".into()
+                "powershell -NoProfile -ExecutionPolicy Bypass -Command \"[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; irm https://claude.ai/install.ps1 | iex\"".into()
             },
             available: ps_bin.is_some(),
             unavailable_reason: if ps_bin.is_some() {
@@ -89,6 +90,7 @@ pub async fn detect_install_methods() -> Result<Vec<InstallMethod>, String> {
             } else {
                 Some("PowerShell not found".into())
             },
+            note: Some("Auto-updates".into()),
         });
 
         // WinGet (Win11 built-in, Win10 may need install)
@@ -103,6 +105,7 @@ pub async fn detect_install_methods() -> Result<Vec<InstallMethod>, String> {
             } else {
                 Some("WinGet not found".into())
             },
+            note: Some("Manual update: winget upgrade Anthropic.ClaudeCode".into()),
         });
 
         // CMD curl (fallback — Win10 1803+ has curl built-in)
@@ -117,10 +120,11 @@ pub async fn detect_install_methods() -> Result<Vec<InstallMethod>, String> {
             } else {
                 Some("curl not found".into())
             },
+            note: None,
         });
     }
 
-    // 3. npm — requires Node.js 18+
+    // 3. npm — deprecated, requires Node.js 18+
     let has_npm = check_npm_available().await;
     methods.push(InstallMethod {
         id: "npm".into(),
@@ -132,6 +136,7 @@ pub async fn detect_install_methods() -> Result<Vec<InstallMethod>, String> {
         } else {
             Some("Requires Node.js 18+".into())
         },
+        note: Some("Deprecated — use native installer instead".into()),
     });
 
     // 4. Native install (curl script) — Unix only (curl | bash)
@@ -148,6 +153,7 @@ pub async fn detect_install_methods() -> Result<Vec<InstallMethod>, String> {
             } else {
                 Some("curl not found".into())
             },
+            note: None,
         });
     }
 

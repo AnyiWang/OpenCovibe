@@ -931,7 +931,7 @@
   "setup_recheck": "Recheck",
   "setup_skipCli": "Skip, use API key",
   "setup_setupHint": "Or run ./scripts/setup.sh to install everything at once",
-  "setup_winRecheckHint": "If still not detected after install, please restart the app and try again",
+  "setup_winRecheckHint": "Requires Git for Windows. If still not detected after install, please restart the app and try again",
   "setup_authTitle": "Connect Your Account",
   "setup_authDesc": "Choose how to authenticate with Claude.",
   "setup_oauthTitle": "OAuth Login",

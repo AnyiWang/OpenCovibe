@@ -931,7 +931,7 @@
   "setup_recheck": "重新检测",
   "setup_skipCli": "跳过，使用 API Key",
   "setup_setupHint": "或运行 ./scripts/setup.sh 一键安装所有依赖",
-  "setup_winRecheckHint": "安装完成后如果仍未检测到，请重启应用后再试",
+  "setup_winRecheckHint": "需要 Git for Windows。安装完成后如果仍未检测到，请重启应用后再试",
   "setup_authTitle": "连接你的账户",
   "setup_authDesc": "选择 Claude 的认证方式。",
   "setup_oauthTitle": "OAuth 登录",

@@ -1096,6 +1096,7 @@ export interface InstallMethod {
   command: string;
   available: boolean;
   unavailable_reason?: string;
+  note?: string;
 }
 
 // ── Prompt search & favorites ──
