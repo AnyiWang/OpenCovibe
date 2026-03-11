@@ -99,7 +99,9 @@ jobs:
 
   build-test:
     name: Build Test (${{ matrix.target }})
-    if: github.event.action == 'labeled' && github.event.label.name == 'build-test'
+    if: >-
+      github.event.action == 'labeled' &&
+      startsWith(github.event.label.name, 'build-')
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -108,9 +110,13 @@ jobs:
           - os: macos-latest
             target: universal-apple-darwin
             asset_glob: src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+            platform: macos
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             asset_glob: src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
+            platform: windows
+        exclude:
+          - platform: ${{ github.event.label.name == 'build-windows' && 'macos' || github.event.label.name == 'build-macos' && 'windows' || 'none' }}
     steps:
       - uses: actions/checkout@v4
 
