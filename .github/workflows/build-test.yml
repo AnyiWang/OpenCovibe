@@ -1,0 +1,68 @@
+name: Build Test
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Build target"
+        type: choice
+        default: windows
+        options:
+          - windows
+          - macos
+          - both
+
+concurrency:
+  group: build-test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: universal-apple-darwin
+            asset_glob: src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+            platform: macos
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            asset_glob: src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
+            platform: windows
+        exclude:
+          - platform: ${{ inputs.target == 'windows' && 'macos' || inputs.target == 'macos' && 'windows' || 'none' }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target == 'universal-apple-darwin' && 'aarch64-apple-darwin,x86_64-apple-darwin' || matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: ${{ matrix.target }}
+
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
+        with:
+          args: --target ${{ matrix.target }}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-build-${{ matrix.target }}
+          path: ${{ matrix.asset_glob }}
+          if-no-files-found: error
+          retention-days: 7
