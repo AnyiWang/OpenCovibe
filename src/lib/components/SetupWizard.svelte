@@ -9,6 +9,7 @@
   import type { InstallMethod, PlatformPreset } from "$lib/types";
   import { PLATFORM_PRESETS, PRESET_CATEGORIES } from "$lib/utils/platform-presets";
   import { dbg, dbgWarn } from "$lib/utils/debug";
+  import { IS_WINDOWS } from "$lib/utils/platform";
   import { listen } from "@tauri-apps/api/event";
   import { t } from "$lib/i18n/index.svelte";
 
@@ -320,7 +321,9 @@
         </div>
 
         <!-- Setup hint -->
-        <p class="text-xs text-muted-foreground text-center">{t("setup_setupHint")}</p>
+        <p class="text-xs text-muted-foreground text-center">
+          {IS_WINDOWS ? t("setup_winRecheckHint") : t("setup_setupHint")}
+        </p>
       </div>
     {:else if step === "auth_choice"}
       <!-- Auth method choice -->
