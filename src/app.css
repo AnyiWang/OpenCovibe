@@ -642,8 +642,13 @@ code.hljs {
   background: transparent;
 }
 
-/* CodeMirror 6 theme integration */
+/* CodeMirror 6 theme integration
+   style-mod may fail to inject CSS on some WebView engines (observed on
+   Intel Mac WKWebView, Windows WebView2). All rules below serve as static
+   fallbacks so CodeMirror renders correctly even when style-mod is absent. */
 .cm-editor {
+  display: flex !important;
+  flex-direction: column !important;
   background-color: hsl(var(--background));
   color: hsl(var(--foreground));
   font-family:
@@ -655,7 +660,11 @@ code.hljs {
 .cm-editor .cm-scroller {
   display: flex !important;
   flex-direction: row !important;
+  align-items: flex-start !important;
+  flex: 1 1 0;
+  min-height: 0;
   overflow: auto;
+  position: relative;
 }
 .cm-editor .cm-gutters {
   background-color: hsl(var(--muted) / 0.4);
@@ -672,41 +681,28 @@ code.hljs {
 .cm-editor .cm-activeLine {
   background-color: hsl(var(--muted) / 0.35);
 }
-/* Static fallback: style-mod may fail to inject on some WebView engines
-   (observed on Intel Mac WKWebView, Windows WebView2), causing white-space
-   to fall back to 'normal' and collapse all leading indentation. */
 .cm-editor .cm-content {
-  position: relative;
-  flex: 1 1 auto;
+  display: block;
+  flex-grow: 2;
+  flex-shrink: 0;
+  min-height: 100%;
   min-width: 0;
+  margin: 0;
+  padding: 4px 0 4px 8px;
+  box-sizing: border-box;
+  outline: none;
   white-space: pre-wrap;
   word-break: break-word;
-  padding-left: 8px;
-}
-/* Overlay layers: style-mod normally injects position + contain.
-   Without position: absolute the layers sit in normal flow, adding
-   extra visible height proportional to the cursor line number. */
-.cm-editor .cm-selectionLayer,
-.cm-editor .cm-cursorLayer {
-  position: absolute !important;
-  top: 0;
-  left: 0;
-  pointer-events: none;
+  caret-color: transparent;
 }
 .cm-editor .cm-selectionLayer {
   z-index: -1;
+  contain: size style;
 }
 .cm-editor .cm-cursorLayer {
   z-index: 100;
-}
-.cm-editor .cm-cursor {
-  position: absolute;
-  border-left: 1.2px solid #528bff;
-  margin-left: -0.6px;
-}
-.cm-editor .cm-content[contenteditable] {
-  outline: none;
-  caret-color: transparent;
+  contain: size style;
+  pointer-events: none;
 }
 .cm-editor.cm-focused {
   outline: none;
