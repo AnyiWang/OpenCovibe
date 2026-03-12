@@ -109,7 +109,7 @@ fn select_download_url(body: &serde_json::Value) -> String {
     #[cfg(target_os = "macos")]
     let exts: &[&str] = &[".dmg"];
     #[cfg(target_os = "windows")]
-    let exts: &[&str] = &[".msi", ".exe"];
+    let exts: &[&str] = &[".msi", ".exe", ".zip"];
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     let exts: &[&str] = &[".appimage", ".deb"];
 
@@ -286,6 +286,22 @@ mod tests {
         assert_eq!(
             select_download_url_for_exts(&body, &[".msi", ".exe"]),
             "https://example.com/a.exe"
+        );
+    }
+
+    #[test]
+    fn test_select_download_url_zip_fallback_on_windows() {
+        // No .msi or .exe → should fall back to .zip
+        let body = json!({
+            "html_url": "https://github.com/AnyiWang/OpenCovibe/releases/tag/v0.1.31",
+            "assets": [
+                { "name": "OpenCovibe_0.1.31_universal.dmg", "browser_download_url": "https://example.com/a.dmg" },
+                { "name": "OpenCovibe_0.1.31_x64-setup.zip", "browser_download_url": "https://example.com/a.zip" }
+            ]
+        });
+        assert_eq!(
+            select_download_url_for_exts(&body, &[".msi", ".exe", ".zip"]),
+            "https://example.com/a.zip"
         );
     }
 

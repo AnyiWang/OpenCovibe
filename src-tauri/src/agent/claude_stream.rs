@@ -207,9 +207,20 @@ fn which_binary_inner(name: &str) -> Option<String> {
             .ok()?;
         if output.status.success() {
             let out = String::from_utf8_lossy(&output.stdout);
-            out.lines()
+            let lines: Vec<&str> = out
+                .lines()
                 .map(|l| l.trim())
-                .find(|l| !l.is_empty())
+                .filter(|l| !l.is_empty())
+                .collect();
+            // Prefer .cmd/.exe/.bat over bare name (which may be a Unix shell script → error 193)
+            let lo = |s: &str| s.to_ascii_lowercase();
+            lines
+                .iter()
+                .find(|l| {
+                    let l = lo(l);
+                    l.ends_with(".cmd") || l.ends_with(".exe") || l.ends_with(".bat")
+                })
+                .or_else(|| lines.first())
                 .map(|l| l.to_string())
         } else {
             None
