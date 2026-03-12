@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>NSDocumentsFolderUsageDescription</key>
+    <string>OpenCovibe needs access to your Documents folder to open and manage coding projects.</string>
+    <key>NSDownloadsFolderUsageDescription</key>
+    <string>OpenCovibe needs access to your Downloads folder to open and manage coding projects.</string>
+    <key>NSDesktopFolderUsageDescription</key>
+    <string>OpenCovibe needs access to your Desktop folder to open and manage coding projects.</string>
+    <key>NSRemovableVolumesUsageDescription</key>
+    <string>OpenCovibe needs access to removable volumes to open and manage coding projects on external drives.</string>
+    <key>NSNetworkVolumesUsageDescription</key>
+    <string>OpenCovibe needs access to network volumes to open and manage coding projects on shared drives.</string>
+</dict>
+</plist>
