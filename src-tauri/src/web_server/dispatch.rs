@@ -89,6 +89,21 @@ pub async fn dispatch_command(
             let result = crate::commands::runs::search_prompts(query, max_results).await?;
             serde_json::to_value(result).map_err(|e| e.to_string())
         }
+        "search_runs" => {
+            let filters_val = params
+                .get("filters")
+                .cloned()
+                .unwrap_or(serde_json::json!({}));
+            let filters: crate::models::RunSearchFilters = serde_json::from_value(filters_val)
+                .map_err(|e| format!("Invalid filters: {}", e))?;
+            let result = crate::commands::history::search_runs(filters).await?;
+            serde_json::to_value(result).map_err(|e| e.to_string())
+        }
+        "get_run_files" => {
+            let run_id = extract_str(&params, "run_id")?;
+            let result = crate::commands::history::get_run_files(run_id).await?;
+            serde_json::to_value(result).map_err(|e| e.to_string())
+        }
 
         // ── Prompt Favorites ──
         "add_prompt_favorite" => {
@@ -998,6 +1013,51 @@ pub async fn dispatch_command(
             Ok(json!(true))
         }
 
+        "respond_elicitation" => {
+            let run_id = extract_str(&params, "run_id")?;
+            let request_id = extract_str(&params, "request_id")?;
+            let action = extract_str(&params, "action")?;
+            let content = params.get("content").cloned();
+            log::debug!(
+                "[dispatch] respond_elicitation: run_id={}, req_id={}, action={}",
+                run_id,
+                request_id,
+                action
+            );
+            if !matches!(action.as_str(), "accept" | "decline" | "cancel") {
+                return Err(format!("Invalid elicitation action: {}", action));
+            }
+            let response = match action.as_str() {
+                "accept" => {
+                    let c = content.unwrap_or(json!({}));
+                    if !c.is_object() {
+                        return Err("content must be a JSON object for accept".into());
+                    }
+                    json!({"action": "accept", "content": c})
+                }
+                other => json!({"action": other}),
+            };
+            let cmd_tx = {
+                let map = state.sessions.lock().await;
+                map.get(&run_id)
+                    .map(|h| h.cmd_tx.clone())
+                    .ok_or_else(|| format!("Session {} not found", run_id))?
+            };
+            let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+            cmd_tx
+                .send(ActorCommand::RespondElicitation {
+                    request_id,
+                    response,
+                    reply: reply_tx,
+                })
+                .await
+                .map_err(|_| "Actor dead".to_string())?;
+            reply_rx
+                .await
+                .map_err(|_| "Actor dropped reply".to_string())??;
+            Ok(json!(true))
+        }
+
         // ── CLI Info ──
         "get_cli_info" => {
             let force = params
@@ -1251,5 +1311,30 @@ mod tests {
         let nested = output.get("params").unwrap();
         assert!(nested.get("nestedCamel").is_some());
         assert!(nested.get("nested_camel").is_none());
+    }
+
+    #[test]
+    fn test_search_runs_filters_deserialization() {
+        let raw = serde_json::json!({
+            "filters": {
+                "dateFrom": "2024-01-01",
+                "costMin": 0.5,
+                "statuses": ["completed", "failed"],
+                "sortBy": "cost"
+            }
+        });
+        let params = normalize_top_level_keys(raw);
+        let filters_val = params.get("filters").unwrap().clone();
+        let filters: crate::models::RunSearchFilters = serde_json::from_value(filters_val).unwrap();
+        assert_eq!(filters.date_from.unwrap(), "2024-01-01");
+        assert!(filters.cost_min.unwrap() > 0.4);
+        assert_eq!(
+            filters.statuses.unwrap(),
+            vec![
+                crate::models::RunStatus::Completed,
+                crate::models::RunStatus::Failed
+            ]
+        );
+        assert_eq!(filters.sort_by.unwrap(), "cost");
     }
 }

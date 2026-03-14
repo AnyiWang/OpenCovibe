@@ -40,6 +40,8 @@ import type {
   SyncResult,
   DiagnosticsReport,
   AgentDefinitionSummary,
+  RunSearchFilters,
+  RunSearchResponse,
 } from "./types";
 
 // Runs
@@ -153,6 +155,18 @@ export async function listPromptFavorites(): Promise<PromptFavorite[]> {
 export async function listPromptTags(): Promise<string[]> {
   dbg("api", "listPromptTags");
   return invoke<string[]>("list_prompt_tags");
+}
+
+// Run search (History)
+
+export async function searchRuns(filters: RunSearchFilters): Promise<RunSearchResponse> {
+  dbg("api", "searchRuns", filters);
+  return invoke<RunSearchResponse>("search_runs", { filters });
+}
+
+export async function getRunFiles(runId: string): Promise<string[]> {
+  dbg("api", "getRunFiles", { runId });
+  return invoke<string[]>("get_run_files", { runId });
 }
 
 // Chat
@@ -589,6 +603,21 @@ export async function rewindFiles(
 export async function cancelControlRequest(runId: string, requestId: string) {
   dbg("api", "cancelControlRequest", { runId, requestId });
   return invoke("cancel_control_request", { runId, requestId });
+}
+
+export async function respondElicitation(
+  runId: string,
+  requestId: string,
+  action: "accept" | "decline" | "cancel",
+  content?: Record<string, unknown>,
+): Promise<void> {
+  dbg("api", "respondElicitation", { runId, requestId, action });
+  return invoke("respond_elicitation", {
+    runId,
+    requestId,
+    action,
+    content: content ?? null,
+  });
 }
 
 // ── Teams ──

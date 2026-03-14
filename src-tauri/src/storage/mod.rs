@@ -9,6 +9,7 @@ pub mod favorites;
 pub mod mcp_registry;
 pub mod plugins;
 pub mod prompt_index;
+pub mod run_index;
 pub mod runs;
 pub mod settings;
 pub mod teams;

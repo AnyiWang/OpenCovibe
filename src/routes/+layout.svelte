@@ -361,6 +361,7 @@
     { path: "/plugins", label: () => t("nav_extend"), icon: "zap" },
     { path: "/memory", label: () => t("nav_memory"), icon: "book" },
     { path: "/usage", label: () => t("nav_usage"), icon: "chart" },
+    { path: "/history", label: () => t("nav_history"), icon: "clock" },
     { path: "/settings", label: () => t("nav_settings"), icon: "settings" },
   ];
 
@@ -1228,6 +1229,17 @@
                   stroke-linecap="round"
                   stroke-linejoin="round"><path d="M3 3v18h18" /><path d="m19 9-5 5-4-4-3 3" /></svg
                 >
+              {:else if item.icon === "clock"}
+                <svg
+                  class="h-[18px] w-[18px]"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  ><circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" /></svg
+                >
               {:else if item.icon === "settings"}
                 <svg
                   class="h-[18px] w-[18px]"
@@ -1932,8 +1944,19 @@
                     {t("runs_searching")}
                   </p>
                 {:else if visibleSearchResults.length > 0}
-                  <p class="text-xs text-muted-foreground px-1 pt-0.5">
-                    {t("runs_resultsCount", { count: String(visibleSearchResults.length) })}
+                  <p
+                    class="flex items-center justify-between text-xs text-muted-foreground px-1 pt-0.5"
+                  >
+                    <span
+                      >{t("runs_resultsCount", {
+                        count: String(visibleSearchResults.length),
+                      })}</span
+                    >
+                    <a
+                      href="/history?q={encodeURIComponent(runSearchQuery)}"
+                      class="text-primary/70 hover:text-primary transition-colors"
+                      >{t("history_advancedSearch")}</a
+                    >
                   </p>
                 {/if}
               {/if}

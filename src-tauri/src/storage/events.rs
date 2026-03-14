@@ -32,6 +32,7 @@ pub const REPLAY_TYPES: &[&str] = &[
     "files_persisted",
     "hook_progress",
     "hook_callback",
+    "elicitation_prompt",
 ];
 
 /// Check if a BusEvent's serde tag is in REPLAY_TYPES.
@@ -366,6 +367,21 @@ pub fn extract_run_usage(run_id: &str) -> Option<RawRunUsage> {
         return None;
     }
 
+    // Detect per-turn cost mode: CLI imports have per-turn total_cost_usd
+    let is_per_turn_cost = {
+        let meta_path = super::run_dir(run_id).join("meta.json");
+        meta_path
+            .exists()
+            .then(|| {
+                fs::read_to_string(&meta_path)
+                    .ok()
+                    .and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok())
+                    .and_then(|v| v.get("source").and_then(|s| s.as_str()).map(String::from))
+            })
+            .flatten()
+            == Some("cli_import".to_string())
+    };
+
     let content = fs::read_to_string(&path).ok()?;
 
     let mut total_cost: f64 = 0.0;
@@ -412,33 +428,57 @@ pub fn extract_run_usage(run_id: &str) -> Option<RawRunUsage> {
             .and_then(|v| v.as_f64())
             .unwrap_or(0.0);
 
-        // Detect session restart: cost decreased → new session segment
-        if cost < prev_cost * 0.9 && prev_cost > 0.0 {
-            total_cost += peak_cost;
-            peak_cost = 0.0;
+        if is_per_turn_cost {
+            // CLI imports: total_cost_usd is per-turn, sum directly
+            total_cost += cost;
+        } else {
+            // Native sessions: total_cost_usd is cumulative, use peak detection
+            if cost < prev_cost * 0.9 && prev_cost > 0.0 {
+                total_cost += peak_cost;
+                peak_cost = 0.0;
+            }
+            if cost > peak_cost {
+                peak_cost = cost;
+            }
+            prev_cost = cost;
         }
-        if cost > peak_cost {
-            peak_cost = cost;
-        }
-        prev_cost = cost;
 
-        // Overwrite with latest values (cumulative within session)
-        last_input = event
-            .get("input_tokens")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(last_input);
-        last_output = event
-            .get("output_tokens")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(last_output);
-        last_cache_read = event
-            .get("cache_read_tokens")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(last_cache_read);
-        last_cache_write = event
-            .get("cache_write_tokens")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(last_cache_write);
+        // Tokens: for per-turn cost, sum them; for cumulative, take last
+        if is_per_turn_cost {
+            last_input += event
+                .get("input_tokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            last_output += event
+                .get("output_tokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            last_cache_read += event
+                .get("cache_read_tokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            last_cache_write += event
+                .get("cache_write_tokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+        } else {
+            last_input = event
+                .get("input_tokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(last_input);
+            last_output = event
+                .get("output_tokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(last_output);
+            last_cache_read = event
+                .get("cache_read_tokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(last_cache_read);
+            last_cache_write = event
+                .get("cache_write_tokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(last_cache_write);
+        }
         last_num_turns = event
             .get("num_turns")
             .and_then(|v| v.as_u64())
@@ -486,8 +526,10 @@ pub fn extract_run_usage(run_id: &str) -> Option<RawRunUsage> {
         return None;
     }
 
-    // Add final segment's peak cost
-    total_cost += peak_cost;
+    // Add final segment's peak cost (only for cumulative mode)
+    if !is_per_turn_cost {
+        total_cost += peak_cost;
+    }
 
     log::debug!(
         "[storage/events] extract_run_usage: run_id={}, cost={:.6}, tokens={}+{}, turns={}, models={}",

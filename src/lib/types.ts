@@ -955,7 +955,36 @@ export type BusEvent =
       data: Record<string, unknown>;
     }
   | { type: "control_cancelled"; run_id: string; request_id: string }
-  | { type: "command_output"; run_id: string; content: string };
+  | { type: "command_output"; run_id: string; content: string }
+  | {
+      type: "elicitation_prompt";
+      run_id: string;
+      request_id: string;
+      mcp_server_name: string;
+      message: string;
+      elicitation_id?: string;
+      mode?: string;
+      url?: string;
+      requested_schema?: ElicitationSchema;
+    };
+
+// ── MCP Elicitation types ──
+
+export interface ElicitationFieldSchema {
+  type: "string" | "number" | "boolean" | "enum" | "array";
+  title?: string;
+  description?: string;
+  default?: unknown;
+  enum?: string[];
+  required?: boolean;
+}
+
+export interface ElicitationSchema {
+  type?: string;
+  properties?: Record<string, ElicitationFieldSchema>;
+  required?: string[];
+  [key: string]: unknown;
+}
 
 export interface BusToolItem {
   tool_use_id: string;
@@ -1040,7 +1069,10 @@ export type HookEventType =
   | "TaskCompleted"
   | "WorktreeCreate"
   | "WorktreeRemove"
-  | "InstructionsLoaded";
+  | "InstructionsLoaded"
+  | "Elicitation"
+  | "ElicitationResult"
+  | "PostCompact";
 
 export interface HookHandler {
   type: "command" | "prompt";
@@ -1137,6 +1169,68 @@ export interface PromptFavorite {
   tags: string[];
   note: string;
   createdAt: string;
+}
+
+// ── Run search (History page) ──
+
+export interface RunSearchFilters {
+  query?: string;
+  projects?: string[];
+  tools?: string[];
+  dateFrom?: string;
+  dateTo?: string;
+  costMin?: number;
+  costMax?: number;
+  statuses?: RunStatus[];
+  hasErrors?: boolean;
+  agents?: string[];
+  sortBy?: "date" | "cost" | "tokens" | "turns";
+  sortAsc?: boolean;
+  limit?: number;
+  offset?: number;
+}
+
+export interface RunSearchResult {
+  runId: string;
+  cwd: string;
+  agent: string;
+  model?: string;
+  status: RunStatus;
+  startedAt: string;
+  endedAt?: string;
+  name?: string;
+  promptPreview: string;
+  toolsUsed: string[];
+  toolCallCount: number;
+  filesTouchedCount: number;
+  totalCostUsd: number;
+  inputTokens: number;
+  outputTokens: number;
+  durationMs: number;
+  numTurns: number;
+  hasErrors: boolean;
+  errorSummary?: string;
+}
+
+export interface FacetCount {
+  value: string;
+  count: number;
+}
+
+export interface RunSearchFacets {
+  projects: FacetCount[];
+  tools: FacetCount[];
+  agents: FacetCount[];
+  costRange: [number, number];
+  dateRange: [string, string];
+  totalRuns: number;
+  totalCost: number;
+}
+
+export interface RunSearchResponse {
+  results: RunSearchResult[];
+  facets: RunSearchFacets;
+  totalMatching: number;
 }
 
 export interface PlatformPreset {

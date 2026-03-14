@@ -1163,6 +1163,21 @@ pub enum BusEvent {
     /// Output from a CLI slash command (e.g. /context, /cost).
     /// Extracted from `<local-command-stdout>` tags in user messages.
     CommandOutput { run_id: String, content: String },
+    /// MCP elicitation: CLI requests user input for MCP server authentication/configuration.
+    ElicitationPrompt {
+        run_id: String,
+        request_id: String,
+        mcp_server_name: String,
+        message: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        elicitation_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        mode: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        url: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        requested_schema: Option<Value>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -1594,4 +1609,81 @@ pub struct PromptFavorite {
     pub tags: Vec<String>,
     pub note: String,
     pub created_at: String,
+}
+
+// ── History search ──
+
+/// History 页面搜索过滤条件
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunSearchFilters {
+    pub query: Option<String>,
+    pub projects: Option<Vec<String>>,
+    pub tools: Option<Vec<String>>,
+    pub date_from: Option<String>,
+    pub date_to: Option<String>,
+    pub cost_min: Option<f64>,
+    pub cost_max: Option<f64>,
+    pub statuses: Option<Vec<RunStatus>>,
+    pub has_errors: Option<bool>,
+    pub agents: Option<Vec<String>>,
+    pub sort_by: Option<String>,
+    pub sort_asc: Option<bool>,
+    pub limit: Option<usize>,
+    pub offset: Option<usize>,
+}
+
+/// History 搜索结果条目
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunSearchResult {
+    pub run_id: String,
+    pub cwd: String,
+    pub agent: String,
+    pub model: Option<String>,
+    pub status: RunStatus,
+    pub started_at: String,
+    pub ended_at: Option<String>,
+    pub name: Option<String>,
+    pub prompt_preview: String,
+    pub tools_used: Vec<String>,
+    pub tool_call_count: u32,
+    pub files_touched_count: u32,
+    pub total_cost_usd: f64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub duration_ms: u64,
+    pub num_turns: u64,
+    pub has_errors: bool,
+    pub error_summary: Option<String>,
+}
+
+/// Facet 统计（用于 filter UI 下拉选项）
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FacetCount {
+    pub value: String,
+    pub count: usize,
+}
+
+/// History 页面 facets
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunSearchFacets {
+    pub projects: Vec<FacetCount>,
+    pub tools: Vec<FacetCount>,
+    pub agents: Vec<FacetCount>,
+    pub cost_range: [f64; 2],
+    pub date_range: [String; 2],
+    pub total_runs: usize,
+    pub total_cost: f64,
+}
+
+/// History 搜索响应（结果 + facets + 总数）
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunSearchResponse {
+    pub results: Vec<RunSearchResult>,
+    pub facets: RunSearchFacets,
+    pub total_matching: usize,
 }

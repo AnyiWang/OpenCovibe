@@ -725,9 +725,8 @@ pub fn discover_sessions(target_cwd: &str) -> Result<Vec<CliSessionSummary>, Str
         }
     }
 
-    // Sort by mtime descending, take top 50
+    // Sort by mtime descending
     candidates.sort_by(|a, b| b.2.cmp(&a.2));
-    candidates.truncate(50);
 
     log::debug!(
         "[cli_sessions] discover: {} candidate files for cwd={}",
