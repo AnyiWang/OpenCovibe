@@ -194,6 +194,7 @@ fn event_type_name(event: &BusEvent) -> &'static str {
         BusEvent::FilesPersisted { .. } => "files_persisted",
         BusEvent::ControlCancelled { .. } => "control_cancelled",
         BusEvent::CommandOutput { .. } => "command_output",
+        BusEvent::ElicitationPrompt { .. } => "elicitation_prompt",
         BusEvent::Raw { .. } => "raw",
     }
 }

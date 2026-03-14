@@ -50,6 +50,7 @@
   import McpStatusPanel from "$lib/components/McpStatusPanel.svelte";
   import PromptInput from "$lib/components/PromptInput.svelte";
   import PermissionPanel from "$lib/components/PermissionPanel.svelte";
+  import ElicitationDialog from "$lib/components/ElicitationDialog.svelte";
   import AuthSourceBadge from "$lib/components/AuthSourceBadge.svelte";
 
   import ToolActivity from "$lib/components/ToolActivity.svelte";
@@ -603,7 +604,7 @@
 
   let welcomeVisible = $derived(store.timeline.length === 0 && !store.streamingText && !store.run);
 
-  let inputBlockedByPermission = $derived(store.hasPendingPermission);
+  let inputBlockedByPermission = $derived(store.hasPendingPermission || store.hasElicitation);
   let pendingToolPermissions = $derived(store.pendingToolPermissions);
   let showPermissionPanel = $derived(pendingToolPermissions.length > 0 && store.sessionAlive);
 
@@ -2698,6 +2699,25 @@
     }
   }
 
+  async function handleElicitationRespond(
+    requestId: string,
+    action: "accept" | "decline" | "cancel",
+    content?: Record<string, unknown>,
+  ) {
+    if (!store.run || !store.sessionAlive) return;
+    const runId = store.run.id;
+    dbg("chat", "elicitation respond", { runId, requestId, action });
+    try {
+      // Optimistic cleanup before await
+      const { resolveElicitationOptimistic } = await import("$lib/utils/resolve-elicitation");
+      resolveElicitationOptimistic(store, runId, requestId);
+      await api.respondElicitation(runId, requestId, action, content);
+    } catch (e) {
+      dbgWarn("chat", "elicitation respond failed:", e);
+      store.error = String(e);
+    }
+  }
+
   // O(1) lookup: timeline entry id → index
   let timelineIdIndex = $derived.by(() => {
     const map = new Map<string, number>();
@@ -3889,6 +3909,14 @@
       <PermissionPanel
         pendingTools={pendingToolPermissions}
         onPermissionRespond={handlePermissionRespond}
+      />
+    {/if}
+
+    <!-- MCP Elicitation dialog (above input bar) -->
+    {#if store.hasElicitation && store.sessionAlive}
+      <ElicitationDialog
+        elicitations={store.pendingElicitations}
+        onRespond={handleElicitationRespond}
       />
     {/if}
 

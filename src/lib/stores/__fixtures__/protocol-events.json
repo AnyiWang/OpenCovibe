@@ -110,6 +110,26 @@
     "data": {}
   },
   {
+    "type": "elicitation_prompt",
+    "run_id": "run-1",
+    "request_id": "req-elicit-1",
+    "mcp_server_name": "github-mcp",
+    "message": "Please authenticate with GitHub",
+    "mode": "form",
+    "requested_schema": {
+      "type": "object",
+      "properties": {
+        "token": {
+          "type": "string",
+          "title": "Access Token",
+          "description": "Your GitHub personal access token"
+        }
+      },
+      "required": ["token"]
+    }
+  },
+  { "type": "control_cancelled", "run_id": "run-1", "request_id": "req-elicit-1" },
+  {
     "type": "message_complete",
     "run_id": "run-1",
     "message_id": "msg-1",

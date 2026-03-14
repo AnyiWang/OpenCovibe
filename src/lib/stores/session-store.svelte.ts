@@ -14,6 +14,7 @@ import type {
   Attachment,
   CliCommand,
   McpServerInfo,
+  ElicitationSchema,
 } from "$lib/types";
 import { dbg, dbgWarn } from "$lib/utils/debug";
 import type { SessionMode, CliCommand } from "$lib/types";
@@ -109,6 +110,16 @@ function timelineAttachments(atts: Attachment[]): Attachment[] | undefined {
 
 // ── Exported types ──
 
+export interface ElicitationState {
+  requestId: string;
+  mcpServerName: string;
+  message: string;
+  elicitationId?: string;
+  mode?: string;
+  url?: string;
+  requestedSchema?: ElicitationSchema;
+}
+
 export interface TaskNotificationItem {
   task_id: string;
   status: string;
@@ -166,6 +177,8 @@ export class SessionStore {
     }>
   >([]);
   taskNotifications = $state<Map<string, TaskNotificationItem>>(new Map());
+  /** Pending MCP elicitation prompts keyed by request_id. */
+  pendingElicitations = $state<Map<string, ElicitationState>>(new Map());
   persistedFiles = $state<unknown[]>([]);
   /** CLI slash commands from session_init (session-specific, includes custom commands). */
   sessionCommands = $state<CliCommand[]>([]);
@@ -410,6 +423,11 @@ export class SessionStore {
     return this._hasPermission();
   }
 
+  /** Whether any MCP elicitation prompt is pending user response. */
+  get hasElicitation(): boolean {
+    return this.pendingElicitations.size > 0;
+  }
+
   /** Whether an inline-only permission (AskUserQuestion / ExitPlanMode) is pending. */
   get hasInlinePermission(): boolean {
     return this._hasPermission(
@@ -442,13 +460,13 @@ export class SessionStore {
 
   get isThinking(): boolean {
     if (!this.isRunning || this.streamingText) return false;
-    return !this.hasPendingPermission;
+    return !this.hasPendingPermission && !this.hasElicitation;
   }
 
-  /** isRunning but not blocked on a permission prompt.
+  /** isRunning but not blocked on a permission prompt or elicitation.
    *  Used for UI elements (stop button, spinner) that should hide during approval. */
   get isActivelyRunning(): boolean {
-    return this.isRunning && !this.hasPendingPermission;
+    return this.isRunning && !this.hasPendingPermission && !this.hasElicitation;
   }
 
   /** Duration of extended thinking in seconds (0 if no thinking happened). */
@@ -959,6 +977,7 @@ export class SessionStore {
     this.authStatus = null;
     this.hookEvents = [];
     this.taskNotifications = new Map();
+    this.pendingElicitations = new Map();
     this.persistedFiles = [];
     this.sessionCommands = [];
     this.mcpServers = [];
@@ -996,6 +1015,15 @@ export class SessionStore {
     this._seenMessageIds.clear();
     this._seenToolIds.clear();
     this._lastProcessedSeq = 0;
+  }
+
+  /** Optimistically remove an elicitation after responding.
+   *  Called by UI before the IPC call returns. */
+  removeElicitation(requestId: string): void {
+    if (!this.pendingElicitations.has(requestId)) return;
+    const updated = new Map(this.pendingElicitations);
+    updated.delete(requestId);
+    this.pendingElicitations = updated;
   }
 
   /** Reset all state to empty. */
@@ -2882,6 +2910,26 @@ export class SessionStore {
         break;
       }
 
+      case "elicitation_prompt": {
+        dbg("store", "elicitation_prompt received", {
+          request_id: ev.request_id,
+          server: ev.mcp_server_name,
+          mode: ev.mode,
+        });
+        const updated = new Map(this.pendingElicitations);
+        updated.set(ev.request_id, {
+          requestId: ev.request_id,
+          mcpServerName: ev.mcp_server_name,
+          message: ev.message,
+          elicitationId: ev.elicitation_id,
+          mode: ev.mode,
+          url: ev.url,
+          requestedSchema: ev.requested_schema,
+        });
+        this.pendingElicitations = updated;
+        break;
+      }
+
       case "raw": {
         const rawText = typeof ev.data === "string" ? ev.data : JSON.stringify(ev.data);
         if (rawText && (ev.source === "claude_stdout_text" || ev.source === "claude_stderr")) {
@@ -3074,6 +3122,12 @@ export class SessionStore {
             ? { ...h, status: "cancelled" as const }
             : h,
         );
+        // Remove cancelled elicitation
+        if (this.pendingElicitations.has(ev.request_id)) {
+          const elicUpdated = new Map(this.pendingElicitations);
+          elicUpdated.delete(ev.request_id);
+          this.pendingElicitations = elicUpdated;
+        }
         break;
       }
 

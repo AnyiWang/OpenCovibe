@@ -1332,6 +1332,65 @@ pub async fn cancel_control_request(
     Ok(())
 }
 
+/// Respond to an MCP elicitation control request.
+/// Writes a control_response back to CLI stdin via the actor.
+#[tauri::command]
+pub async fn respond_elicitation(
+    sessions: State<'_, ActorSessionMap>,
+    run_id: String,
+    request_id: String,
+    action: String,
+    content: Option<serde_json::Value>,
+) -> Result<(), String> {
+    log::debug!(
+        "[session] respond_elicitation: run_id={}, req_id={}, action={}",
+        run_id,
+        request_id,
+        action
+    );
+
+    if !matches!(action.as_str(), "accept" | "decline" | "cancel") {
+        return Err(format!("Invalid elicitation action: {}", action));
+    }
+
+    let response = match action.as_str() {
+        "accept" => {
+            let c = content.unwrap_or(serde_json::json!({}));
+            if !c.is_object() {
+                return Err("content must be a JSON object for accept".into());
+            }
+            serde_json::json!({"action": "accept", "content": c})
+        }
+        other => serde_json::json!({"action": other}),
+    };
+
+    let cmd_tx = {
+        let map = sessions.lock().await;
+        map.get(&run_id)
+            .map(|h| h.cmd_tx.clone())
+            .ok_or_else(|| format!("Session {} not found", run_id))?
+    };
+
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    cmd_tx
+        .send(ActorCommand::RespondElicitation {
+            request_id: request_id.clone(),
+            response,
+            reply: reply_tx,
+        })
+        .await
+        .map_err(|_| "Actor dead".to_string())?;
+    reply_rx
+        .await
+        .map_err(|_| "Actor dropped reply".to_string())??;
+
+    log::debug!(
+        "[session] respond_elicitation: delivered req_id={}",
+        request_id
+    );
+    Ok(())
+}
+
 // ── Shell config auth injection (CLI mode only) ──
 
 /// Pure decision: should we skip injecting shell auth based on existing process env?

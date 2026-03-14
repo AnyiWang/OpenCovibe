@@ -85,6 +85,12 @@ pub enum ActorCommand {
         response: Value,
         reply: oneshot::Sender<Result<(), String>>,
     },
+    /// MCP elicitation response: write control_response back to CLI stdin.
+    RespondElicitation {
+        request_id: String,
+        response: Value,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
 }
 
 /// External handle held in SessionMap. Provides the channel sender + metadata.
@@ -288,6 +294,11 @@ impl SessionActor {
                         }
                         Some(ActorCommand::RespondHookCallback { request_id, response, reply }) => {
                             log::debug!("[actor] RespondHookCallback: run_id={}, req_id={}", self.run_id, request_id);
+                            let result = self.write_control_response(&request_id, response).await;
+                            let _ = reply.send(result);
+                        }
+                        Some(ActorCommand::RespondElicitation { request_id, response, reply }) => {
+                            log::debug!("[actor] RespondElicitation: run_id={}, req_id={}", self.run_id, request_id);
                             let result = self.write_control_response(&request_id, response).await;
                             let _ = reply.send(result);
                         }
@@ -1313,6 +1324,66 @@ impl SessionActor {
                 },
                 Some(&self.run_id),
             );
+        } else if subtype == "elicitation" {
+            // MCP elicitation: CLI requests user input for MCP server authentication/configuration.
+            let request_id = parsed
+                .get("request_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let request = parsed.get("request").cloned().unwrap_or(Value::Null);
+            let mcp_server_name = request
+                .get("mcp_server_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let message = request
+                .get("message")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let elicitation_id = request
+                .get("elicitation_id")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            let mode = request
+                .get("mode")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            let url = request
+                .get("url")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            let requested_schema = request.get("requested_schema").cloned();
+
+            log::debug!(
+                "[actor] elicitation: run_id={}, req_id={}, server={}, mode={:?}, has_schema={}",
+                self.run_id,
+                request_id,
+                mcp_server_name,
+                mode,
+                requested_schema.is_some()
+            );
+
+            self.persist_and_emit(&BusEvent::ElicitationPrompt {
+                run_id: self.run_id.clone(),
+                request_id: request_id.clone(),
+                mcp_server_name: mcp_server_name.clone(),
+                message,
+                elicitation_id,
+                mode,
+                url,
+                requested_schema,
+            });
+            notify_if_background(
+                self.emitter.app(),
+                "MCP Input Required",
+                &format!(
+                    "{}: {} needs input",
+                    truncate_str(&self.run_id, 8),
+                    &mcp_server_name
+                ),
+            );
         } else if subtype == "can_use_tool" {
             let request_id = parsed
                 .get("request_id")
@@ -1375,6 +1446,30 @@ impl SessionActor {
                     &tool_label
                 ),
             );
+        } else {
+            // Fallback: unknown or malformed subtype — send control_cancel_request
+            // to tell CLI we can't handle this request (avoids CLI hanging forever).
+            let req_id = parsed
+                .get("request_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            log::warn!(
+                "[actor] unhandled control_request: run_id={}, subtype={}, req_id={}, keys={:?}",
+                self.run_id,
+                subtype,
+                req_id,
+                parsed
+                    .get("request")
+                    .map(|r| r.as_object().map(|o| o.keys().collect::<Vec<_>>()))
+            );
+            if !req_id.is_empty() {
+                if let Err(e) = self.handle_cancel_control_request(req_id).await {
+                    log::warn!(
+                        "[actor] cancel_control_request failed: run_id={}, req_id={}, subtype={}, err={}",
+                        self.run_id, req_id, subtype, e
+                    );
+                }
+            }
         }
     }
 
@@ -1440,18 +1535,34 @@ impl SessionActor {
         );
 
         let response = match subtype {
-            "can_use_tool" => serde_json::json!({
+            "can_use_tool" => Some(serde_json::json!({
                 "behavior": "deny",
                 "message": "Tool use not allowed during internal turn"
-            }),
-            "hook_callback" => serde_json::json!({ "decision": "allow" }),
-            _ => serde_json::json!({
-                "behavior": "deny",
-                "message": "Request denied during internal turn"
-            }),
+            })),
+            "hook_callback" => Some(serde_json::json!({ "decision": "allow" })),
+            "elicitation" => None, // auto-decline via control_cancel_request
+            _ => None,             // unknown subtype — cancel instead of guessing schema
         };
 
-        if let Err(e) = self.write_control_response(&request_id, response).await {
+        if let Some(response) = response {
+            if let Err(e) = self.write_control_response(&request_id, response).await {
+                log::warn!(
+                    "[turn] internal control auto-response failed: req_id={}, err={}",
+                    request_id,
+                    e
+                );
+            }
+            return;
+        }
+
+        // Unknown or elicitation subtype: send control_cancel_request (schema-agnostic)
+        log::warn!(
+            "[turn] internal: unhandled control_request: run_id={}, subtype={}, req_id={}",
+            self.run_id,
+            subtype,
+            request_id
+        );
+        if let Err(e) = self.handle_cancel_control_request(&request_id).await {
             log::warn!(
                 "[turn] internal control auto-response failed: req_id={}, err={}",
                 request_id,

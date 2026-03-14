@@ -4,19 +4,35 @@
  * Core principle: **writes go through raw JSON deep-clone, normalize is UI-only**.
  */
 
+import type { HookEventType } from "$lib/types";
+
 type Rec = Record<string, any>;
 
 /** All known Claude Code hook event types. */
-export const HOOK_EVENT_TYPES = [
+export const HOOK_EVENT_TYPES: readonly HookEventType[] = [
   "PreToolUse",
   "PostToolUse",
   "Notification",
   "Stop",
   "SubagentStop",
   "SubagentTool",
-] as const;
+  "SubagentStart",
+  "SessionStart",
+  "SessionEnd",
+  "PermissionRequest",
+  "Setup",
+  "ConfigChange",
+  "TeammateIdle",
+  "TaskCompleted",
+  "WorktreeCreate",
+  "WorktreeRemove",
+  "InstructionsLoaded",
+  "Elicitation",
+  "ElicitationResult",
+  "PostCompact",
+] satisfies readonly HookEventType[];
 
-export type HookEventType = (typeof HOOK_EVENT_TYPES)[number];
+export type { HookEventType };
 
 // ── Raw-based write helpers ──
 

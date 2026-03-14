@@ -2018,6 +2018,118 @@ describe("SessionStore reducer", () => {
     });
   });
 
+  describe("elicitation_prompt", () => {
+    it("adds to pendingElicitations map keyed by request_id", () => {
+      store.run = makeRun("run-1");
+      store.phase = "running";
+      store.applyEvent({
+        type: "elicitation_prompt",
+        run_id: "run-1",
+        request_id: "req-elicit-1",
+        mcp_server_name: "github-mcp",
+        message: "Please authenticate",
+        mode: "form",
+        requested_schema: {
+          type: "object",
+          properties: {
+            token: { type: "string", title: "Access Token" },
+          },
+          required: ["token"],
+        },
+      } as BusEvent);
+
+      expect(store.pendingElicitations.size).toBe(1);
+      expect(store.pendingElicitations.has("req-elicit-1")).toBe(true);
+      expect(store.hasElicitation).toBe(true);
+      expect(store.isThinking).toBe(false);
+      expect(store.isActivelyRunning).toBe(false);
+
+      const state = store.pendingElicitations.get("req-elicit-1")!;
+      expect(state.mcpServerName).toBe("github-mcp");
+      expect(state.message).toBe("Please authenticate");
+      expect(state.mode).toBe("form");
+    });
+
+    it("control_cancelled removes from pendingElicitations", () => {
+      store.run = makeRun("run-1");
+      store.phase = "running";
+      store.applyEventBatch([
+        {
+          type: "elicitation_prompt",
+          run_id: "run-1",
+          request_id: "req-elicit-1",
+          mcp_server_name: "github-mcp",
+          message: "Please authenticate",
+        } as BusEvent,
+        { type: "control_cancelled", run_id: "run-1", request_id: "req-elicit-1" },
+      ]);
+
+      expect(store.pendingElicitations.size).toBe(0);
+      expect(store.hasElicitation).toBe(false);
+    });
+
+    it("removeElicitation clears specific entry", () => {
+      store.run = makeRun("run-1");
+      store.phase = "running";
+      store.applyEventBatch([
+        {
+          type: "elicitation_prompt",
+          run_id: "run-1",
+          request_id: "req-elicit-1",
+          mcp_server_name: "server-a",
+          message: "Auth A",
+        } as BusEvent,
+        {
+          type: "elicitation_prompt",
+          run_id: "run-1",
+          request_id: "req-elicit-2",
+          mcp_server_name: "server-b",
+          message: "Auth B",
+        } as BusEvent,
+      ]);
+
+      expect(store.pendingElicitations.size).toBe(2);
+      store.removeElicitation("req-elicit-1");
+      expect(store.pendingElicitations.size).toBe(1);
+      expect(store.pendingElicitations.has("req-elicit-2")).toBe(true);
+    });
+
+    it("_clearContentState clears all pending elicitations", () => {
+      store.run = makeRun("run-1");
+      store.phase = "running";
+      store.applyEvent({
+        type: "elicitation_prompt",
+        run_id: "run-1",
+        request_id: "req-elicit-1",
+        mcp_server_name: "test",
+        message: "test",
+      } as BusEvent);
+
+      expect(store.hasElicitation).toBe(true);
+
+      // Trigger _clearContentState via reset
+      store.reset();
+      expect(store.pendingElicitations.size).toBe(0);
+    });
+
+    it("isThinking returns false when elicitation pending", () => {
+      store.run = makeRun("run-1");
+      store.phase = "running";
+      // Without elicitation: isThinking should be true (running, no streaming text)
+      expect(store.isThinking).toBe(true);
+
+      store.applyEvent({
+        type: "elicitation_prompt",
+        run_id: "run-1",
+        request_id: "req-1",
+        mcp_server_name: "test",
+        message: "test",
+      } as BusEvent);
+
+      expect(store.isThinking).toBe(false);
+    });
+  });
+
   describe("permission_prompt suggestions data chain", () => {
     it("permission_prompt merges suggestions into tool entry", () => {
       store.run = makeRun("run-1");
@@ -3546,6 +3658,7 @@ describe("SessionStore reducer", () => {
       { name: "ask-user-question", runId: "run-5", events: askUserQuestionEvents },
       { name: "subagent-task", runId: "run-sub", events: subagentTaskEvents },
       { name: "team-session", runId: "run-1", events: teamSessionEvents },
+      { name: "protocol-events", runId: "run-1", events: protocolEvents },
     ];
 
     for (const { name, runId, events } of strictFixtures) {

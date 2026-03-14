@@ -267,6 +267,7 @@ export class EventMiddleware {
   private _trackAttention(ev: BusEvent): void {
     switch (ev.type) {
       case "permission_prompt":
+      case "elicitation_prompt":
         markAttention(ev.run_id, "permission");
         break;
       case "tool_end":
