@@ -95,6 +95,10 @@ interface ReduceCtx {
   isStream: boolean;
   /** Per-turn usage snapshots. */
   turnUsages: TurnUsage[];
+  /** tool_use_id → tl[] index (only tool entries, first-match semantics). */
+  toolTlIndex: Map<string, number>;
+  /** tool_use_id → he[] index (only HookEvent entries with tool_use_id). */
+  toolHeIndex: Map<string, number>;
 }
 
 // ── Helpers ──
@@ -251,6 +255,14 @@ export class SessionStore {
 
   /** Highest _seq processed — used for WS checkpoint on reconnect/subscribe */
   private _lastProcessedSeq = 0;
+
+  // ── Reducer tool indexes (runtime-only, not serialized) ──
+  /** tool_use_id → timeline[] index for tool entries (first-match, reducer fast-path). */
+  private _toolTlIndex = new Map<string, number>();
+  /** tool_use_id → tools[] (HookEvent) index (first-match, reducer fast-path). */
+  private _toolHeIndex = new Map<string, number>();
+  /** _lastProcessedSeq at last snapshot write — throttles idle snapshot rewrites. */
+  private _lastSnapshotSeq = 0;
 
   // Generation counter: prevents stale async loadRun from overwriting state
   private _loadGen = 0;
@@ -571,11 +583,104 @@ export class SessionStore {
     return "other";
   }
 
+  // ── Reducer index helpers ──
+
+  /** Append a timeline entry and update tool index if applicable.
+   *  Index uses first-match semantics (matching findIndex behavior) — only set if not already present. */
+  private _pushTimeline(ctx: ReduceCtx | null, entry: TimelineEntry): void {
+    if (ctx) {
+      ctx.tl.push(entry);
+      if (entry.kind === "tool" && !ctx.toolTlIndex.has(entry.id)) {
+        ctx.toolTlIndex.set(entry.id, ctx.tl.length - 1);
+      }
+    } else {
+      this.timeline = [...this.timeline, entry];
+      if (entry.kind === "tool" && !this._toolTlIndex.has(entry.id)) {
+        this._toolTlIndex.set(entry.id, this.timeline.length - 1);
+      }
+    }
+  }
+
+  /** Append a hook event entry and update tool index if applicable.
+   *  Index uses first-match semantics — only set if not already present. */
+  private _pushHookEntry(ctx: ReduceCtx | null, heEntry: HookEvent): void {
+    const toolUseId = (heEntry as Record<string, unknown>).tool_use_id as string | undefined;
+    if (ctx) {
+      ctx.he.push(heEntry);
+      if (toolUseId && !ctx.toolHeIndex.has(toolUseId))
+        ctx.toolHeIndex.set(toolUseId, ctx.he.length - 1);
+    } else {
+      this.tools = [...this.tools, heEntry];
+      if (toolUseId && !this._toolHeIndex.has(toolUseId))
+        this._toolHeIndex.set(toolUseId, this.tools.length - 1);
+    }
+  }
+
+  /** Find tool timeline entry by tool_use_id. Map fast-path + findIndex fallback. */
+  private _findToolIdx(ctx: ReduceCtx | null, toolUseId: string): number {
+    const tl = ctx ? ctx.tl : this.timeline;
+    const idx = ctx ? ctx.toolTlIndex.get(toolUseId) : this._toolTlIndex.get(toolUseId);
+    // Fast path: Map hit + validation
+    if (idx !== undefined && tl[idx]?.kind === "tool" && tl[idx].id === toolUseId) return idx;
+    // Fallback: linear scan (covers stale/missing index entries)
+    const fallback = tl.findIndex((e) => e.kind === "tool" && e.id === toolUseId);
+    if (fallback >= 0) {
+      dbgWarn("store", "_findToolIdx: index miss, found via scan", {
+        toolUseId,
+        mapIdx: idx,
+        scanIdx: fallback,
+      });
+    }
+    return fallback;
+  }
+
+  /** Simple id-only lookup for hook events. Map fast-path + findIndex fallback. */
+  private _findHeIdx(ctx: ReduceCtx | null, toolUseId: string): number {
+    const he = ctx ? ctx.he : this.tools;
+    const idx = ctx ? ctx.toolHeIndex.get(toolUseId) : this._toolHeIndex.get(toolUseId);
+    if (
+      idx !== undefined &&
+      he[idx] &&
+      (he[idx] as Record<string, unknown>).tool_use_id === toolUseId
+    )
+      return idx;
+    const fallback = he.findIndex((e) => (e as Record<string, unknown>).tool_use_id === toolUseId);
+    if (fallback >= 0) {
+      dbgWarn("store", "_findHeIdx: index miss, found via scan", {
+        toolUseId,
+        mapIdx: idx,
+        scanIdx: fallback,
+      });
+    }
+    return fallback;
+  }
+
+  /** Status-aware hook event lookup: Map fast-path + status validation + scan fallback.
+   *  Used by user_message and tool_end which filter by status==="running". */
+  private _findHeIdxByStatus(ctx: ReduceCtx | null, toolUseId: string, status: string): number {
+    const he = ctx ? ctx.he : this.tools;
+    const idx = ctx ? ctx.toolHeIndex.get(toolUseId) : this._toolHeIndex.get(toolUseId);
+    // Fast path: Map hit + status match
+    if (
+      idx !== undefined &&
+      he[idx] &&
+      (he[idx] as Record<string, unknown>).tool_use_id === toolUseId &&
+      he[idx].status === status
+    ) {
+      return idx;
+    }
+    // Fallback: linear scan (covers status mismatch or stale index)
+    return he.findIndex(
+      (e) => (e as Record<string, unknown>).tool_use_id === toolUseId && e.status === status,
+    );
+  }
+
   // ── SubTimeline helpers (subagent routing) ──
 
-  /** Find the parent tool entry in timeline by tool_use_id; return index or -1. */
-  private _findParentToolIdx(tl: TimelineEntry[], parentToolUseId: string): number {
-    return tl.findIndex((e) => e.kind === "tool" && e.id === parentToolUseId);
+  /** Find the parent tool entry in timeline by tool_use_id; return index or -1.
+   *  Uses _findToolIdx for Map fast-path with findIndex fallback. */
+  private _findParentToolIdx(ctx: ReduceCtx | null, parentToolUseId: string): number {
+    return this._findToolIdx(ctx, parentToolUseId);
   }
 
   /** Search ALL subTimelines (one level deep) for a tool with the given id.
@@ -640,7 +745,7 @@ export class SessionStore {
     ctx: ReduceCtx | null,
   ): boolean {
     const tl = ctx ? ctx.tl : this.timeline;
-    const pIdx = this._findParentToolIdx(tl, parentToolUseId);
+    const pIdx = this._findParentToolIdx(ctx, parentToolUseId);
     if (pIdx < 0) return false;
     const parent = tl[pIdx] as Extract<TimelineEntry, { kind: "tool" }>;
     const sub = parent.subTimeline ?? [];
@@ -670,7 +775,7 @@ export class SessionStore {
     ctx: ReduceCtx | null,
   ): void {
     const tl = ctx ? ctx.tl : this.timeline;
-    const pIdx = this._findParentToolIdx(tl, parentToolUseId);
+    const pIdx = this._findParentToolIdx(ctx, parentToolUseId);
     if (pIdx < 0) return;
     const parent = tl[pIdx] as Extract<TimelineEntry, { kind: "tool" }>;
     const sub = parent.subTimeline ?? [];
@@ -716,7 +821,7 @@ export class SessionStore {
     ctx: ReduceCtx | null,
   ): string | undefined {
     const tl = ctx ? ctx.tl : this.timeline;
-    const pIdx = this._findParentToolIdx(tl, parentToolUseId);
+    const pIdx = this._findParentToolIdx(ctx, parentToolUseId);
     if (pIdx < 0) return undefined;
     const parent = tl[pIdx] as Extract<TimelineEntry, { kind: "tool" }>;
     const sub = parent.subTimeline ?? [];
@@ -729,7 +834,7 @@ export class SessionStore {
   /** Remove the synthetic streaming entry from a parent tool's subTimeline (called on message_complete). */
   private _removeSubTimelineStreamingEntry(parentToolUseId: string, ctx: ReduceCtx | null): void {
     const tl = ctx ? ctx.tl : this.timeline;
-    const pIdx = this._findParentToolIdx(tl, parentToolUseId);
+    const pIdx = this._findParentToolIdx(ctx, parentToolUseId);
     if (pIdx < 0) return;
     const parent = tl[pIdx] as Extract<TimelineEntry, { kind: "tool" }>;
     const sub = parent.subTimeline ?? [];
@@ -812,6 +917,17 @@ export class SessionStore {
   applyEventBatch(events: BusEvent[], opts?: { replayOnly?: boolean }): number {
     const t0 = performance.now();
     const replayOnly = opts?.replayOnly ?? false;
+    // Build tool indexes from existing state for batch processing
+    const batchTlIndex = new Map<string, number>();
+    for (let i = 0; i < this.timeline.length; i++) {
+      const e = this.timeline[i];
+      if (e.kind === "tool" && !batchTlIndex.has(e.id)) batchTlIndex.set(e.id, i);
+    }
+    const batchHeIndex = new Map<string, number>();
+    for (let i = 0; i < this.tools.length; i++) {
+      const tid = (this.tools[i] as Record<string, unknown>).tool_use_id as string | undefined;
+      if (tid && !batchHeIndex.has(tid)) batchHeIndex.set(tid, i);
+    }
     const ctx: ReduceCtx = {
       tl: [...this.timeline],
       he: [...this.tools],
@@ -827,6 +943,8 @@ export class SessionStore {
       sessionId: null,
       isStream: this.useStreamSession,
       turnUsages: [...this.turnUsages],
+      toolTlIndex: batchTlIndex,
+      toolHeIndex: batchHeIndex,
     };
     for (const ev of events) {
       // Track WS sequence checkpoint
@@ -881,6 +999,8 @@ export class SessionStore {
     this.turnUsages = ctx.turnUsages;
     this._seenMessageIds = ctx.seenMessageIds;
     this._seenToolIds = ctx.seenToolIds;
+    this._toolTlIndex = ctx.toolTlIndex;
+    this._toolHeIndex = ctx.toolHeIndex;
     // Phase and error only assigned in live mode (not during resume replay)
     if (!replayOnly) {
       this._setPhase(ctx.phase);
@@ -1023,6 +1143,9 @@ export class SessionStore {
     this._seenMessageIds.clear();
     this._seenToolIds.clear();
     this._lastProcessedSeq = 0;
+    this._toolTlIndex.clear();
+    this._toolHeIndex.clear();
+    this._lastSnapshotSeq = 0;
   }
 
   /** Optimistically remove an elicitation after responding.
@@ -1086,11 +1209,23 @@ export class SessionStore {
     return JSON.stringify(obj);
   }
 
-  /** Try to restore store state from a snapshot body string.
-   *  Returns true on success, false if shape validation fails. */
-  private _tryApplySnapshot(body: string): boolean {
+  /** Parse snapshot body string. Returns parsed object or null if invalid JSON. */
+  private _parseSnapshotBody(body: string): Record<string, unknown> | null {
     try {
-      const obj = JSON.parse(body) as Record<string, unknown>;
+      return JSON.parse(body) as Record<string, unknown>;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Try to restore store state from a pre-parsed snapshot object (or string for compat).
+   *  Returns true on success, false if shape validation fails. */
+  private _tryApplySnapshot(bodyOrObj: string | Record<string, unknown>): boolean {
+    try {
+      const obj =
+        typeof bodyOrObj === "string"
+          ? (JSON.parse(bodyOrObj) as Record<string, unknown>)
+          : bodyOrObj;
       // Shape validation: timeline must be array, usage must be object
       if (!Array.isArray(obj.timeline) || typeof obj.usage !== "object" || obj.usage === null) {
         dbgWarn("snapshot", "apply:shape-fail", {
@@ -1140,6 +1275,18 @@ export class SessionStore {
       );
       this._lastProcessedSeq = (obj._lastProcessedSeq as number) ?? 0;
 
+      // Rebuild runtime tool indexes from restored state
+      this._toolTlIndex.clear();
+      for (let i = 0; i < this.timeline.length; i++) {
+        const e = this.timeline[i];
+        if (e.kind === "tool" && !this._toolTlIndex.has(e.id)) this._toolTlIndex.set(e.id, i);
+      }
+      this._toolHeIndex.clear();
+      for (let i = 0; i < this.tools.length; i++) {
+        const tid = (this.tools[i] as Record<string, unknown>).tool_use_id as string | undefined;
+        if (tid && !this._toolHeIndex.has(tid)) this._toolHeIndex.set(tid, i);
+      }
+
       dbg("snapshot", "apply:ok", { timeline: this.timeline.length });
       return true;
     } catch (err) {
@@ -1158,6 +1305,15 @@ export class SessionStore {
     setTimeout(() => {
       // Guard: still viewing the same run (user may have navigated away)
       if (this._loadGen !== gen || this.run?.id !== runId) return;
+      // Guard: status must still match (prevents stale write after idle→running transition)
+      if (this.run.status !== runStatus) {
+        dbg("snapshot", "save:skipped (status changed)", {
+          runId,
+          expected: runStatus,
+          actual: this.run.status,
+        });
+        return;
+      }
       const body = this._buildSnapshot();
       dbg("snapshot", "save", { runId, runStatus, bytes: body.length });
       snapshotCache.writeSnapshot(runId, runStatus, body).catch(() => {});
@@ -1238,9 +1394,10 @@ export class SessionStore {
         let reducerMs = 0;
         let snapshotHit = false;
 
-        // Try IDB snapshot (terminal sessions only)
+        // Try IDB snapshot (terminal + idle sessions)
+        const snapshotEligible = isTerminal || this.run!.status === "idle";
         let snapshotBody: string | null = null;
-        if (isTerminal) {
+        if (snapshotEligible) {
           try {
             snapshotBody = await snapshotCache.readSnapshot(id, this.run!.status);
           } catch {
@@ -1249,10 +1406,59 @@ export class SessionStore {
           if (gen !== this._loadGen) return;
         }
 
-        if (snapshotBody && this._tryApplySnapshot(snapshotBody)) {
-          snapshotHit = true;
-          this._wsSubscribeWithSeq(id, this._lastProcessedSeq);
-        } else {
+        if (snapshotBody) {
+          const isIdleSnap = !isTerminal;
+          // Parse once, used for both seq check and apply
+          const parsed = this._parseSnapshotBody(snapshotBody);
+          if (!parsed) {
+            snapshotBody = null; // corrupted JSON
+          } else {
+            const snapSeq = isIdleSnap ? ((parsed._lastProcessedSeq as number) ?? 0) : 1;
+
+            if (snapSeq === 0 && isIdleSnap) {
+              // seq=0: skip snapshot, delete stale entry to prevent repeated hit-then-skip
+              dbg("store", "idle snapshot seq=0, skipping for full replay");
+              snapshotCache.deleteSnapshot(id).catch(() => {});
+              snapshotBody = null; // fall through to miss path
+            } else if (this._tryApplySnapshot(parsed)) {
+              snapshotHit = true;
+              // Align _lastSnapshotSeq to prevent unnecessary rewrite on first idle
+              this._lastSnapshotSeq = this._lastProcessedSeq;
+
+              // Fix: idle snapshot hit → phase must be "idle", not "ready"
+              if (isIdleSnap) this._setPhase("idle");
+
+              // Desktop idle: incremental catchup (no WS available)
+              if (isIdleSnap && getTransport().isDesktop()) {
+                const catchupEvents = await api.getBusEvents(id, this._lastProcessedSeq);
+                if (gen !== this._loadGen) return;
+                if (catchupEvents.length > 0) {
+                  dbg("store", "idle snapshot catchup", { count: catchupEvents.length });
+                  this.applyEventBatch(catchupEvents, { replayOnly: false });
+                  const catchupSt = this.run?.status;
+                  if (
+                    catchupSt === "idle" ||
+                    catchupSt === "completed" ||
+                    catchupSt === "failed" ||
+                    catchupSt === "stopped"
+                  ) {
+                    this._saveSnapshotToIdb(id);
+                  }
+                }
+              } else if (isIdleSnap) {
+                this._wsSubscribeWithSeq(id, this._lastProcessedSeq);
+              }
+              // Terminal: no catchup needed, just subscribe for WS if applicable
+              if (!isIdleSnap) {
+                this._wsSubscribeWithSeq(id, this._lastProcessedSeq);
+              }
+            } else {
+              snapshotBody = null; // shape validation failed
+            }
+          }
+        }
+
+        if (!snapshotHit) {
           // Miss or snapshot corrupted → normal path
           const busEvents = await api.getBusEvents(id);
           if (gen !== this._loadGen) {
@@ -1262,9 +1468,7 @@ export class SessionStore {
           reducerMs = this.applyEventBatch(busEvents, { replayOnly: isTerminal });
           this._wsSubscribeAfterLoad(id, busEvents);
           // Write guard: distinguish "legit empty session" from "reducer anomaly"
-          // busEvents non-empty but timeline empty → reducer anomaly, don't cache
-          // busEvents empty and timeline empty → real empty session, allow cache
-          if (isTerminal && (this.timeline.length > 0 || busEvents.length === 0)) {
+          if (snapshotEligible && (this.timeline.length > 0 || busEvents.length === 0)) {
             this._saveSnapshotToIdb(id);
           }
         }
@@ -1348,16 +1552,13 @@ export class SessionStore {
         // api.startSession(), but the middleware subscription isn't set up
         // until after goto() triggers the URL $effect.  Content-based dedup
         // in _reduce(user_message) prevents double display.
-        this.timeline = [
-          ...this.timeline,
-          {
-            kind: "user",
-            id: uuid(),
-            content: prompt,
-            ts: new Date().toISOString(),
-            ...(attachments.length > 0 ? { attachments: timelineAttachments(attachments) } : {}),
-          },
-        ];
+        this._pushTimeline(null, {
+          kind: "user",
+          id: uuid(),
+          content: prompt,
+          ts: new Date().toISOString(),
+          ...(attachments.length > 0 ? { attachments: timelineAttachments(attachments) } : {}),
+        });
         // Subscribe middleware BEFORE spawning so no bus-events are dropped.
         // The $effect in chat page will call subscribeCurrent again (idempotent).
         const mw = getEventMiddleware();
@@ -1410,22 +1611,21 @@ export class SessionStore {
   async sendMessage(text: string, attachments: Attachment[]): Promise<void> {
     if (!this.run) return;
     this.error = "";
+    // Invalidate idle snapshot — user is sending a new message
+    snapshotCache.deleteSnapshot(this.run.id).catch(() => {});
 
     try {
       if (this.useStreamSession && this.sessionAlive) {
         // Optimistic user message — matches the pattern in startSession().
         // Content-based dedup in _reduce(user_message) prevents double display
         // when the backend's UserMessage bus event arrives.
-        this.timeline = [
-          ...this.timeline,
-          {
-            kind: "user",
-            id: uuid(),
-            content: text,
-            ts: new Date().toISOString(),
-            ...(attachments.length > 0 ? { attachments: timelineAttachments(attachments) } : {}),
-          },
-        ];
+        this._pushTimeline(null, {
+          kind: "user",
+          id: uuid(),
+          content: text,
+          ts: new Date().toISOString(),
+          ...(attachments.length > 0 ? { attachments: timelineAttachments(attachments) } : {}),
+        });
         // Map frontend Attachment[] to backend AttachmentData format
         const backendAttachments =
           attachments.length > 0
@@ -1654,18 +1854,15 @@ export class SessionStore {
       // Must be before startSession IPC so the user sees their message immediately.
       // Backend's UserMessage bus event will be deduped by content match in _reduce.
       if (initialMessage) {
-        this.timeline = [
-          ...this.timeline,
-          {
-            kind: "user" as const,
-            id: uuid(),
-            content: initialMessage,
-            ts: new Date().toISOString(),
-            ...(attachments && attachments.length > 0
-              ? { attachments: timelineAttachments(attachments) }
-              : {}),
-          },
-        ];
+        this._pushTimeline(null, {
+          kind: "user" as const,
+          id: uuid(),
+          content: initialMessage,
+          ts: new Date().toISOString(),
+          ...(attachments && attachments.length > 0
+            ? { attachments: timelineAttachments(attachments) }
+            : {}),
+        });
       }
 
       // Explicitly set phase — replay didn't touch it
@@ -1840,7 +2037,7 @@ export class SessionStore {
   /** Resolve an AskUserQuestion tool: transition from ask_pending → success. */
   resolveAskQuestion(toolUseId: string, answer: string): void {
     dbg("store", "resolveAskQuestion", { toolUseId, answer });
-    const tIdx = this.timeline.findIndex((e) => e.kind === "tool" && e.id === toolUseId);
+    const tIdx = this._findToolIdx(null, toolUseId);
     if (tIdx >= 0) {
       const old = this.timeline[tIdx] as Extract<TimelineEntry, { kind: "tool" }>;
       const u = [...this.timeline];
@@ -1849,9 +2046,7 @@ export class SessionStore {
     }
     // Mirror to tools[] only in non-stream mode
     if (!this.useStreamSession) {
-      const hIdx = this.tools.findIndex(
-        (e) => (e as Record<string, unknown>).tool_use_id === toolUseId,
-      );
+      const hIdx = this._findHeIdx(null, toolUseId);
       if (hIdx >= 0) {
         const u = [...this.tools];
         u[hIdx] = { ...u[hIdx], status: "done", hook_type: "PostToolUse" };
@@ -2205,7 +2400,7 @@ export class SessionStore {
         }
         // Update matching tool entry's input in real-time with accumulated partial JSON
         const tl = getTl();
-        const tIdx = tl.findIndex((e) => e.kind === "tool" && e.id === ev.tool_use_id);
+        const tIdx = this._findToolIdx(ctx, ev.tool_use_id);
         if (tIdx >= 0) {
           const old = tl[tIdx] as Extract<TimelineEntry, { kind: "tool" }>;
           // Accumulate partial JSON into _inputJsonAccum on the tool item
@@ -2269,7 +2464,7 @@ export class SessionStore {
             len: subThinking?.length ?? 0,
           });
 
-          const parentIdx = this._findParentToolIdx(getTl(), ev.parent_tool_use_id);
+          const parentIdx = this._findParentToolIdx(ctx, ev.parent_tool_use_id);
           if (parentIdx >= 0) {
             this._appendToSubTimeline(getTl(), parentIdx, entry, ctx);
             break;
@@ -2279,8 +2474,7 @@ export class SessionStore {
             "subagent message_complete: parent not found, fallback to main timeline",
             { parent: ev.parent_tool_use_id },
           );
-          if (ctx) ctx.tl.push(entry);
-          else this.timeline = [...this.timeline, entry];
+          this._pushTimeline(ctx, entry);
           break;
         }
 
@@ -2310,8 +2504,7 @@ export class SessionStore {
             len: savedThinking.length,
           });
 
-        if (ctx) ctx.tl.push(entry);
-        else this.timeline = [...this.timeline, entry];
+        this._pushTimeline(ctx, entry);
         break;
       }
 
@@ -2352,11 +2545,7 @@ export class SessionStore {
           ts: eventTs(ev),
           ...(ev.uuid ? { cliUuid: ev.uuid } : {}),
         };
-        if (ctx) {
-          ctx.tl.push(entry);
-        } else {
-          this.timeline = [...this.timeline, entry];
-        }
+        this._pushTimeline(ctx, entry);
 
         // Resolve any ask_pending AskUserQuestion tool — the user_message following
         // a tool_end(AskUserQuestion) is the user's answer.  Without this, navigating
@@ -2380,10 +2569,7 @@ export class SessionStore {
           // Also resolve the matching HookEvent (non-stream mode only)
           if (!this._isStreamMode(ctx)) {
             const he = getHe();
-            const hIdx = he.findIndex(
-              (e) =>
-                (e as Record<string, unknown>).tool_use_id === old.id && e.status === "running",
-            );
+            const hIdx = this._findHeIdxByStatus(ctx, old.id, "running");
             if (hIdx >= 0) {
               const updatedHe: HookEvent = {
                 ...he[hIdx],
@@ -2409,7 +2595,7 @@ export class SessionStore {
         getSeenTool().add(ev.tool_use_id);
         // Subagent routing: nest inside parent tool's subTimeline
         if (ev.parent_tool_use_id) {
-          const parentIdx = this._findParentToolIdx(getTl(), ev.parent_tool_use_id);
+          const parentIdx = this._findParentToolIdx(ctx, ev.parent_tool_use_id);
           if (parentIdx >= 0) {
             const subEntry: TimelineEntry = {
               kind: "tool",
@@ -2429,7 +2615,7 @@ export class SessionStore {
             parent: ev.parent_tool_use_id,
           });
         }
-        if (getTl().some((e) => e.kind === "tool" && e.id === ev.tool_use_id)) break;
+        if (this._findToolIdx(ctx, ev.tool_use_id) >= 0) break;
 
         const tlEntry: TimelineEntry = {
           kind: "tool",
@@ -2442,11 +2628,7 @@ export class SessionStore {
           },
           ts: eventTs(ev),
         };
-        if (ctx) {
-          ctx.tl.push(tlEntry);
-        } else {
-          this.timeline = [...this.timeline, tlEntry];
-        }
+        this._pushTimeline(ctx, tlEntry);
 
         // Mirror to tools[] (HookEvent) only in non-stream mode (pipe/PTY)
         if (!this._isStreamMode(ctx)) {
@@ -2459,11 +2641,7 @@ export class SessionStore {
             timestamp: new Date().toISOString(),
           };
           (heEntry as Record<string, unknown>).tool_use_id = ev.tool_use_id;
-          if (ctx) {
-            ctx.he.push(heEntry);
-          } else {
-            this.tools = [...this.tools, heEntry];
-          }
+          this._pushHookEntry(ctx, heEntry);
         }
         break;
       }
@@ -2508,7 +2686,7 @@ export class SessionStore {
         }
 
         const tl = getTl();
-        const tIdx = tl.findIndex((e) => e.kind === "tool" && e.id === ev.tool_use_id);
+        const tIdx = this._findToolIdx(ctx, ev.tool_use_id);
         if (tIdx >= 0) {
           const old = tl[tIdx] as Extract<TimelineEntry, { kind: "tool" }>;
           const updated: TimelineEntry = {
@@ -2576,11 +2754,7 @@ export class SessionStore {
         // Mirror to tools[] only in non-stream mode
         if (!isAskUser && !this._isStreamMode(ctx)) {
           const he = getHe();
-          const hIdx = he.findIndex(
-            (e) =>
-              (e as Record<string, unknown>).tool_use_id === ev.tool_use_id &&
-              e.status === "running",
-          );
+          const hIdx = this._findHeIdxByStatus(ctx, ev.tool_use_id, "running");
           if (hIdx >= 0) {
             const updatedHe: HookEvent = {
               ...he[hIdx],
@@ -2607,6 +2781,10 @@ export class SessionStore {
             const newPhase: SessionPhase = ev.state === "spawning" ? "spawning" : "running";
             if (ctx) ctx.phase = newPhase;
             else this._setPhase(newPhase);
+            // Invalidate idle snapshot — session is now active
+            if (!ctx && this.run) {
+              snapshotCache.deleteSnapshot(this.run.id).catch(() => {});
+            }
           } else if (ev.state === "idle") {
             if (ctx) ctx.phase = "idle";
             else this._setPhase("idle");
@@ -2654,6 +2832,13 @@ export class SessionStore {
               (t.status === "running" && !!t.permission_request_id),
             ctx,
           );
+          // Write idle snapshot (live mode only, throttled by _lastSnapshotSeq)
+          if (!ctx && !replayOnly && this.run) {
+            if (this._lastProcessedSeq > this._lastSnapshotSeq) {
+              this._saveSnapshotToIdb(this.run.id);
+              this._lastSnapshotSeq = this._lastProcessedSeq;
+            }
+          }
         }
         // Resolve permission_denied / permission_prompt tools on session restart (spawning).
         // After approval, the session restarts — those cards are no longer actionable.
@@ -2747,7 +2932,7 @@ export class SessionStore {
       case "permission_denied": {
         // Retroactively update: find matching tool, change to "permission_denied"
         const tl = getTl();
-        const tIdx = tl.findIndex((e) => e.kind === "tool" && e.id === ev.tool_use_id);
+        const tIdx = this._findToolIdx(ctx, ev.tool_use_id);
         if (tIdx >= 0) {
           const old = tl[tIdx] as Extract<TimelineEntry, { kind: "tool" }>;
           const updated: TimelineEntry = {
@@ -2809,7 +2994,7 @@ export class SessionStore {
         // Inline permission prompt from --permission-prompt-tool stdio.
         // Find matching tool (should be "running") and update to "permission_prompt" with request_id.
         const tl = getTl();
-        const tIdx = tl.findIndex((e) => e.kind === "tool" && e.id === ev.tool_use_id);
+        const tIdx = this._findToolIdx(ctx, ev.tool_use_id);
         if (tIdx >= 0) {
           const old = tl[tIdx] as Extract<TimelineEntry, { kind: "tool" }>;
           const updated: TimelineEntry = {
@@ -2872,8 +3057,7 @@ export class SessionStore {
               },
               ts: eventTs(ev),
             };
-            if (ctx) ctx.tl.push(tlEntry);
-            else this.timeline = [...this.timeline, tlEntry];
+            this._pushTimeline(ctx, tlEntry);
           } else {
             dbg("store", "permission_prompt: updated in subTimeline", {
               tool_use_id: ev.tool_use_id,
@@ -2898,8 +3082,7 @@ export class SessionStore {
             content: `Context compacted${tokensInfo}`,
             ts: eventTs(ev),
           };
-          if (ctx) ctx.tl.push(entry);
-          else this.timeline = [...this.timeline, entry];
+          this._pushTimeline(ctx, entry);
           // Reset per-turn token counts so contextUtilization reflects the
           // compacted state instead of showing stale pre-compact values.
           // The next usage_update event will supply accurate post-compact numbers.
@@ -2930,8 +3113,7 @@ export class SessionStore {
           content: ev.content,
           ts: eventTs(ev),
         };
-        if (ctx) ctx.tl.push(cmdEntry);
-        else this.timeline = [...this.timeline, cmdEntry];
+        this._pushTimeline(ctx, cmdEntry);
         break;
       }
 
@@ -2964,8 +3146,7 @@ export class SessionStore {
             content: `\`[${ev.source}]\` ${rawText}`,
             ts: new Date().toISOString(),
           };
-          if (ctx) ctx.tl.push(entry);
-          else this.timeline = [...this.timeline, entry];
+          this._pushTimeline(ctx, entry);
         } else {
           this.rawFallbackCount++;
           dbgWarn("store", "raw fallback event:", ev.source, rawText?.slice(0, 100));
@@ -3087,7 +3268,7 @@ export class SessionStore {
           break;
         }
         const tl = getTl();
-        const idx = tl.findIndex((e) => e.kind === "tool" && e.id === ev.tool_use_id);
+        const idx = this._findToolIdx(ctx, ev.tool_use_id);
         if (idx >= 0) {
           const old = tl[idx] as Extract<TimelineEntry, { kind: "tool" }>;
           const updated: TimelineEntry = {
@@ -3118,7 +3299,7 @@ export class SessionStore {
           break;
         }
         const tl2 = getTl();
-        const idx2 = tl2.findIndex((e) => e.kind === "tool" && e.id === ev.tool_use_id);
+        const idx2 = this._findToolIdx(ctx, ev.tool_use_id);
         if (idx2 >= 0) {
           const old = tl2[idx2] as Extract<TimelineEntry, { kind: "tool" }>;
           const updated: TimelineEntry = { ...old, tool: { ...old.tool, summary: ev.summary } };
