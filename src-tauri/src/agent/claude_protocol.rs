@@ -124,6 +124,23 @@ pub struct ProtocolState {
     strict_mode: bool,
 }
 
+/// Extract text content between simple XML tags: `<tag>content</tag>`.
+/// Returns `None` if tag not found or content is empty — callers use
+/// `None` → JSON `null` so frontend `??` correctly falls back to existing values.
+fn extract_xml_tag<'a>(text: &'a str, tag: &str) -> Option<&'a str> {
+    let open = format!("<{}>", tag);
+    let close = format!("</{}>", tag);
+    let start = text.find(&open)?;
+    let content_start = start + open.len();
+    let end = text[content_start..].find(&close)?;
+    let value = text[content_start..content_start + end].trim();
+    if value.is_empty() {
+        None
+    } else {
+        Some(value)
+    }
+}
+
 impl ProtocolState {
     pub fn is_resume(&self) -> bool {
         self.is_resume
@@ -837,6 +854,61 @@ impl ProtocolState {
                     }
                 }
 
+                // Background agent task notification (e.g., /batch worker completion).
+                // Format: <task-notification><task-id>...</task-id>...</task-notification>
+                // Require both open and close tags to avoid false positives from
+                // user-pasted XML tutorial text.
+                // TODO: CLI currently sends as content string. If it changes to
+                // content array with text blocks, also check array items.
+                if let Some(text) = message.get("content").and_then(|v| v.as_str()) {
+                    if text.contains("<task-notification>") && text.contains("</task-notification>")
+                    {
+                        let task_id = extract_xml_tag(text, "task-id");
+                        let status = extract_xml_tag(text, "status");
+
+                        // task_id and status are required — skip event if missing
+                        // to avoid empty-key pollution in frontend taskNotifications Map
+                        if let (Some(tid), Some(st)) = (task_id, status) {
+                            let tool_use_id = extract_xml_tag(text, "tool-use-id");
+                            let summary = extract_xml_tag(text, "summary");
+                            let result_text = extract_xml_tag(text, "result");
+                            let output_file = extract_xml_tag(text, "output-file");
+
+                            // Build data object — Option<&str> serializes to null when
+                            // None, ensuring frontend ?? falls back to existing values
+                            let data = serde_json::json!({
+                                "task_id": tid,
+                                "tool_use_id": tool_use_id,
+                                "status": st,
+                                "summary": summary,
+                                "result": result_text,
+                                "output_file": output_file,
+                            });
+
+                            log::debug!(
+                                "[protocol] task_notification (XML): task_id={}, status={}, tool_use_id={}",
+                                tid,
+                                st,
+                                tool_use_id.unwrap_or("none")
+                            );
+
+                            events.push(BusEvent::TaskNotification {
+                                run_id: run_id.to_string(),
+                                task_id: tid.to_string(),
+                                status: st.to_string(),
+                                data,
+                            });
+                        } else {
+                            log::warn!(
+                                "[protocol] task_notification XML missing required fields: task_id={:?}, status={:?}",
+                                task_id,
+                                status
+                            );
+                        }
+                        return events;
+                    }
+                }
+
                 if let Some(content) = message.get("content").and_then(|v| v.as_array()) {
                     for block in content {
                         let block_type = block.get("type").and_then(|v| v.as_str()).unwrap_or("");
@@ -1370,6 +1442,120 @@ mod tests {
         match &events[0] {
             BusEvent::HookProgress { hook_id, .. } => assert_eq!(hook_id, "h1"),
             other => panic!("expected HookProgress, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_user_task_notification_xml() {
+        let mut ps = ProtocolState::new(false);
+        let xml = concat!(
+            "<task-notification>\n",
+            "<task-id>a9bb95555169d1db3</task-id>\n",
+            "<tool-use-id>toolu_01KEqmg7q9uc7ZWouxEvYeHM</tool-use-id>\n",
+            "<output-file>/tmp/tasks/a9bb9.output</output-file>\n",
+            "<status>completed</status>\n",
+            "<summary>Agent \"JSDoc for src/a.ts\" completed</summary>\n",
+            "<result>PR: none — permission denied</result>\n",
+            "</task-notification>"
+        );
+        let raw = json!({
+            "type": "user",
+            "message": { "content": xml }
+        });
+        let events = ps.map_event(RUN, &raw);
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            BusEvent::TaskNotification {
+                task_id,
+                status,
+                data,
+                ..
+            } => {
+                assert_eq!(task_id, "a9bb95555169d1db3");
+                assert_eq!(status, "completed");
+                assert_eq!(data["tool_use_id"], "toolu_01KEqmg7q9uc7ZWouxEvYeHM");
+                assert_eq!(data["summary"], "Agent \"JSDoc for src/a.ts\" completed");
+                assert_eq!(data["output_file"], "/tmp/tasks/a9bb9.output");
+                assert_eq!(data["result"], "PR: none — permission denied");
+            }
+            other => panic!("expected TaskNotification, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_user_task_notification_xml_missing_task_id() {
+        let mut ps = ProtocolState::new(false);
+        let xml = concat!(
+            "<task-notification>\n",
+            "<status>completed</status>\n",
+            "<summary>Agent completed</summary>\n",
+            "</task-notification>"
+        );
+        let raw = json!({
+            "type": "user",
+            "message": { "content": xml }
+        });
+        let events = ps.map_event(RUN, &raw);
+        assert_eq!(
+            events.len(),
+            0,
+            "should not emit event when task-id is missing"
+        );
+    }
+
+    #[test]
+    fn test_user_task_notification_xml_missing_status() {
+        let mut ps = ProtocolState::new(false);
+        let xml = concat!(
+            "<task-notification>\n",
+            "<task-id>t1</task-id>\n",
+            "<summary>Agent completed</summary>\n",
+            "</task-notification>"
+        );
+        let raw = json!({
+            "type": "user",
+            "message": { "content": xml }
+        });
+        let events = ps.map_event(RUN, &raw);
+        assert_eq!(
+            events.len(),
+            0,
+            "should not emit event when status is missing"
+        );
+    }
+
+    #[test]
+    fn test_user_task_notification_xml_missing_optional_fields() {
+        let mut ps = ProtocolState::new(false);
+        let xml = concat!(
+            "<task-notification>\n",
+            "<task-id>t42</task-id>\n",
+            "<status>running</status>\n",
+            "</task-notification>"
+        );
+        let raw = json!({
+            "type": "user",
+            "message": { "content": xml }
+        });
+        let events = ps.map_event(RUN, &raw);
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            BusEvent::TaskNotification {
+                task_id,
+                status,
+                data,
+                ..
+            } => {
+                assert_eq!(task_id, "t42");
+                assert_eq!(status, "running");
+                assert!(
+                    data["tool_use_id"].is_null(),
+                    "missing optional field should be null, not empty string"
+                );
+                assert!(data["summary"].is_null());
+                assert!(data["output_file"].is_null());
+            }
+            other => panic!("expected TaskNotification, got {:?}", other),
         }
     }
 

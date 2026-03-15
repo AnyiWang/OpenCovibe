@@ -104,6 +104,7 @@
     showAuthBadge = true,
     pendingPermission = false,
     hasStash = false,
+    onBtwSend,
     onRestoreStash,
     onShortcutHelp,
     userHistory = [] as string[],
@@ -145,18 +146,29 @@
     showAuthBadge?: boolean; // TODO: remove unused auth props after hero migration
     pendingPermission?: boolean;
     hasStash?: boolean;
+    onBtwSend?: (question: string) => void;
     onRestoreStash?: () => void;
     onShortcutHelp?: () => void;
     userHistory?: string[];
     runId?: string;
   } = $props();
 
+  // ── BTW mode (side question) ──
+  let btwMode = $state(false);
+
+  // Auto-close BTW mode when agent stops running
+  $effect(() => {
+    if (!running) btwMode = false;
+  });
+
   let effectivePlaceholder = $derived(
-    pendingPermission
-      ? t("prompt_pendingPermission")
-      : hasRun
-        ? t("prompt_hasRunPlaceholder")
-        : t("prompt_newPlaceholder"),
+    btwMode
+      ? "Ask a side question..."
+      : pendingPermission
+        ? t("prompt_pendingPermission")
+        : hasRun
+          ? t("prompt_hasRunPlaceholder")
+          : t("prompt_newPlaceholder"),
   );
 
   // ── Git branch (fetched from cwd) ──
@@ -1109,6 +1121,15 @@
           goto(vDef["_navigate"] as string);
           return;
         }
+        // Side question virtual command (/btw <question>)
+        if (vDef && vDef["_action"] === "side-question" && onBtwSend) {
+          if (virtual.args) {
+            inputText = "";
+            if (textareaEl) textareaEl.style.height = "auto";
+            onBtwSend(virtual.args);
+          }
+          return;
+        }
         // Action virtual commands (e.g. /copy → copy-last)
         if (vDef && typeof vDef["_action"] === "string" && onVirtualCommand) {
           inputText = "";
@@ -1163,6 +1184,15 @@
 
     // Reset textarea height
     if (textareaEl) textareaEl.style.height = "auto";
+  }
+
+  function handleBtwSend() {
+    const question = inputText.trim();
+    if (!question || !onBtwSend) return;
+    dbg("prompt", "btwSend", { len: question.length });
+    inputText = "";
+    if (textareaEl) textareaEl.style.height = "auto";
+    onBtwSend(question);
   }
 
   async function processFiles(files: FileList | File[]) {
@@ -1913,8 +1943,10 @@
 
   <!-- Unified input container -->
   <div
-    class="rounded-xl border bg-background shadow-sm transition-colors {currentMode.borderCls ||
-      'border-border focus-within:border-ring/50 focus-within:shadow-[0_0_0_1px_hsl(var(--ring)/0.15)]'}"
+    class="rounded-xl border bg-background shadow-sm transition-colors {btwMode
+      ? 'border-blue-500/50 shadow-[0_0_0_1px_rgba(59,130,246,0.15)]'
+      : currentMode.borderCls ||
+        'border-border focus-within:border-ring/50 focus-within:shadow-[0_0_0_1px_hsl(var(--ring)/0.15)]'}"
   >
     {#if pendingPermission}
       <div
@@ -2168,11 +2200,54 @@
 
         {#if running && onInterrupt}
           {#if canSend}
-            <!-- Mid-turn send: allow injecting a message while agent is running -->
+            {#if btwMode}
+              <!-- BTW send: blue theme -->
+              <button
+                class="flex h-7 w-7 items-center justify-center rounded-lg transition-colors bg-blue-500 text-white hover:bg-blue-600"
+                onclick={handleBtwSend}
+                title="Send side question"
+              >
+                <svg
+                  class="h-4 w-4"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <path d="M5 12h14" /><path d="m12 5 7 7-7 7" />
+                </svg>
+              </button>
+            {:else}
+              <!-- Mid-turn send: allow injecting a message while agent is running -->
+              <button
+                class="flex h-7 w-7 items-center justify-center rounded-lg transition-colors bg-primary text-primary-foreground hover:bg-primary/90"
+                onclick={handleSend}
+                title={t("prompt_send")}
+              >
+                <svg
+                  class="h-4 w-4"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <path d="M5 12h14" /><path d="m12 5 7 7-7 7" />
+                </svg>
+              </button>
+            {/if}
+          {/if}
+          <!-- BTW toggle button (only during running) -->
+          {#if onBtwSend}
             <button
-              class="flex h-7 w-7 items-center justify-center rounded-lg transition-colors bg-primary text-primary-foreground hover:bg-primary/90"
-              onclick={handleSend}
-              title={t("prompt_send")}
+              onclick={() => (btwMode = !btwMode)}
+              title="Side question (btw)"
+              class="flex h-7 w-7 items-center justify-center rounded-lg transition-colors {btwMode
+                ? 'text-blue-500 bg-blue-500/10'
+                : 'text-muted-foreground/60 hover:text-foreground hover:bg-accent'}"
             >
               <svg
                 class="h-4 w-4"
@@ -2183,7 +2258,7 @@
                 stroke-linecap="round"
                 stroke-linejoin="round"
               >
-                <path d="M5 12h14" /><path d="m12 5 7 7-7 7" />
+                <path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z" />
               </svg>
             </button>
           {/if}

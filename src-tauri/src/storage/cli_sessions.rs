@@ -314,6 +314,9 @@ impl TranscriptImporter {
             if text.contains("<command-name>") {
                 return false;
             }
+            if text.contains("<task-notification>") && text.contains("</task-notification>") {
+                return false;
+            }
             return true;
         }
         false
@@ -801,6 +804,14 @@ fn build_imported_index() -> HashMap<(String, String), String> {
     index
 }
 
+/// Check if a user message's text content is a candidate for "first prompt" extraction.
+/// Returns false for CLI-injected XML messages (command output, slash commands, task notifications).
+fn is_first_prompt_text(text: &str) -> bool {
+    !(text.starts_with("<local-command-stdout>")
+        || text.contains("<command-name>")
+        || text.contains("<task-notification>") && text.contains("</task-notification>"))
+}
+
 fn extract_summary(
     path: &Path,
     size: u64,
@@ -874,7 +885,7 @@ fn extract_summary(
         if first_prompt.is_none() && json_val.get("type").and_then(|v| v.as_str()) == Some("user") {
             let message = json_val.get("message").unwrap_or(&json_val);
             if let Some(text) = message.get("content").and_then(|v| v.as_str()) {
-                if !text.starts_with("<local-command-stdout>") && !text.contains("<command-name>") {
+                if is_first_prompt_text(text) {
                     let truncated = if text.len() > 200 {
                         let end = text.floor_char_boundary(200);
                         format!("{}...", &text[..end])
@@ -1097,9 +1108,7 @@ pub fn import_session(
             if first_prompt.is_empty() && etype == "user" {
                 let message = json_val.get("message").unwrap_or(&json_val);
                 if let Some(text) = message.get("content").and_then(|v| v.as_str()) {
-                    if !text.starts_with("<local-command-stdout>")
-                        && !text.contains("<command-name>")
-                    {
+                    if is_first_prompt_text(text) {
                         first_prompt = if text.len() > 200 {
                             let end = text.floor_char_boundary(200);
                             format!("{}...", &text[..end])
@@ -1827,12 +1836,44 @@ mod tests {
         });
         assert!(!TranscriptImporter::is_real_user_prompt(&slash));
 
+        // Task notification
+        let task_notif = json!({
+            "type": "user",
+            "message": {"content": "<task-notification>\n<task-id>t1</task-id>\n<status>completed</status>\n</task-notification>"}
+        });
+        assert!(!TranscriptImporter::is_real_user_prompt(&task_notif));
+
         // Array content (not a real prompt)
         let array = json!({
             "type": "user",
             "message": {"content": [{"type": "tool_result"}]}
         });
         assert!(!TranscriptImporter::is_real_user_prompt(&array));
+    }
+
+    #[test]
+    fn test_is_first_prompt_text() {
+        // Real user prompts → true
+        assert!(is_first_prompt_text("Hello, help me fix a bug"));
+        assert!(is_first_prompt_text("Implement a new feature"));
+
+        // Command output → false
+        assert!(!is_first_prompt_text(
+            "<local-command-stdout>$ ls\nfile.txt</local-command-stdout>"
+        ));
+
+        // Slash command → false
+        assert!(!is_first_prompt_text("<command-name>/cost</command-name>"));
+
+        // Task notification → false
+        assert!(!is_first_prompt_text(
+            "<task-notification>\n<task-id>t1</task-id>\n<status>completed</status>\n</task-notification>"
+        ));
+
+        // Only open tag without close → true (user discussing XML, not a real notification)
+        assert!(is_first_prompt_text(
+            "The <task-notification> tag is used for..."
+        ));
     }
 
     #[test]

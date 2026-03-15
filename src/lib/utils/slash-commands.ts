@@ -21,6 +21,7 @@ const KNOWN_COMMAND_DESCRIPTIONS: Record<string, string> = {
   fork: "Create a fork of the current conversation at this point",
   help: "Show help and available commands",
   hooks: "Manage hook configurations for tool events",
+  plugin: "Manage plugins, skills, MCP servers, and hooks",
   ide: "Manage IDE integrations and show status",
   init: "Initialize a new CLAUDE.md file with codebase documentation",
   insights: "View AI insights",
@@ -45,6 +46,15 @@ const KNOWN_COMMAND_DESCRIPTIONS: Record<string, string> = {
   usage: "Show plan usage limits",
   vim: "Toggle between Vim and Normal editing modes",
   "add-dir": "Add a directory to the workspace",
+  btw: "Ask a side question without interrupting the current task",
+  loop: "Run a prompt or slash command on a recurring interval",
+};
+
+// ── Fallback argumentHints for known CLI commands ──
+// Some CLI commands need argumentHint to prevent immediate execution.
+// Unlike VIRTUAL_COMMANDS, these only apply when CLI actually returns the command.
+const KNOWN_ARGUMENT_HINTS: Record<string, string> = {
+  loop: "[interval] <prompt>",
 };
 
 /** Marker for context-cleared separators. Used by reducer, renderer, and dimming logic. */
@@ -178,6 +188,35 @@ export const VIRTUAL_COMMANDS: CliCommand[] = [
     _virtual: true,
     _action: "open-permissions",
   },
+  {
+    name: "plugin",
+    description: "Manage plugins, skills, MCP servers, and hooks",
+    aliases: ["plugins"],
+    _virtual: true,
+    _navigate: "/plugins",
+  },
+  {
+    name: "btw",
+    description: "Ask a side question without interrupting the current task",
+    aliases: [],
+    _virtual: true,
+    _action: "side-question",
+    argumentHint: "<question>",
+  },
+  {
+    name: "stickers",
+    description: "Get Claude Code stickers",
+    aliases: ["sticker"],
+    _virtual: true,
+    _action: "open-stickers",
+  },
+  {
+    name: "keybindings",
+    description: "Open keybindings settings",
+    aliases: [],
+    _virtual: true,
+    _navigate: "/settings?tab=shortcuts",
+  },
 ];
 
 /**
@@ -190,13 +229,18 @@ export function mergeWithVirtual(cliCommands: CliCommand[]): CliCommand[] {
   const cliMap = new Map(cliCommands.map((c) => [c.name, c]));
   const result = cliCommands.map((c) => {
     const virtual = VIRTUAL_COMMANDS.find((v) => v.name === c.name);
-    const merged = virtual
+    let merged = virtual
       ? { ...virtual, ...c, _virtual: true, _enum: virtual["_enum"] ?? false }
       : c;
     // Apply fallback description if empty (works for both virtual-merged and plain CLI commands)
     if (!merged.description) {
       const fallback = KNOWN_COMMAND_DESCRIPTIONS[merged.name];
-      if (fallback) return { ...merged, description: fallback };
+      if (fallback) merged = { ...merged, description: fallback };
+    }
+    // Apply fallback argumentHint if missing (prevents immediate execution for commands that need args)
+    const hintFallback = KNOWN_ARGUMENT_HINTS[merged.name];
+    if (hintFallback && !merged["argumentHint"]) {
+      merged = { ...merged, argumentHint: hintFallback };
     }
     return merged;
   });
@@ -242,9 +286,11 @@ export type CommandInteraction = "immediate" | "free-text" | "enum";
 /** Classify how a command should be interacted with in the slash menu. */
 export function getCommandInteraction(cmd: CliCommand): CommandInteraction {
   if (cmd["_enum"] === true) return "enum";
+  // Action commands with required arguments (e.g. /btw <question>) need free-text input
+  const hint = cmd["argumentHint"];
+  if (cmd["_action"] && typeof hint === "string" && hint.startsWith("<")) return "free-text";
   // Virtual action commands execute immediately (args are optional)
   if (cmd["_action"]) return "immediate";
-  const hint = cmd["argumentHint"];
   if (typeof hint === "string" && hint.trim().length > 0) return "free-text";
   return "immediate";
 }
@@ -341,6 +387,8 @@ const COMMAND_CATEGORY_MAP: Record<string, SlashCategory> = {
   cost: "session",
   resume: "session",
   fork: "session",
+  btw: "session",
+  loop: "session",
   copy: "session",
   fast: "session",
   files: "session",
@@ -369,6 +417,7 @@ const COMMAND_CATEGORY_MAP: Record<string, SlashCategory> = {
   color: "config",
   keybindings: "config",
   hooks: "config",
+  plugin: "config",
   ide: "config",
   "add-dir": "config",
   // Help
