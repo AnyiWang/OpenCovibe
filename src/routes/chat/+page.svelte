@@ -198,6 +198,16 @@
       ),
   );
 
+  // ── BTW side question ──
+  let btwState = $state<{
+    active: boolean;
+    btwId: string | null;
+    question: string;
+    answer: string;
+    error: string | null;
+    loading: boolean;
+  }>({ active: false, btwId: null, question: "", answer: "", error: null, loading: false });
+
   // ── Shortcut help panel ──
   let shortcutHelpOpen = $state(false);
   let statusBarRef: SessionStatusBar | undefined = $state();
@@ -1321,6 +1331,41 @@
     };
   });
 
+  // ── BTW event listeners ──
+  // NOTE: Don't filter by btw_id — events may arrive before the IPC call returns
+  // the btw_id (race condition). Only one BTW is active at a time, so checking
+  // btwState.active is sufficient.
+  onMount(() => {
+    const transport = getTransport();
+    const deltaUnlisten = transport.listen<import("$lib/types").BtwDelta>("btw-delta", (ev) => {
+      if (btwState.active) {
+        dbg("chat", "btw-delta", { len: ev.text.length });
+        btwState.answer += ev.text;
+      }
+    });
+    const completeUnlisten = transport.listen<import("$lib/types").BtwComplete>(
+      "btw-complete",
+      (ev) => {
+        if (btwState.active) {
+          dbg("chat", "btw-complete", { btwId: ev.btw_id });
+          btwState.loading = false;
+        }
+      },
+    );
+    const errorUnlisten = transport.listen<import("$lib/types").BtwError>("btw-error", (ev) => {
+      if (btwState.active) {
+        dbgWarn("chat", "btw-error", { error: ev.error });
+        btwState.error = ev.error;
+        btwState.loading = false;
+      }
+    });
+    return () => {
+      deltaUnlisten.then((f) => f());
+      completeUnlisten.then((f) => f());
+      errorUnlisten.then((f) => f());
+    };
+  });
+
   // Auto-scroll chat (only when user is near bottom)
   let prevTl = 0;
   let prevSt = 0;
@@ -1941,6 +1986,19 @@
     }
   }
 
+  async function handleBtwSend(question: string) {
+    if (!store.run?.id) return;
+    dbg("chat", "btwSend", { runId: store.run.id, question: question.slice(0, 50) });
+    btwState = { active: true, btwId: null, question, answer: "", error: null, loading: true };
+    try {
+      const btwId = await api.sideQuestion(store.run.id, question);
+      btwState.btwId = btwId;
+    } catch (e) {
+      btwState.error = String(e);
+      btwState.loading = false;
+    }
+  }
+
   async function handleVirtualCommand(action: string, args: string) {
     dbg("chat", "virtualCommand", { action, args });
     if (action === "copy-last") {
@@ -2301,6 +2359,17 @@
       }
     } else if (action === "open-permissions") {
       window.dispatchEvent(new CustomEvent("ocv:open-permissions"));
+    } else if (action === "open-stickers") {
+      const url = "https://www.stickermule.com/claudecode";
+      dbg("chat", "open-stickers", { url });
+      try {
+        const { open } = await import("@tauri-apps/plugin-shell");
+        await open(url);
+      } catch (err) {
+        dbgWarn("chat", "open-stickers: plugin-shell failed, fallback", err);
+        window.open(url, "_blank");
+      }
+      appendCommandOutput("Opening sticker page in browser…");
     }
   }
 
@@ -3961,6 +4030,48 @@
       />
     {/if}
 
+    <!-- BTW side question drawer -->
+    {#if btwState.active}
+      <div
+        class="border-t border-blue-500/30 bg-blue-500/5"
+        style="max-height: 40vh; overflow-y: auto;"
+      >
+        <div class="flex items-center justify-between px-4 py-2 border-b border-border/50">
+          <span class="text-xs font-medium text-blue-400">BTW</span>
+          <button
+            onclick={() => (btwState = { ...btwState, active: false })}
+            title="Close side question"
+            class="text-muted-foreground hover:text-foreground transition-colors"
+          >
+            <svg
+              class="h-3.5 w-3.5"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path d="M18 6 6 18" /><path d="m6 6 12 12" />
+            </svg>
+          </button>
+        </div>
+        <div class="px-4 py-3 space-y-2">
+          <p class="text-xs text-muted-foreground">Q: {btwState.question}</p>
+          <div class="text-sm">
+            {#if btwState.error}
+              <p class="text-destructive">{btwState.error}</p>
+            {:else if btwState.answer}
+              <MarkdownContent text={btwState.answer} streaming={btwState.loading} />
+            {/if}
+            {#if btwState.loading}
+              <span class="inline-block w-2 h-4 bg-blue-400 animate-pulse rounded-sm"></span>
+            {/if}
+          </div>
+        </div>
+      </div>
+    {/if}
+
     <!-- Input bar -->
     {#if !store.ptySpawned || store.sessionAlive}
       <PromptInput
@@ -3985,6 +4096,7 @@
         platformId={store.platformId ?? "anthropic"}
         platformCredentials={settings?.platform_credentials ?? []}
         onSend={sendMessage}
+        onBtwSend={handleBtwSend}
         onAgentChange={undefined}
         onInterrupt={() => store.interrupt()}
         onModelSwitch={handleModelChange}

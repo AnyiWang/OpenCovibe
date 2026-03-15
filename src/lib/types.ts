@@ -1278,6 +1278,19 @@ export interface PlatformCredential {
   extra_env?: Record<string, string>;
 }
 
+/** BTW side question streaming events (from Tauri) */
+export interface BtwDelta {
+  btw_id: string;
+  text: string;
+}
+export interface BtwComplete {
+  btw_id: string;
+}
+export interface BtwError {
+  btw_id: string;
+  error: string;
+}
+
 export interface AgentDefinitionSummary {
   file_name: string;
   name: string;

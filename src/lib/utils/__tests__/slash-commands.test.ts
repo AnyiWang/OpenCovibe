@@ -1026,3 +1026,112 @@ describe("/clear virtual command", () => {
     expect(parseVirtualAction("/clear")).toEqual({ name: "clear", args: "" });
   });
 });
+
+// ── /plugin virtual command ──
+
+describe("/plugin virtual command", () => {
+  it("parseVirtualAction recognizes /plugin", () => {
+    expect(parseVirtualAction("/plugin")).toEqual({ name: "plugin", args: "" });
+  });
+
+  it("parseVirtualAction recognizes /plugins alias", () => {
+    expect(parseVirtualAction("/plugins")).toEqual({ name: "plugin", args: "" });
+  });
+
+  it("VIRTUAL_COMMANDS includes plugin with _navigate", () => {
+    const cmd = VIRTUAL_COMMANDS.find((c) => c.name === "plugin");
+    expect(cmd).toBeDefined();
+    expect(cmd!["_navigate"]).toBe("/plugins");
+  });
+
+  it('getCommandCategory returns "config" for plugin', () => {
+    expect(getCommandCategory("plugin")).toBe("config");
+  });
+
+  it("mergeWithVirtual appends /plugin when not in CLI", () => {
+    const cli: CliCommand[] = [{ name: "compact", description: "Compact", aliases: [] }];
+    const merged = mergeWithVirtual(cli);
+    const cmd = merged.find((c) => c.name === "plugin");
+    expect(cmd).toBeDefined();
+    expect(cmd!["_virtual"]).toBe(true);
+    expect(cmd!["_navigate"]).toBe("/plugins");
+  });
+
+  it("mergeWithVirtual merges when CLI also provides plugin", () => {
+    const cli: CliCommand[] = [{ name: "plugin", description: "CLI plugin manager", aliases: [] }];
+    const merged = mergeWithVirtual(cli);
+    const cmd = merged.find((c) => c.name === "plugin")!;
+    expect(cmd["_virtual"]).toBe(true);
+    expect(cmd["_navigate"]).toBe("/plugins");
+    expect(cmd.description).toBe("CLI plugin manager");
+  });
+
+  it('getCommandInteraction returns "immediate" for /plugin', () => {
+    const cmd = VIRTUAL_COMMANDS.find((c) => c.name === "plugin")!;
+    expect(getCommandInteraction(cmd)).toBe("immediate");
+  });
+});
+
+// ── /btw virtual command ──
+
+describe("/btw virtual command", () => {
+  it("parseVirtualAction recognizes /btw with question", () => {
+    expect(parseVirtualAction("/btw what does this do?")).toEqual({
+      name: "btw",
+      args: "what does this do?",
+    });
+  });
+
+  it("parseVirtualAction recognizes /btw without args", () => {
+    expect(parseVirtualAction("/btw")).toEqual({ name: "btw", args: "" });
+  });
+
+  it("VIRTUAL_COMMANDS includes btw with _action", () => {
+    const cmd = VIRTUAL_COMMANDS.find((c) => c.name === "btw");
+    expect(cmd).toBeDefined();
+    expect(cmd!["_action"]).toBe("side-question");
+  });
+
+  it('getCommandCategory returns "session" for btw', () => {
+    expect(getCommandCategory("btw")).toBe("session");
+  });
+
+  it('getCommandInteraction returns "free-text" for /btw', () => {
+    const cmd = VIRTUAL_COMMANDS.find((c) => c.name === "btw")!;
+    expect(getCommandInteraction(cmd)).toBe("free-text");
+  });
+});
+
+// ── /loop command (CLI slash command with argumentHint overlay) ──
+
+describe("/loop command", () => {
+  it("mergeWithVirtual applies argumentHint to CLI loop command", () => {
+    // Simulate CLI returning loop without argumentHint (as observed)
+    const merged = mergeWithVirtual([{ name: "loop", description: "", aliases: [] }]);
+    const cmd = merged.find((c) => c.name === "loop");
+    expect(cmd?.["argumentHint"]).toBe("[interval] <prompt>");
+  });
+
+  it("mergeWithVirtual applies fallback description to CLI loop command", () => {
+    const merged = mergeWithVirtual([{ name: "loop", description: "", aliases: [] }]);
+    const cmd = merged.find((c) => c.name === "loop");
+    expect(cmd?.description).toContain("recurring");
+  });
+
+  it('getCommandInteraction returns "free-text" for loop with hint', () => {
+    const merged = mergeWithVirtual([{ name: "loop", description: "", aliases: [] }]);
+    const cmd = merged.find((c) => c.name === "loop")!;
+    expect(getCommandInteraction(cmd)).toBe("free-text");
+  });
+
+  it("loop does NOT appear when CLI does not return it", () => {
+    // Simulate CLI without loop (feature flag off)
+    const merged = mergeWithVirtual([{ name: "compact", description: "Compact", aliases: [] }]);
+    const cmd = merged.find((c) => c.name === "loop");
+    expect(cmd).toBeUndefined();
+  });
+
+  it('getCommandCategory returns "session" for loop', () => {
+    expect(getCommandCategory("loop")).toBe("session");
+  });
+});

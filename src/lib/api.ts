@@ -497,6 +497,11 @@ export async function forkSession(runId: string): Promise<string> {
   return invoke<string>("fork_session", { runId });
 }
 
+export async function sideQuestion(runId: string, question: string): Promise<string> {
+  dbg("api", "sideQuestion", { runId, question: question.slice(0, 50) });
+  return invoke<string>("side_question", { runId, question });
+}
+
 export async function approveSessionTool(runId: string, toolName: string): Promise<void> {
   dbg("api", "approveSessionTool", { runId, toolName });
   return invoke("approve_session_tool", { runId, toolName });
