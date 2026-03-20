@@ -459,7 +459,7 @@ pub(crate) async fn start_session_impl(
     // 2. Read settings and build unified adapter settings
     let agent_settings = storage::settings::get_agent_settings(&meta.agent);
     let user_settings = storage::settings::get_user_settings();
-    let adapter_settings =
+    let mut adapter_settings =
         adapter::build_adapter_settings(&agent_settings, &user_settings, meta.model.clone());
 
     // 2b. Resolve remote host from RunMeta (audit #2: single truth source)
@@ -472,6 +472,12 @@ pub(crate) async fn start_session_impl(
         platform_id.as_deref().or(meta.platform_id.as_deref())
     };
     let resolved = resolve_auth_env_for_platform(&remote, &user_settings, effective_pid);
+    adapter::clear_model_if_provider_overrides(
+        &mut adapter_settings,
+        &meta.model,
+        &agent_settings.model,
+        &resolved.default_model,
+    );
     let resolved = augment_with_shell_auth(
         resolved,
         &user_settings.auth_mode,
@@ -901,7 +907,7 @@ pub(crate) async fn fork_session_impl(
     // 6. Build adapter settings + resolve remote (audit #3)
     let agent_settings = storage::settings::get_agent_settings(&source.agent);
     let user_settings = storage::settings::get_user_settings();
-    let adapter = adapter::build_adapter_settings(&agent_settings, &user_settings, None);
+    let mut adapter = adapter::build_adapter_settings(&agent_settings, &user_settings, None);
     let remote = resolve_remote_host(&source)?;
     // CLI Auth mode: ignore platform_id — CLI manages its own connection
     let effective_pid = if user_settings.auth_mode == "cli" {
@@ -910,6 +916,12 @@ pub(crate) async fn fork_session_impl(
         source.platform_id.as_deref()
     };
     let resolved = resolve_auth_env_for_platform(&remote, &user_settings, effective_pid);
+    adapter::clear_model_if_provider_overrides(
+        &mut adapter,
+        &None, // fork has no UI model override
+        &agent_settings.model,
+        &resolved.default_model,
+    );
     let resolved = augment_with_shell_auth(
         resolved,
         &user_settings.auth_mode,
@@ -1042,7 +1054,7 @@ pub(crate) async fn approve_session_tool_impl(
 
     let refreshed_agent = storage::settings::get_agent_settings(&meta.agent);
     let user = storage::settings::get_user_settings();
-    let adapter = adapter::build_adapter_settings(&refreshed_agent, &user, None);
+    let mut adapter = adapter::build_adapter_settings(&refreshed_agent, &user, None);
     // CLI Auth mode: ignore platform_id — CLI manages its own connection
     let effective_pid = if user.auth_mode == "cli" {
         None
@@ -1050,6 +1062,12 @@ pub(crate) async fn approve_session_tool_impl(
         meta.platform_id.as_deref()
     };
     let resolved = resolve_auth_env_for_platform(&remote, &user, effective_pid);
+    adapter::clear_model_if_provider_overrides(
+        &mut adapter,
+        &None,
+        &refreshed_agent.model,
+        &resolved.default_model,
+    );
     let resolved = augment_with_shell_auth(resolved, &user.auth_mode, remote.is_some(), &meta.cwd);
 
     // 4. Preflight — before killing old actor so session can recover on failure
@@ -1781,7 +1799,13 @@ pub async fn side_question(
 
     // Add adapter flags (model overrides, etc.)
     let agent_settings = storage::settings::get_agent_settings(&source.agent);
-    let adapter = adapter::build_adapter_settings(&agent_settings, &user_settings, None);
+    let mut adapter = adapter::build_adapter_settings(&agent_settings, &user_settings, None);
+    adapter::clear_model_if_provider_overrides(
+        &mut adapter,
+        &None,
+        &agent_settings.model,
+        &resolved.default_model,
+    );
     let flag_args = adapter::build_settings_args(&adapter, false);
     claude_args.extend(flag_args.iter().cloned());
 

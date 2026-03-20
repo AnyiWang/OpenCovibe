@@ -1037,6 +1037,8 @@ export type TimelineEntry =
   | {
       kind: "user";
       id: string;
+      /** Stable anchor for DOM id and search scroll-to. */
+      anchorId: string;
       content: string;
       ts: string;
       attachments?: Attachment[];
@@ -1045,14 +1047,22 @@ export type TimelineEntry =
   | {
       kind: "assistant";
       id: string;
+      anchorId: string;
       content: string;
       ts: string;
       thinkingText?: string;
       model?: string;
     }
-  | { kind: "tool"; id: string; tool: BusToolItem; ts: string; subTimeline?: TimelineEntry[] }
-  | { kind: "separator"; id: string; content: string; ts: string }
-  | { kind: "command_output"; id: string; content: string; ts: string };
+  | {
+      kind: "tool";
+      id: string;
+      anchorId: string;
+      tool: BusToolItem;
+      ts: string;
+      subTimeline?: TimelineEntry[];
+    }
+  | { kind: "separator"; id: string; anchorId: string; content: string; ts: string }
+  | { kind: "command_output"; id: string; anchorId: string; content: string; ts: string };
 
 // ── App Updates ──
 
@@ -1093,7 +1103,8 @@ export type HookEventType =
   | "InstructionsLoaded"
   | "Elicitation"
   | "ElicitationResult"
-  | "PostCompact";
+  | "PostCompact"
+  | "StopFailure";
 
 export interface HookHandler {
   type: "command" | "prompt";
@@ -1180,6 +1191,8 @@ export interface PromptSearchResult {
   matchedText: string;
   matchedSeq: number;
   matchedTs: string;
+  /** Stable event ID for scroll-to anchor (uuid or message_id). */
+  matchedEventId?: string;
   isFavorite: boolean;
 }
 

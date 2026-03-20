@@ -23,6 +23,24 @@ export function truncate(text: string, maxLen: number): string {
   return text.slice(0, maxLen) + "\u2026";
 }
 
+/** Return a snippet of `text` centered on the first occurrence of `query`. */
+export function snippetAround(text: string, query: string, maxLen: number): string {
+  // Collapse whitespace (newlines, tabs) so the snippet is single-line
+  const flat = text.replace(/\s+/g, " ");
+  if (flat.length <= maxLen) return flat;
+  const lower = flat.toLowerCase();
+  const idx = lower.indexOf(query.toLowerCase());
+  if (idx < 0) return flat.slice(0, maxLen) + "\u2026";
+  const half = Math.floor((maxLen - query.length) / 2);
+  let start = Math.max(0, idx - half);
+  const end = Math.min(flat.length, start + maxLen);
+  if (end - start < maxLen) start = Math.max(0, end - maxLen);
+  let result = flat.slice(start, end);
+  if (start > 0) result = "\u2026" + result;
+  if (end < flat.length) result += "\u2026";
+  return result;
+}
+
 export function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;

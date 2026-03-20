@@ -1630,6 +1630,9 @@ pub struct PromptSearchResult {
     pub matched_text: String,
     pub matched_seq: u64,
     pub matched_ts: String,
+    /// Stable event ID: uuid (user_message) or message_id (message_complete).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub matched_event_id: Option<String>,
     pub is_favorite: bool,
 }
 

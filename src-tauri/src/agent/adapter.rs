@@ -53,6 +53,30 @@ fn map_permission_mode(mode: &str) -> String {
     }
 }
 
+/// When a third-party provider supplies a default model (injected as `ANTHROPIC_MODEL` env var),
+/// clear `adapter.model` if it only came from the `user.default_model` fallback.
+/// This prevents the `--model` CLI flag from overriding the provider's env var.
+/// Explicit choices (UI model_override or agent config) are preserved.
+pub fn clear_model_if_provider_overrides(
+    adapter: &mut AdapterSettings,
+    model_override: &Option<String>,
+    agent_model: &Option<String>,
+    provider_default_model: &Option<String>,
+) {
+    if provider_default_model.is_none() {
+        return;
+    }
+    let has_explicit_ui = model_override.as_ref().is_some_and(|m| !m.is_empty());
+    let has_explicit_agent = agent_model.as_ref().is_some_and(|m| !m.is_empty());
+    if !has_explicit_ui && !has_explicit_agent {
+        log::debug!(
+            "[adapter] provider has default_model, clearing --model flag (was {:?}) to let ANTHROPIC_MODEL env var take effect",
+            adapter.model
+        );
+        adapter.model = None;
+    }
+}
+
 /// Build a unified `AdapterSettings` from agent + user settings.
 /// Agent-level settings take priority over user-level.
 /// `model_override` (from UI per-message) takes highest priority.

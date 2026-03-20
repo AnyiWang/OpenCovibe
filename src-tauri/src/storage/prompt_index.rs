@@ -23,6 +23,9 @@ pub struct PromptEntry {
     pub seq: u64,
     pub ts: String,
     pub text: String,
+    /// Stable event ID: uuid (user_message) or message_id (message_complete).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_id: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -129,6 +132,15 @@ fn scan_events_file(run_id: &str, events_path: &Path) -> Vec<PromptEntry> {
             if let Some(inner) = event.get("event") {
                 let inner_type = inner.get("type").and_then(|v| v.as_str()).unwrap_or("");
                 if inner_type == "user_message" || inner_type == "message_complete" {
+                    // Skip sub-messages (subagent output) — no top-level anchor
+                    if inner_type == "message_complete"
+                        && inner
+                            .get("parent_tool_use_id")
+                            .and_then(|v| v.as_str())
+                            .is_some()
+                    {
+                        continue;
+                    }
                     if let Some(text) = inner.get("text").and_then(|t| t.as_str()) {
                         if text.is_empty() {
                             continue;
@@ -144,11 +156,23 @@ fn scan_events_file(run_id: &str, events_path: &Path) -> Vec<PromptEntry> {
                         } else {
                             text.to_string()
                         };
+                        // Extract stable event ID
+                        let event_id = match inner_type {
+                            "user_message" => {
+                                inner.get("uuid").and_then(|v| v.as_str()).map(String::from)
+                            }
+                            "message_complete" => inner
+                                .get("message_id")
+                                .and_then(|v| v.as_str())
+                                .map(String::from),
+                            _ => None,
+                        };
                         entries.push(PromptEntry {
                             run_id: run_id.to_string(),
                             seq,
                             ts,
                             text: truncated,
+                            event_id,
                         });
                     }
                 }
@@ -180,6 +204,7 @@ fn scan_events_file(run_id: &str, events_path: &Path) -> Vec<PromptEntry> {
                     seq,
                     ts,
                     text: truncated,
+                    event_id: None, // legacy format has no stable ID
                 });
             }
         }
@@ -320,7 +345,7 @@ pub fn build_or_update_index() -> Result<Vec<PromptEntry>, String> {
 /// Current manifest version.  Bump this when the scanning logic changes
 /// so that existing on-disk manifests are treated as stale and all runs
 /// are re-scanned.
-const MANIFEST_VERSION: u32 = 2;
+const MANIFEST_VERSION: u32 = 3;
 
 fn load_manifest() -> Manifest {
     let path = manifest_path();

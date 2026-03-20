@@ -230,6 +230,7 @@ pub async fn search_prompts(
                     matched_text: entry.text,
                     matched_seq: entry.seq,
                     matched_ts: entry.ts,
+                    matched_event_id: entry.event_id,
                     is_favorite: fav_set.contains(&(entry.run_id, entry.seq)),
                 })
             })

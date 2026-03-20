@@ -281,6 +281,7 @@
   "sidebar_tasks": "{count} 个任务",
   "sidebar_uncategorized": "未分类",
   "sidebar_conversations": "{count} 个对话",
+  "sidebar_newChatInFolder": "新对话",
   "sidebar_showMore": "显示更多 ({count})...",
   "sidebar_deleteConfirm": "删除对话",
   "sidebar_deleteDesc": "对话将从侧边栏移除，数据保留在磁盘上，后续可恢复。",

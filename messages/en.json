@@ -281,6 +281,7 @@
   "sidebar_tasks": "{count} tasks",
   "sidebar_uncategorized": "Uncategorized",
   "sidebar_conversations": "{count} conversations",
+  "sidebar_newChatInFolder": "New chat",
   "sidebar_showMore": "Show {count} more...",
   "sidebar_deleteConfirm": "Delete conversation",
   "sidebar_deleteDesc": "This conversation will be removed from the sidebar. Data is kept on disk and can be restored later.",

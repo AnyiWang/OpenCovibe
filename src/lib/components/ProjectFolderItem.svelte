@@ -22,6 +22,7 @@
     onSelectConversation: (runId: string) => void;
     onResume: (runId: string, mode: "resume") => void;
     onDelete?: (conversation: ConversationGroup) => void;
+    onNewChat?: () => void;
   };
 
   type CustomProps = BaseProps & {
@@ -44,6 +45,7 @@
     onSelectConversation,
     onResume,
     onDelete,
+    onNewChat,
   }: ChatProps | CustomProps = $props();
 
   let visibleCount = $state(PAGE_SIZE);
@@ -207,6 +209,26 @@
       {#if children}
         {@render children()}
       {:else}
+        {#if onNewChat}
+          <button
+            class="flex w-full items-center gap-1.5 px-3 py-1 text-xs text-muted-foreground hover:text-sidebar-foreground hover:bg-sidebar-accent/50 rounded-md transition-colors"
+            onclick={(e) => {
+              e.stopPropagation();
+              onNewChat?.();
+            }}
+          >
+            <svg
+              class="h-3 w-3 shrink-0"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"><path d="M12 5v14" /><path d="M5 12h14" /></svg
+            >
+            <span>{t("sidebar_newChatInFolder")}</span>
+          </button>
+        {/if}
         {#each visibleConversations as conv (conv.groupKey)}
           <ConversationItem
             conversation={conv}

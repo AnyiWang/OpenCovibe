@@ -67,6 +67,19 @@ function eventTs(ev: BusEvent): string {
   return (r.ts as string) ?? (r.timestamp as string) ?? new Date().toISOString();
 }
 
+/** Backfill anchorId for old snapshots/entries that predate the anchor system. Recursive for subTimelines. */
+function backfillAnchorId(entry: TimelineEntry): TimelineEntry {
+  const e = entry as Record<string, unknown>;
+  if (e.anchorId) return entry; // already has anchorId
+  const anchor = (e.cliUuid as string) || (e.id as string);
+  const patched = { ...entry, anchorId: anchor } as TimelineEntry;
+  if (patched.kind === "tool" && patched.subTimeline) {
+    (patched as { subTimeline: TimelineEntry[] }).subTimeline =
+      patched.subTimeline.map(backfillAnchorId);
+  }
+  return patched;
+}
+
 /** Parse event timestamp to epoch milliseconds (falls back to Date.now()). */
 function eventTsMs(ev: BusEvent): number {
   const iso = eventTs(ev);
@@ -807,10 +820,17 @@ export class SessionStore {
       // Create new synthetic entry
       const entry: TimelineEntry =
         field === "content"
-          ? { kind: "assistant", id: syntheticId, content: text, ts: new Date().toISOString() }
+          ? {
+              kind: "assistant",
+              id: syntheticId,
+              anchorId: syntheticId,
+              content: text,
+              ts: new Date().toISOString(),
+            }
           : {
               kind: "assistant",
               id: syntheticId,
+              anchorId: syntheticId,
               content: "",
               thinkingText: text,
               ts: new Date().toISOString(),
@@ -1257,7 +1277,8 @@ export class SessionStore {
       }
 
       // A group
-      this.timeline = obj.timeline as TimelineEntry[];
+      // Backfill anchorId for old snapshots that predate the anchor system
+      this.timeline = (obj.timeline as TimelineEntry[]).map(backfillAnchorId);
       this.tools = (obj.tools ?? []) as HookEvent[];
       this.hookEvents = (obj.hookEvents ?? []) as typeof this.hookEvents;
       this.streamingText = (obj.streamingText as string) ?? "";
@@ -1573,9 +1594,11 @@ export class SessionStore {
         // api.startSession(), but the middleware subscription isn't set up
         // until after goto() triggers the URL $effect.  Content-based dedup
         // in _reduce(user_message) prevents double display.
+        const optId1 = uuid();
         this._pushTimeline(null, {
           kind: "user",
-          id: uuid(),
+          id: optId1,
+          anchorId: optId1,
           content: prompt,
           ts: new Date().toISOString(),
           ...(attachments.length > 0 ? { attachments: timelineAttachments(attachments) } : {}),
@@ -1640,9 +1663,11 @@ export class SessionStore {
         // Optimistic user message — matches the pattern in startSession().
         // Content-based dedup in _reduce(user_message) prevents double display
         // when the backend's UserMessage bus event arrives.
+        const optId2 = uuid();
         this._pushTimeline(null, {
           kind: "user",
-          id: uuid(),
+          id: optId2,
+          anchorId: optId2,
           content: text,
           ts: new Date().toISOString(),
           ...(attachments.length > 0 ? { attachments: timelineAttachments(attachments) } : {}),
@@ -1875,9 +1900,11 @@ export class SessionStore {
       // Must be before startSession IPC so the user sees their message immediately.
       // Backend's UserMessage bus event will be deduped by content match in _reduce.
       if (initialMessage) {
+        const optId3 = uuid();
         this._pushTimeline(null, {
           kind: "user" as const,
-          id: uuid(),
+          id: optId3,
+          anchorId: optId3,
           content: initialMessage,
           ts: new Date().toISOString(),
           ...(attachments && attachments.length > 0
@@ -2475,6 +2502,7 @@ export class SessionStore {
           const entry: TimelineEntry = {
             kind: "assistant",
             id: ev.message_id,
+            anchorId: ev.message_id,
             content: ev.text,
             ts: eventTs(ev),
             ...(ev.model ? { model: ev.model } : {}),
@@ -2514,6 +2542,7 @@ export class SessionStore {
         const entry: TimelineEntry = {
           kind: "assistant",
           id: ev.message_id,
+          anchorId: ev.message_id,
           content: ev.text,
           ts: eventTs(ev),
           ...(ev.model ? { model: ev.model } : {}),
@@ -2545,10 +2574,10 @@ export class SessionStore {
             (e) => e.kind === "user" && e.content === ev.text && !e.cliUuid,
           );
           if (match && match.kind === "user") {
-            // Merge cliUuid from the confirmed backend event into the optimistic entry
+            // Merge cliUuid + anchorId from the confirmed backend event into the optimistic entry
             if (ev.uuid) {
               const idx = tl.indexOf(match);
-              const updated = { ...match, cliUuid: ev.uuid };
+              const updated = { ...match, cliUuid: ev.uuid, anchorId: ev.uuid };
               if (ctx) ctx.tl[idx] = updated;
               else {
                 const u = [...this.timeline];
@@ -2559,9 +2588,11 @@ export class SessionStore {
             break;
           }
         }
+        const newId = uuid();
         const entry: TimelineEntry = {
           kind: "user",
-          id: uuid(),
+          id: newId,
+          anchorId: ev.uuid || newId,
           content: ev.text,
           ts: eventTs(ev),
           ...(ev.uuid ? { cliUuid: ev.uuid } : {}),
@@ -2621,6 +2652,7 @@ export class SessionStore {
             const subEntry: TimelineEntry = {
               kind: "tool",
               id: ev.tool_use_id,
+              anchorId: ev.tool_use_id,
               tool: {
                 tool_use_id: ev.tool_use_id,
                 tool_name: ev.tool_name,
@@ -2641,6 +2673,7 @@ export class SessionStore {
         const tlEntry: TimelineEntry = {
           kind: "tool",
           id: ev.tool_use_id,
+          anchorId: ev.tool_use_id,
           tool: {
             tool_use_id: ev.tool_use_id,
             tool_name: ev.tool_name,
@@ -3066,6 +3099,7 @@ export class SessionStore {
             const tlEntry: TimelineEntry = {
               kind: "tool",
               id: ev.tool_use_id,
+              anchorId: ev.tool_use_id,
               tool: {
                 tool_use_id: ev.tool_use_id,
                 tool_name: ev.tool_name,
@@ -3097,9 +3131,11 @@ export class SessionStore {
           this.compactCount++;
           // Full compaction: insert timeline separator
           const tokensInfo = ev.pre_tokens ? ` (${Math.round(ev.pre_tokens / 1000)}k tokens)` : "";
+          const sepId = uuid();
           const entry: TimelineEntry = {
             kind: "separator",
-            id: uuid(),
+            id: sepId,
+            anchorId: sepId,
             content: `Context compacted${tokensInfo}`,
             ts: eventTs(ev),
           };
@@ -3128,9 +3164,11 @@ export class SessionStore {
           contentLen: ev.content.length,
           hasBatchCtx: !!ctx,
         });
+        const cmdId = uuid();
         const cmdEntry: TimelineEntry = {
           kind: "command_output",
-          id: uuid(),
+          id: cmdId,
+          anchorId: cmdId,
           content: ev.content,
           ts: eventTs(ev),
         };
@@ -3161,9 +3199,11 @@ export class SessionStore {
       case "raw": {
         const rawText = typeof ev.data === "string" ? ev.data : JSON.stringify(ev.data);
         if (rawText && (ev.source === "claude_stdout_text" || ev.source === "claude_stderr")) {
+          const rawId = uuid();
           const entry: TimelineEntry = {
             kind: "assistant",
-            id: uuid(),
+            id: rawId,
+            anchorId: rawId,
             content: `\`[${ev.source}]\` ${rawText}`,
             ts: new Date().toISOString(),
           };
@@ -3388,9 +3428,11 @@ export class SessionStore {
           ev.max_iterations > 0
             ? `Ralph iteration ${ev.iteration}/${ev.max_iterations}`
             : `Ralph iteration ${ev.iteration}`;
+        const iterSepId = uuid();
         this._pushTimeline(ctx, {
           kind: "separator",
-          id: uuid(),
+          id: iterSepId,
+          anchorId: iterSepId,
           content: `🔄 ${iterLabel}`,
           ts: eventTs(ev),
         });
@@ -3408,9 +3450,11 @@ export class SessionStore {
         const reasonText = reasonLabels[ev.reason] ?? ev.reason;
         const completeIcon =
           ev.reason === "cancelled" || ev.reason === "fail_stopped" ? "❌" : "✅";
+        const completeSepId = uuid();
         this._pushTimeline(ctx, {
           kind: "separator",
-          id: uuid(),
+          id: completeSepId,
+          anchorId: completeSepId,
           content: `${completeIcon} Ralph Loop completed · ${ev.iteration} iterations · ${reasonText}`,
           ts: eventTs(ev),
         });

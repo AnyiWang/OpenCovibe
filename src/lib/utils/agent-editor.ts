@@ -10,6 +10,7 @@ export interface AgentFormData {
   disallowedTools: string[];
   permissionMode: string; // "default" | "acceptEdits" | "dontAsk" | "bypassPermissions" | "plan"
   maxTurns: number | null;
+  effort: string; // "" | "low" | "medium" | "high"
   memory: string; // "" | memory file path/glob
   background: boolean;
   isolation: string; // "" | "worktree"
@@ -65,6 +66,9 @@ export function serializeAgentFile(data: AgentFormData): string {
   if (data.maxTurns != null && data.maxTurns > 0) {
     lines.push(`maxTurns: ${data.maxTurns}`);
   }
+  if (data.effort) {
+    lines.push(`effort: ${data.effort}`);
+  }
   if (data.memory) {
     lines.push(`memory: ${yamlString(data.memory)}`);
   }
@@ -111,6 +115,7 @@ export function parseAgentFile(content: string): AgentFormData {
     disallowedTools: [],
     permissionMode: "default",
     maxTurns: null,
+    effort: "",
     memory: "",
     background: false,
     isolation: "",
@@ -142,6 +147,7 @@ export function parseAgentFile(content: string): AgentFormData {
     disallowedTools: fm.disallowedTools ?? [],
     permissionMode: fm.permissionMode ?? "default",
     maxTurns: fm.maxTurns ?? null,
+    effort: fm.effort ?? "",
     memory: fm.memory ?? "",
     background: fm.background ?? false,
     isolation: fm.isolation ?? "",
@@ -157,6 +163,7 @@ interface SimpleFm {
   disallowedTools?: string[];
   permissionMode?: string;
   maxTurns?: number | null;
+  effort?: string;
   memory?: string;
   background?: boolean;
   isolation?: string;
@@ -205,6 +212,9 @@ function parseSimpleYaml(yaml: string): SimpleFm {
           break;
         case "maxTurns":
           result.maxTurns = parseInt(value, 10) || null;
+          break;
+        case "effort":
+          result.effort = value;
           break;
         case "memory":
           result.memory = value;
@@ -303,6 +313,13 @@ export function validateAgentForm(data: AgentFormData): ValidationError[] {
     }
   }
 
+  if (data.effort && !["low", "medium", "high"].includes(data.effort)) {
+    errors.push({
+      field: "effort",
+      message: "Must be low, medium, or high",
+    });
+  }
+
   for (const tool of data.tools) {
     if (!tool.trim()) {
       errors.push({ field: "tools", message: "Tool name cannot be empty" });
@@ -388,6 +405,7 @@ export function defaultFormData(): AgentFormData {
     disallowedTools: [],
     permissionMode: "default",
     maxTurns: null,
+    effort: "",
     memory: "",
     background: false,
     isolation: "",

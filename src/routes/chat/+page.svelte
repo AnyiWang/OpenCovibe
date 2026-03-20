@@ -80,7 +80,7 @@
   import { executeAddDir } from "$lib/utils/add-dir";
   import { buildDoctorReport } from "$lib/utils/doctor";
   import type { RewindCandidate, RewindMarker } from "$lib/utils/rewind";
-  import { truncate } from "$lib/utils/format";
+  import { truncate, cwdDisplayLabel } from "$lib/utils/format";
   import { uuid } from "$lib/utils/uuid";
   import RewindModal from "$lib/components/RewindModal.svelte";
 
@@ -102,8 +102,12 @@
   let xtermReady = $state(false);
   let pendingMessage = $state<{ text: string; attachments: Attachment[] } | null>(null);
   let sidebarCollapsed = $state(false);
+  /** Reactive cwd override for new-chat-in-folder (cleared when a run is loaded) */
+  let folderCwdOverride = $state("");
   let chatAreaRef: HTMLDivElement | undefined = $state();
   let isChatAutoScroll = $state(true);
+  /** Non-reactive flag: suppresses auto-scroll reset during search scroll-to navigation. */
+  let _scrollToInFlight = false;
   let showChatScrollHint = $state(false);
   let agentSettings = $state<AgentSettings | null>(null);
   let resuming = $state(false);
@@ -592,20 +596,28 @@
     cancelProgressive();
     const gen = ++progressiveGen;
 
+    // Capture scrollTo BEFORE loadRun — URL may change during async load
+    const scrollTo = $page.url.searchParams.get("scrollTo");
+
+    // Flag suppresses auto-scroll reset during loadRun (non-reactive, won't trigger effects)
+    if (scrollTo) _scrollToInFlight = true;
+
     await store.loadRun(id, xtermRef);
+    if (id) folderCwdOverride = ""; // clear folder override when a real run loads
 
     if (gen !== progressiveGen) return;
     renderLimit = Infinity;
     dbg("chat", "loadRun complete", { timeline: filteredTimeline.length, gen });
 
-    // If ?scrollTo= is present, scroll to the matched message; otherwise scroll to bottom
-    const scrollTo = $page.url.searchParams.get("scrollTo");
     if (scrollTo) {
+      await tick();
+      scrollToMessage(scrollTo);
+      _scrollToInFlight = false;
+      // Clean scrollTo from URL — safe because $effect depends on
+      // runId and hasResumeParam (primitives), not the full $page.url.
       const clean = new URL($page.url);
       clean.searchParams.delete("scrollTo");
       replaceState(clean, {});
-      await tick();
-      scrollToMessage(scrollTo);
     } else {
       // Scroll to bottom after DOM update — ensures content-visibility triggers re-layout
       await tick();
@@ -617,7 +629,9 @@
 
   let isExpandingTimeline = $derived(false);
 
-  let welcomeVisible = $derived(store.timeline.length === 0 && !store.streamingText && !store.run);
+  let welcomeVisible = $derived(
+    store.timeline.length === 0 && !store.streamingText && !store.run && store.phase !== "loading",
+  );
 
   let inputBlockedByPermission = $derived(store.hasPendingPermission || store.hasElicitation);
   let pendingToolPermissions = $derived(store.pendingToolPermissions);
@@ -819,8 +833,26 @@
     return `${m}:${s.toString().padStart(2, "0")}`;
   }
 
-  // ── URL-derived ──
+  // ── URL-derived (primitive values only — avoids $effect re-trigger on unrelated URL changes) ──
   let runId = $derived($page.url.searchParams.get("run") ?? "");
+  let hasResumeParam = $derived($page.url.searchParams.has("resume"));
+  let folderParam = $derived($page.url.searchParams.get("folder"));
+
+  // Consume ?folder= param: switch to new chat in that folder, then clean URL
+  $effect(() => {
+    const folder = folderParam;
+    if (!folder) return;
+    untrack(() => {
+      dbg("chat", "new chat in folder", { folder });
+      localStorage.setItem("ocv:project-cwd", folder);
+      folderCwdOverride = folder;
+      store.loadRun("", xtermRef);
+      const clean = new URL($page.url);
+      clean.searchParams.delete("folder");
+      replaceState(clean, {});
+      requestAnimationFrame(() => promptRef?.focus());
+    });
+  });
 
   // ── Computed (thin wrappers for template convenience) ──
   let sending = $derived(store.phase === "spawning");
@@ -1101,7 +1133,7 @@
   $effect(() => {
     if (!middlewareReady) return;
     const id = runId;
-    const hasResume = $page.url.searchParams.has("resume");
+    const hasResume = hasResumeParam;
     untrack(() => {
       middleware.subscribeCurrent(id, store);
 
@@ -1129,12 +1161,36 @@
           const clean = new URL($page.url);
           clean.searchParams.delete("scrollTo");
           replaceState(clean, {});
-          scrollToMessage(scrollTo);
+          tick().then(() => scrollToMessage(scrollTo));
         }
         return;
       }
 
       loadRunProgressive(id, xtermRef);
+    });
+  });
+
+  // Handle scrollTo for already-loaded runs (e.g., clicking a second search result
+  // in the same run). The runId effect above won't re-fire when only scrollTo changes.
+  $effect(() => {
+    if (!middlewareReady) return;
+    const scrollTo = $page.url.searchParams.get("scrollTo");
+    if (!scrollTo) return;
+    untrack(() => {
+      // loadRunProgressive handles scrollTo during run loading — don't double-scroll
+      if (_scrollToInFlight) return;
+      if (store.phase === "loading") return;
+      if (store.run?.id !== runId) return;
+
+      dbg("effect", "same-run scrollTo", { scrollTo, runId });
+      _scrollToInFlight = true;
+      const clean = new URL($page.url);
+      clean.searchParams.delete("scrollTo");
+      replaceState(clean, {});
+      tick().then(() => {
+        scrollToMessage(scrollTo);
+        _scrollToInFlight = false;
+      });
     });
   });
 
@@ -1393,7 +1449,10 @@
   // Reset scroll state on run change
   $effect(() => {
     void store.run?.id;
-    isChatAutoScroll = true;
+    // _scrollToInFlight is non-reactive (plain let): reading it doesn't create a dependency.
+    // When a search scroll-to navigation is in progress, suppress auto-scroll so
+    // scrollToMessage isn't overridden by the auto-scroll $effect.
+    isChatAutoScroll = !_scrollToInFlight;
     showChatScrollHint = false;
     prevTl = 0;
     prevSt = 0;
@@ -1935,11 +1994,13 @@
   }
 
   function appendCommandOutput(text: string) {
+    const cmdId = uuid();
     store.timeline = [
       ...store.timeline,
       {
         kind: "command_output",
-        id: uuid(),
+        id: cmdId,
+        anchorId: cmdId,
         content: text,
         ts: new Date().toISOString(),
       },
@@ -2746,13 +2807,41 @@
       toolFilter = null;
       await tick();
     }
-    const el = document.getElementById("msg-" + ts);
+    // Primary: lookup by anchorId (stable event ID)
+    let el = document.getElementById("msg-" + ts);
+    // Fallback: search timeline by multiple fields (ts, anchorId, cliUuid, id)
+    if (!el) {
+      const match = store.timeline.find(
+        (e) =>
+          e.ts === ts ||
+          e.anchorId === ts ||
+          (e.kind === "user" && e.cliUuid === ts) ||
+          e.id === ts,
+      );
+      if (match) el = document.getElementById("msg-" + match.anchorId);
+    }
     if (el) {
-      el.scrollIntoView({ behavior: "smooth", block: "center" });
+      // Temporarily disable content-visibility on ALL entries so the browser
+      // knows real heights and scrollIntoView lands at the correct offset.
+      const container = chatAreaRef;
+      const cvEls = container
+        ? Array.from(container.querySelectorAll<HTMLElement>(".cv-auto"))
+        : [];
+      for (const c of cvEls) c.style.contentVisibility = "visible";
+
+      el.getBoundingClientRect(); // force reflow
+      el.scrollIntoView({ behavior: "instant", block: "center" });
       el.classList.add("ring-2", "ring-primary/50");
-      setTimeout(() => el.classList.remove("ring-2", "ring-primary/50"), 2000);
+
+      // Restore content-visibility after scroll settles
+      requestAnimationFrame(() => {
+        for (const c of cvEls) c.style.contentVisibility = "";
+      });
+      setTimeout(() => {
+        el!.classList.remove("ring-2", "ring-primary/50");
+      }, 2000);
     } else {
-      dbg("chat", "scrollToMessage: element not found", { ts });
+      dbg("chat", "scrollToMessage: element not found", { anchor: ts });
     }
   }
 
@@ -3310,7 +3399,26 @@
               <div class="flex flex-col items-center max-w-sm">
                 <div class="text-center animate-slide-up">
                   <img src="/logo.png?v=2" alt="OC" class="mx-auto mb-4 h-12 w-12 rounded-2xl" />
-                  <h2 class="text-lg font-semibold text-primary mb-4">{t("layout_appName")}</h2>
+                  <h2 class="text-lg font-semibold text-primary mb-1">{t("layout_appName")}</h2>
+                  {#if !store.run}
+                    {@const welcomeCwd =
+                      store.effectiveCwd ||
+                      folderCwdOverride ||
+                      localStorage.getItem("ocv:project-cwd") ||
+                      ""}
+                    {#if welcomeCwd}
+                      <p
+                        class="mb-3 text-xs text-muted-foreground/60 truncate max-w-[280px]"
+                        title={welcomeCwd}
+                      >
+                        {cwdDisplayLabel(welcomeCwd)}
+                      </p>
+                    {:else}
+                      <div class="mb-3"></div>
+                    {/if}
+                  {:else}
+                    <div class="mb-3"></div>
+                  {/if}
                   {#if lastContinuableRun}
                     <button
                       class="w-full flex items-center justify-center gap-2 rounded-lg border border-border bg-muted/50 px-4 py-3 text-sm text-foreground hover:bg-accent hover:border-ring/30 transition-all duration-150"
@@ -3357,6 +3465,13 @@
                   {@render heroMetaItems()}
                 </div>
               </div>
+            </div>
+          {:else if store.phase === "loading" && store.timeline.length === 0}
+            <!-- Loading state — avoids welcome page flash during loadRun -->
+            <div class="flex h-full items-center justify-center">
+              <div
+                class="h-5 w-5 rounded-full border-2 border-muted-foreground/30 border-t-primary animate-spin"
+              ></div>
             </div>
           {:else}
             <!-- Timeline: chat messages + inline tool cards -->
@@ -3439,7 +3554,7 @@
               {#each visibleTimeline as entry, i (entry.id)}
                 {#if !(burstHiddenIndices.has(i) && !toolBursts.has(i))}
                   <div
-                    id="msg-{entry.ts}"
+                    id="msg-{entry.anchorId}"
                     class:cv-auto={!IS_WEBKIT && entry.kind !== "tool"}
                     class="group/msg"
                     class:opacity-40={lastClearSepId !== null &&
@@ -4187,7 +4302,10 @@
         models={effectiveModels}
         currentModel={store.model}
         permissionMode={store.permissionMode}
-        cwd={store.effectiveCwd || localStorage.getItem("ocv:project-cwd") || ""}
+        cwd={store.effectiveCwd ||
+          folderCwdOverride ||
+          localStorage.getItem("ocv:project-cwd") ||
+          ""}
         authMode={store.authMode}
         platformId={store.platformId ?? "anthropic"}
         platformCredentials={settings?.platform_credentials ?? []}

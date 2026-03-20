@@ -28,7 +28,7 @@
     PromptSearchResult,
     MemoryFileCandidate,
   } from "$lib/types";
-  import { cwdDisplayLabel, truncate, relativeTime } from "$lib/utils/format";
+  import { cwdDisplayLabel, truncate, snippetAround, relativeTime } from "$lib/utils/format";
   import { filterVisibleCandidates } from "$lib/utils/memory-helpers";
   import {
     buildProjectFolders,
@@ -962,6 +962,11 @@
 
   function newChat() {
     goto("/chat");
+  }
+
+  function newChatInFolder(cwd: string) {
+    projectCwd = cwd;
+    goto(`/chat?folder=${encodeURIComponent(cwd)}`);
   }
 
   function toggleProject(folderKey: string) {
@@ -2033,13 +2038,16 @@
                         runSearchQuery = "";
                         searchResults = [];
                         goto(
-                          `/chat?run=${result.runId}&scrollTo=${encodeURIComponent(result.matchedTs)}`,
+                          `/chat?run=${result.runId}&scrollTo=${encodeURIComponent(result.matchedEventId || result.matchedTs)}`,
                         );
                       }}
                     >
-                      <p class="text-[12px] min-w-0 truncate">
+                      <p class="text-[12px] min-w-0 line-clamp-2 break-all">
                         <!-- eslint-disable-next-line svelte/no-at-html-tags -->
-                        {@html highlightMatch(truncate(result.matchedText, 60), runSearchQuery)}
+                        {@html highlightMatch(
+                          snippetAround(result.matchedText, runSearchQuery, 80),
+                          runSearchQuery,
+                        )}
                       </p>
                       <div class="flex items-center gap-1 text-xs text-muted-foreground min-w-0">
                         <span class="flex-1 min-w-0 truncate"
@@ -2069,6 +2077,9 @@
                     onRemove={folder.isUncategorized
                       ? undefined
                       : () => requestRemoveProject(folder.cwd)}
+                    onNewChat={folder.isUncategorized
+                      ? undefined
+                      : () => newChatInFolder(folder.cwd)}
                   />
                 {/each}
                 <!-- Open folder... -->
