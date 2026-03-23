@@ -73,6 +73,7 @@
   import { type TurnUsage, classifyError } from "$lib/stores/types";
   import {
     mergeWithVirtual,
+    mergeProjectCommands,
     buildHelpText,
     CONTEXT_CLEARED_MARKER,
     parseRalphArgs,
@@ -124,6 +125,12 @@
   let authOverview = $state<import("$lib/types").AuthOverview | null>(null);
   /** Preloaded skill details from filesystem (has descriptions). */
   let preloadedSkills = $state<import("$lib/types").StandaloneSkill[]>([]);
+  /** Preloaded agent definitions from filesystem. */
+  let preloadedAgents = $state<import("$lib/types").AgentDefinitionSummary[]>([]);
+  /** Project-level commands from {cwd}/.claude/commands/ + ~/.claude/commands/. */
+  let projectCommands = $state<import("$lib/types").CliCommand[]>([]);
+  /** Generation counter for reloadProjectData race guard. */
+  let preloadGen = 0;
   /** Local proxy running statuses for AuthSourceBadge. */
   let localProxyStatuses = $state<Record<string, { running: boolean; needsAuth: boolean }>>({});
 
@@ -605,6 +612,31 @@
     await store.loadRun(id, xtermRef);
     if (id) folderCwdOverride = ""; // clear folder override when a real run loads
 
+    // Reload project data with the run's cwd
+    if (id && store.effectiveCwd) {
+      reloadProjectData(store.effectiveCwd);
+    }
+
+    // Cross-reference MCP servers with config disabled state
+    // (session_init event carries stale status from session start time)
+    if (store.mcpServers.length > 0) {
+      try {
+        const disabledNames = await api.getDisabledMcpServers();
+        if (disabledNames.length > 0) {
+          const disabledSet = new Set(disabledNames);
+          const patched = store.mcpServers.map((s) =>
+            disabledSet.has(s.name) && s.status !== "disabled" ? { ...s, status: "disabled" } : s,
+          );
+          if (patched.some((s, i) => s !== store.mcpServers[i])) {
+            store.mcpServers = patched;
+            dbg("chat", "patched MCP disabled state", { disabledNames });
+          }
+        }
+      } catch {
+        // non-critical, ignore
+      }
+    }
+
     if (gen !== progressiveGen) return;
     renderLimit = Infinity;
     dbg("chat", "loadRun complete", { timeline: filteredTimeline.length, gen });
@@ -1002,25 +1034,22 @@
     });
     loadCliVersionInfo();
     checkProjectInit();
-    // Preload skills from filesystem (no session needed)
-    {
+    // Preload project data from filesystem (no session needed)
+    if (!runId) {
       const cwd = localStorage.getItem("ocv:project-cwd") || "";
-      api
-        .listStandaloneSkills(cwd)
-        .then((skills) => {
-          preloadedSkills = skills;
-          if (skills.length > 0 && store.availableSkills.length === 0) {
-            store.availableSkills = skills.map((s) => s.name);
-          }
-          dbg("chat", "preloaded skills from filesystem", { count: skills.length });
-        })
-        .catch((e) => dbgWarn("chat", "failed to preload skills", e));
+      reloadProjectData(cwd);
     }
   });
 
-  // Listen for project folder changes to re-check project init
+  // Listen for project folder changes to re-check project init + reload project data
   onMount(() => {
-    const handler = () => checkProjectInit();
+    const handler = () => {
+      checkProjectInit();
+      if (!runId && !store.run) {
+        const cwd = localStorage.getItem("ocv:project-cwd") || "";
+        reloadProjectData(cwd);
+      }
+    };
     window.addEventListener("ocv:project-changed", handler);
     return () => window.removeEventListener("ocv:project-changed", handler);
   });
@@ -1260,7 +1289,7 @@
             ));
         if (isFocusable) return;
       }
-      const modes = ["default", "acceptEdits", "bypassPermissions", "plan", "delegate", "dontAsk"];
+      const modes = ["default", "acceptEdits", "bypassPermissions", "plan", "auto", "dontAsk"];
       const idx = modes.indexOf(store.permissionMode);
       const next = modes[(idx + 1) % modes.length];
       handlePermissionModeChange(next);
@@ -1706,6 +1735,42 @@
     projectInitStatus !== null && !projectInitStatus.has_claude_md && !store.run,
   );
 
+  /** Reload project-level data (skills, agents, commands) with race guard. */
+  function reloadProjectData(cwd: string) {
+    const gen = ++preloadGen;
+    preloadedSkills = [];
+    preloadedAgents = [];
+    projectCommands = [];
+    if (!cwd) return;
+    api
+      .listStandaloneSkills(cwd)
+      .then((skills) => {
+        if (gen !== preloadGen) return;
+        preloadedSkills = skills;
+        if (skills.length > 0 && store.availableSkills.length === 0) {
+          store.availableSkills = skills.map((s) => s.name);
+        }
+        dbg("chat", "preloaded skills", { count: skills.length });
+      })
+      .catch((e) => dbgWarn("chat", "failed to preload skills", e));
+    api
+      .listAgents(cwd)
+      .then((agents) => {
+        if (gen !== preloadGen) return;
+        preloadedAgents = agents;
+        dbg("chat", "preloaded agents", { count: agents.length });
+      })
+      .catch((e) => dbgWarn("chat", "failed to preload agents", e));
+    api
+      .listProjectCommands(cwd)
+      .then((cmds) => {
+        if (gen !== preloadGen) return;
+        projectCommands = cmds;
+        dbg("chat", "preloaded project commands", { count: cmds.length });
+      })
+      .catch((e) => dbgWarn("chat", "failed to preload project commands", e));
+  }
+
   async function checkProjectInit() {
     const cwd = localStorage.getItem("ocv:project-cwd") || "";
     if (!cwd || cwd === "/") {
@@ -1754,7 +1819,7 @@
     acceptEdits: "auto_read",
     bypassPermissions: "auto_all",
     plan: "plan",
-    delegate: "delegate",
+    auto: "auto",
     dontAsk: "dont_ask",
   };
   const APP_TO_CLI_MODE: Record<string, string> = {
@@ -1762,7 +1827,7 @@
     auto_read: "acceptEdits",
     auto_all: "bypassPermissions",
     plan: "plan",
-    delegate: "delegate",
+    auto: "auto",
     dont_ask: "dontAsk",
   };
 
@@ -1772,7 +1837,7 @@
       acceptEdits: () => t("prompt_permAutoReadShort"),
       bypassPermissions: () => t("prompt_permAutoAllShort"),
       plan: () => t("prompt_permPlanShort"),
-      delegate: () => t("prompt_permDelegateShort"),
+      auto: () => t("prompt_permAutoShort"),
       dontAsk: () => t("prompt_permDontAskShort"),
     };
     return map[mode]?.() ?? mode;
@@ -2112,7 +2177,7 @@
       const allCmds = mergeWithVirtual(
         store.sessionInitReceived && store.sessionCommands.length > 0
           ? store.sessionCommands
-          : getCliCommands(),
+          : mergeProjectCommands(getCliCommands(), projectCommands),
       );
       const skillSet = new Set(store.availableSkills);
       appendCommandOutput(buildHelpText(allCmds, skillSet));
@@ -4298,7 +4363,7 @@
         isRemote={store.isRemote}
         cliCommands={store.sessionInitReceived && store.sessionCommands.length > 0
           ? store.sessionCommands
-          : getCliCommands()}
+          : mergeProjectCommands(getCliCommands(), projectCommands)}
         models={effectiveModels}
         currentModel={store.model}
         permissionMode={store.permissionMode}
@@ -4329,6 +4394,7 @@
         onShortcutHelp={() => (shortcutHelpOpen = !shortcutHelpOpen)}
         availableSkills={store.availableSkills}
         {skillItems}
+        agents={preloadedAgents.map((a) => ({ name: a.name, description: a.description }))}
         hasStash={!!stashedInput}
         {userHistory}
         runId={store.run?.id ?? ""}

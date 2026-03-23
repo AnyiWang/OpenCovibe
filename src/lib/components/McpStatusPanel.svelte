@@ -76,21 +76,27 @@
     const scope = server?.scope ?? "user";
 
     try {
-      dbg("mcp", "toggle via config", { serverName, enabled: newEnabled, scope });
+      // 1. Runtime toggle — broadcast to ALL active sessions
+      dbg("mcp", "toggle broadcast", { serverName, enabled: newEnabled });
+      const sent = await api.broadcastMcpToggle(serverName, newEnabled);
+      dbg("mcp", "toggle broadcast sent to sessions", { count: sent });
+      // 2. Persist to config — takes effect on future sessions
+      dbg("mcp", "toggle config", { serverName, enabled: newEnabled, scope });
       const result = await api.toggleMcpServerConfig(serverName, newEnabled, scope);
       if (result.success) {
-        // Update local state immediately
-        servers = servers.map((s) =>
-          s.name === serverName ? { ...s, status: newEnabled ? "pending" : "disabled" } : s,
-        );
-        onServersUpdate?.(servers);
         successMsg = result.message;
         setTimeout(() => (successMsg = ""), 3000);
       } else {
         error = result.message;
       }
+      // 3. Update local state directly — don't rely on refresh()
+      // CLI's mcp_status may still return stale data due to React batched updates
+      servers = servers.map((s) =>
+        s.name === serverName ? { ...s, status: newEnabled ? "pending" : "disabled" } : s,
+      );
+      onServersUpdate?.(servers);
     } catch (e) {
-      dbgWarn("mcp", "toggle config failed", e);
+      dbgWarn("mcp", "toggle failed", e);
       error = String(e);
     } finally {
       togglingServer = null;

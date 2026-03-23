@@ -2381,6 +2381,16 @@ export class SessionStore {
             cliValue: ev.permissionMode,
             userValue: this.permissionMode,
           });
+          // CLI may have reset permission mode after compaction — re-send to resync.
+          // Only in live mode (not batch replay) and when the run has a valid id.
+          if (!ctx && this.run?.id && ev.permissionMode !== this.permissionMode) {
+            dbg("store", "resync permissionMode to CLI after compaction", {
+              mode: this.permissionMode,
+            });
+            api.setPermissionMode(this.run.id, this.permissionMode).catch((e) => {
+              dbgWarn("store", "permissionMode resync failed", e);
+            });
+          }
         }
         if (ev.fast_mode_state) this.fastModeState = ev.fast_mode_state;
         if (ev.apiKeySource) this.apiKeySource = ev.apiKeySource;

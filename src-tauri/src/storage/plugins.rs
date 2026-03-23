@@ -236,6 +236,53 @@ fn list_md_stems(dir: &Path) -> Vec<String> {
         .collect()
 }
 
+/// List project-level commands from ~/.claude/commands/ and {cwd}/.claude/commands/.
+/// Scans flat .md files, parses frontmatter for name/description, falls back to file stem.
+pub fn list_project_commands(cwd: &str) -> Vec<crate::models::CliCommand> {
+    let mut commands = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    // Project-scope commands first (higher priority)
+    if !cwd.is_empty() {
+        let project_dir = PathBuf::from(cwd).join(".claude").join("commands");
+        scan_commands_dir(&project_dir, &mut commands, &mut seen);
+    }
+
+    // User-scope commands
+    let user_dir = crate::storage::teams::claude_home_dir().join("commands");
+    scan_commands_dir(&user_dir, &mut commands, &mut seen);
+
+    log::debug!(
+        "[plugins] list_project_commands: found {} commands",
+        commands.len()
+    );
+    commands
+}
+
+/// Scan a directory for .md command files and append to the result vector.
+fn scan_commands_dir(
+    dir: &Path,
+    commands: &mut Vec<crate::models::CliCommand>,
+    seen: &mut std::collections::HashSet<String>,
+) {
+    let stems = list_md_stems(dir);
+    for stem in stems {
+        if seen.contains(&stem) {
+            continue; // project-scope already added this name
+        }
+        let md_path = dir.join(format!("{}.md", stem));
+        let (name, description) = parse_skill_frontmatter(&md_path);
+        let name = if name.is_empty() { stem.clone() } else { name };
+        seen.insert(stem);
+        commands.push(crate::models::CliCommand {
+            name,
+            description,
+            aliases: vec![],
+            extra: std::collections::HashMap::new(),
+        });
+    }
+}
+
 /// List standalone skills from ~/.claude/skills/*/SKILL.md
 /// and optionally from {cwd}/.claude/skills/*/SKILL.md.
 pub fn list_standalone_skills(cwd: &str) -> Vec<StandaloneSkill> {

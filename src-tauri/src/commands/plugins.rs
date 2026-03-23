@@ -1,5 +1,5 @@
 use crate::models::{
-    CommunitySkillDetail, CommunitySkillResult, InstalledPlugin, MarketplaceInfo,
+    CliCommand, CommunitySkillDetail, CommunitySkillResult, InstalledPlugin, MarketplaceInfo,
     MarketplacePlugin, PluginOperationResult, ProviderHealth, StandaloneSkill,
 };
 
@@ -13,6 +13,13 @@ pub fn list_marketplaces() -> Result<Vec<MarketplaceInfo>, String> {
 pub fn list_marketplace_plugins() -> Result<Vec<MarketplacePlugin>, String> {
     log::debug!("[plugins] list_marketplace_plugins");
     Ok(crate::storage::plugins::list_marketplace_plugins())
+}
+
+#[tauri::command]
+pub fn list_project_commands(cwd: Option<String>) -> Result<Vec<CliCommand>, String> {
+    let cwd = cwd.unwrap_or_default();
+    log::debug!("[plugins] list_project_commands: cwd={}", cwd);
+    Ok(crate::storage::plugins::list_project_commands(&cwd))
 }
 
 #[tauri::command]

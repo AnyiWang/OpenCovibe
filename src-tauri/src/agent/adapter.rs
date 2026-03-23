@@ -41,7 +41,8 @@ fn map_permission_mode(mode: &str) -> String {
         "ask" => "default".to_string(),
         "auto_read" => "acceptEdits".to_string(),
         "auto_all" => "bypassPermissions".to_string(),
-        "delegate" => "delegate".to_string(),
+        "auto" => "auto".to_string(),
+        "delegate" => "auto".to_string(), // legacy name
         "dont_ask" => "dontAsk".to_string(),
         other => {
             log::warn!(

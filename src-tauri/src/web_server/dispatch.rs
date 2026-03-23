@@ -335,6 +335,11 @@ pub async fn dispatch_command(
             let result = crate::commands::plugins::list_standalone_skills(cwd)?;
             serde_json::to_value(result).map_err(|e| e.to_string())
         }
+        "list_project_commands" => {
+            let cwd = params.get("cwd").and_then(|v| v.as_str()).map(String::from);
+            let result = crate::commands::plugins::list_project_commands(cwd)?;
+            serde_json::to_value(result).map_err(|e| e.to_string())
+        }
         "list_installed_plugins" => {
             let result = crate::commands::plugins::list_installed_plugins().await?;
             serde_json::to_value(result).map_err(|e| e.to_string())

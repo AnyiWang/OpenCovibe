@@ -564,19 +564,27 @@ export async function setMaxThinkingTokens(runId: string, tokens: number) {
 }
 
 export async function getMcpStatus(runId: string) {
-  return sendSessionControl(runId, "get_mcp_status");
+  return sendSessionControl(runId, "mcp_status");
 }
 
 export async function setMcpServers(runId: string, servers: Record<string, unknown>) {
-  return sendSessionControl(runId, "set_mcp_servers", { servers });
+  return sendSessionControl(runId, "mcp_set_servers", { servers });
 }
 
 export async function reconnectMcpServer(runId: string, serverName: string) {
-  return sendSessionControl(runId, "reconnect_mcp_server", { server_name: serverName });
+  return sendSessionControl(runId, "mcp_reconnect", { serverName });
 }
 
 export async function toggleMcpServer(runId: string, serverName: string, enabled: boolean) {
-  return sendSessionControl(runId, "toggle_mcp_server", { server_name: serverName, enabled });
+  return sendSessionControl(runId, "mcp_toggle", { serverName, enabled });
+}
+
+export async function broadcastMcpToggle(serverName: string, enabled: boolean): Promise<number> {
+  return invoke<number>("broadcast_mcp_toggle", { serverName, enabled });
+}
+
+export async function getDisabledMcpServers(): Promise<string[]> {
+  return invoke<string[]>("get_disabled_mcp_servers");
 }
 
 export async function toggleMcpServerConfig(
@@ -708,6 +716,11 @@ export async function listMarketplaces(): Promise<MarketplaceInfo[]> {
 export async function listMarketplacePlugins(): Promise<MarketplacePlugin[]> {
   dbg("api", "listMarketplacePlugins");
   return invoke<MarketplacePlugin[]>("list_marketplace_plugins");
+}
+
+export async function listProjectCommands(cwd?: string): Promise<import("./types").CliCommand[]> {
+  dbg("api", "listProjectCommands", { cwd });
+  return invoke<import("./types").CliCommand[]>("list_project_commands", { cwd: cwd ?? null });
 }
 
 export async function listStandaloneSkills(cwd?: string): Promise<StandaloneSkill[]> {

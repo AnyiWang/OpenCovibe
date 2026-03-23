@@ -10,10 +10,12 @@
 
   let {
     skills = [],
+    agents = [],
     disabled = false,
     onSelect,
   }: {
     skills?: SkillItem[];
+    agents?: SkillItem[];
     disabled?: boolean;
     onSelect?: (name: string) => void;
   } = $props();
@@ -22,6 +24,8 @@
   let wrapperEl: HTMLDivElement | undefined = $state();
   let buttonEl: HTMLButtonElement | undefined = $state();
   let dropdownStyle = $state("");
+
+  let isEmpty = $derived(skills.length === 0 && agents.length === 0);
 
   function toggleDropdown() {
     if (disabled) return;
@@ -111,29 +115,71 @@
       class="w-80 max-h-96 overflow-y-auto rounded-lg border bg-background shadow-lg animate-fade-in"
       style={dropdownStyle}
     >
-      {#if skills.length === 0}
+      {#if isEmpty}
         <p class="px-3 py-4 text-xs text-muted-foreground text-center">
           {t("skillSelector_empty")}
         </p>
       {:else}
         <div class="p-1">
-          {#each skills as skill}
-            <button
-              class="group flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left hover:bg-accent transition-colors"
-              onclick={() => selectSkill(skill.name)}
-            >
-              <span
-                class="shrink-0 text-[11px] font-mono text-muted-foreground group-hover:text-primary transition-colors"
-                >/</span
+          <!-- Skills group -->
+          {#if skills.length > 0}
+            {#each skills as skill}
+              <button
+                class="group flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left hover:bg-accent transition-colors"
+                onclick={() => selectSkill(skill.name)}
               >
-              <span class="shrink-0 text-xs font-medium text-foreground">{skill.name}</span>
-              {#if skill.description}
-                <span class="min-w-0 truncate text-xs text-muted-foreground">
-                  {skill.description}
-                </span>
-              {/if}
-            </button>
-          {/each}
+                <span
+                  class="shrink-0 text-[11px] font-mono text-muted-foreground group-hover:text-primary transition-colors"
+                  >/</span
+                >
+                <span class="shrink-0 text-xs font-medium text-foreground">{skill.name}</span>
+                {#if skill.description}
+                  <span class="min-w-0 truncate text-xs text-muted-foreground">
+                    {skill.description}
+                  </span>
+                {/if}
+              </button>
+            {/each}
+          {/if}
+
+          <!-- Agents group (read-only) -->
+          {#if agents.length > 0}
+            {#if skills.length > 0}
+              <div class="mx-2 my-1 border-t border-border/50"></div>
+            {/if}
+            <div
+              class="px-2.5 py-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground/60"
+            >
+              Agents
+            </div>
+            {#each agents as agent}
+              <div class="flex items-center gap-2 rounded-md px-2.5 py-1.5 opacity-70">
+                <!-- Bot icon -->
+                <svg
+                  class="h-3 w-3 shrink-0 text-muted-foreground"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <path d="M12 8V4H8" />
+                  <rect width="16" height="12" x="4" y="8" rx="2" />
+                  <path d="M2 14h2" />
+                  <path d="M20 14h2" />
+                  <path d="M15 13v2" />
+                  <path d="M9 13v2" />
+                </svg>
+                <span class="shrink-0 text-xs font-medium text-foreground/70">{agent.name}</span>
+                {#if agent.description}
+                  <span class="min-w-0 truncate text-xs text-muted-foreground">
+                    {agent.description}
+                  </span>
+                {/if}
+              </div>
+            {/each}
+          {/if}
         </div>
       {/if}
     </div>

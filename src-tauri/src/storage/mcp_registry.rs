@@ -759,6 +759,36 @@ pub fn toggle_server_config(
     })
 }
 
+/// Return names of all MCP servers that have `"disabled": true` in user-scope config.
+pub fn get_disabled_server_names() -> Vec<String> {
+    let home = match crate::storage::dirs_next() {
+        Some(h) => h,
+        None => return vec![],
+    };
+    let config_path = home.join(".claude.json");
+    let content = match std::fs::read_to_string(&config_path) {
+        Ok(c) => c,
+        Err(_) => return vec![],
+    };
+    let root: serde_json::Value = match serde_json::from_str(&content) {
+        Ok(v) => v,
+        Err(_) => return vec![],
+    };
+    let mut disabled = Vec::new();
+    if let Some(servers) = root.get("mcpServers").and_then(|v| v.as_object()) {
+        for (name, cfg) in servers {
+            if cfg
+                .get("disabled")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+            {
+                disabled.push(name.clone());
+            }
+        }
+    }
+    disabled
+}
+
 // ── Validators ──
 
 /// Convert a registry name to a CLI-friendly local name.

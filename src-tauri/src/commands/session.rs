@@ -835,6 +835,52 @@ pub async fn send_session_control(
     }
 }
 
+/// Broadcast mcp_toggle to ALL active sessions (fire-and-forget, best-effort).
+#[tauri::command]
+pub async fn broadcast_mcp_toggle(
+    sessions: State<'_, ActorSessionMap>,
+    server_name: String,
+    enabled: bool,
+) -> Result<u32, String> {
+    let senders: Vec<(String, tokio::sync::mpsc::Sender<ActorCommand>)> = {
+        let map = sessions.lock().await;
+        map.iter()
+            .map(|(id, h)| (id.clone(), h.cmd_tx.clone()))
+            .collect()
+    };
+    let request = serde_json::json!({
+        "subtype": "mcp_toggle",
+        "serverName": server_name,
+        "enabled": enabled,
+    });
+    let mut sent: u32 = 0;
+    for (run_id, tx) in &senders {
+        let (reply_tx, _reply_rx) = tokio::sync::oneshot::channel();
+        if tx
+            .send(ActorCommand::SendControl {
+                request: request.clone(),
+                reply: reply_tx,
+            })
+            .await
+            .is_ok()
+        {
+            sent += 1;
+            log::debug!(
+                "[session] broadcast_mcp_toggle: sent to run_id={}, server={}, enabled={}",
+                run_id,
+                server_name,
+                enabled,
+            );
+        }
+    }
+    log::debug!(
+        "[session] broadcast_mcp_toggle: sent to {}/{} sessions",
+        sent,
+        senders.len()
+    );
+    Ok(sent)
+}
+
 #[tauri::command]
 pub fn get_bus_events(
     id: String,

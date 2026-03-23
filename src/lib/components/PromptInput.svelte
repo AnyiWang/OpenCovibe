@@ -101,6 +101,7 @@
     localProxyStatuses = {} as Record<string, { running: boolean; needsAuth: boolean }>,
     availableSkills = [],
     skillItems = [],
+    agents = [],
     showAuthBadge = true,
     pendingPermission = false,
     hasStash = false,
@@ -143,6 +144,7 @@
     localProxyStatuses?: Record<string, { running: boolean; needsAuth: boolean }>;
     availableSkills?: string[];
     skillItems?: { name: string; description: string }[];
+    agents?: { name: string; description: string }[];
     showAuthBadge?: boolean; // TODO: remove unused auth props after hero migration
     pendingPermission?: boolean;
     hasStash?: boolean;
@@ -259,10 +261,10 @@
         "border-purple-400/40 focus-within:border-purple-400/60 focus-within:shadow-[0_0_0_1px_rgba(192,132,252,0.15)]",
     },
     {
-      value: "delegate",
-      label: () => t("prompt_permDelegateLabel"),
-      shortLabel: () => t("prompt_permDelegateShort"),
-      description: () => t("prompt_permDelegateDesc"),
+      value: "auto",
+      label: () => t("prompt_permAutoLabel"),
+      shortLabel: () => t("prompt_permAutoShort"),
+      description: () => t("prompt_permAutoDesc"),
       cls: "text-teal-400",
       dotCls: "bg-teal-400",
       borderCls:
@@ -2097,6 +2099,7 @@
         {/if}
         <SkillSelector
           skills={skillItems}
+          {agents}
           disabled={disabled || running}
           onSelect={handleSkillSelect}
         />

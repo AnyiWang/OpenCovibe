@@ -272,6 +272,27 @@ export function parseRalphArgs(args: string): {
 }
 
 /**
+ * Merge global CLI commands with project-level commands.
+ * Project commands override global commands with the same name.
+ */
+export function mergeProjectCommands(
+  globalCommands: CliCommand[],
+  projectCommands: CliCommand[],
+): CliCommand[] {
+  if (projectCommands.length === 0) return globalCommands;
+  const projectMap = new Map(projectCommands.map((c) => [c.name, c]));
+  // Start with global, override with project where names match
+  const merged = globalCommands.map((c) => projectMap.get(c.name) ?? c);
+  // Append project commands not in global list
+  for (const pc of projectCommands) {
+    if (!globalCommands.some((g) => g.name === pc.name)) {
+      merged.push(pc);
+    }
+  }
+  return merged;
+}
+
+/**
  * Merge CLI commands with virtual commands and apply fallback descriptions.
  * When a CLI command shares a name with a virtual, merge virtual metadata onto it
  * (CLI fields take priority for name/desc/aliases). Append remaining virtuals.

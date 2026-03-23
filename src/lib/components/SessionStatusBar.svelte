@@ -208,11 +208,11 @@
   let permissionBadge = $derived.by(() => {
     if (!permissionMode || permissionMode === "default") return null;
     const map: Record<string, { label: string; cls: string }> = {
-      bypassPermissions: { label: "auto-all", cls: "bg-amber-500/15 text-amber-500" },
-      acceptEdits: { label: "auto-read", cls: "bg-blue-500/15 text-blue-400" },
+      acceptEdits: { label: "accept-edits", cls: "bg-blue-500/15 text-blue-400" },
+      bypassPermissions: { label: "bypass", cls: "bg-amber-500/15 text-amber-500" },
       plan: { label: "plan", cls: "bg-purple-500/15 text-purple-400" },
+      auto: { label: "auto", cls: "bg-teal-500/15 text-teal-400" },
       dontAsk: { label: "no-ask", cls: "bg-red-500/15 text-red-400" },
-      delegate: { label: "delegate", cls: "bg-teal-500/15 text-teal-400" },
     };
     return (
       map[permissionMode] ?? { label: permissionMode, cls: "bg-foreground/10 text-foreground/60" }

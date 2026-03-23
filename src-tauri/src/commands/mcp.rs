@@ -78,6 +78,11 @@ pub fn toggle_mcp_server_config(
 }
 
 #[tauri::command]
+pub fn get_disabled_mcp_servers() -> Vec<String> {
+    crate::storage::mcp_registry::get_disabled_server_names()
+}
+
+#[tauri::command]
 pub async fn check_mcp_registry_health() -> Result<ProviderHealth, String> {
     log::debug!("[mcp] check_mcp_registry_health");
     Ok(crate::storage::mcp_registry::health_check().await)
