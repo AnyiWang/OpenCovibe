@@ -110,6 +110,7 @@
   let communityHealth = $state<ProviderHealth | null>(null);
   let communityDetail = $state<CommunitySkillDetail | null>(null);
   let communityDetailLoading = $state(false);
+  let communityDetailError = $state<string | null>(null);
   let searchDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
   let communityDisplayResults = $derived(
@@ -468,10 +469,11 @@
   async function handleCommunityDetail(skill: CommunitySkillResult) {
     communityDetailLoading = true;
     communityDetail = null;
+    communityDetailError = null;
     try {
       communityDetail = await getCommunitySkillDetail(skill.source, skill.name);
     } catch (e) {
-      showToast(t("plugin_failedLoadDetail", { error: String(e) }), "error");
+      communityDetailError = String(e);
     } finally {
       communityDetailLoading = false;
     }
@@ -1085,6 +1087,18 @@
                       <span class="ml-2 text-xs text-muted-foreground"
                         >{t("plugin_loadingPreview")}</span
                       >
+                    </div>
+                  {:else if communityDetailError}
+                    <div
+                      class="rounded-lg border border-destructive/30 bg-destructive/5 p-6 flex flex-col items-center justify-center h-full gap-2 text-center"
+                    >
+                      <span class="text-2xl">⚠</span>
+                      <p class="text-xs font-medium text-destructive">
+                        {t("plugin_skillUnavailable")}
+                      </p>
+                      <p class="text-[10px] text-muted-foreground max-w-[280px] leading-relaxed">
+                        {communityDetailError}
+                      </p>
                     </div>
                   {:else if communityDetail}
                     <div class="rounded-lg border border-border/50 bg-muted/20 p-4 space-y-3">

@@ -1360,6 +1360,26 @@ describe("SessionStore reducer", () => {
       );
       expect(classifyError(undefined, "Received 401 Unauthorized").category).toBe("auth_issue");
     });
+
+    it("classifies session_timeout by text matching", () => {
+      const c1 = classifyError(
+        undefined,
+        "Session timeout — waited 600s for can_use_tool response (Write). Process killed.",
+      );
+      expect(c1.category).toBe("session_timeout");
+      expect(c1.canRetry).toBe(true);
+
+      const c2 = classifyError(
+        undefined,
+        "Session timeout — no response from CLI for 10 minutes. Process killed.",
+      );
+      expect(c2.category).toBe("session_timeout");
+
+      // Legacy message format
+      expect(classifyError(undefined, "Session hard timeout — process killed").category).toBe(
+        "session_timeout",
+      );
+    });
   });
 
   // ── taskNotifications Map ──

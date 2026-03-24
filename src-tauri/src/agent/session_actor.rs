@@ -84,6 +84,19 @@ pub struct RalphCancelResult {
     pub immediate: bool,
 }
 
+/// Tracks a pending interactive control request (permission, hook, elicitation)
+/// that was forwarded to the frontend and is waiting for user response.
+/// Used for diagnosing hard-timeout causes.
+#[derive(Debug)]
+struct PendingInteractiveRequest {
+    request_id: String,
+    /// "can_use_tool" | "hook_callback" | "elicitation"
+    subtype: String,
+    /// tool_name / hook event / server name
+    detail: String,
+    received_at: Instant,
+}
+
 // ── Public types ──
 
 /// Attachment data for multimodal messages (images, documents).
@@ -215,6 +228,12 @@ struct SessionActor {
     ralph_loop: Option<RalphLoopState>,
     /// Flag set by on_tick_timeout when WaitingRetry expires, consumed by main loop.
     ralph_needs_dispatch: bool,
+
+    // ── Observability: pending interactive request tracking ──
+    /// Tracks the most recent interactive control request awaiting user response.
+    /// Set when emitting PermissionPrompt / HookCallback(PreToolUse) / ElicitationPrompt.
+    /// Cleared when the response is received. Retained during quarantine for diagnostics.
+    pending_interactive_request: Option<PendingInteractiveRequest>,
 }
 
 // ── Spawn entry point ──
@@ -284,6 +303,7 @@ pub fn spawn_actor(
         json_parse_fail_count: 0,
         ralph_loop: None,
         ralph_needs_dispatch: false,
+        pending_interactive_request: None,
     };
 
     let join_handle = tokio::spawn(async move {
@@ -351,16 +371,19 @@ impl SessionActor {
                             let _ = reply.send(r);
                         }
                         Some(ActorCommand::CancelControlRequest { request_id, reply }) => {
+                            self.clear_pending_interactive_request(&request_id);
                             let r = self.handle_cancel_control_request(&request_id).await;
                             let _ = reply.send(r);
                         }
                         Some(ActorCommand::RespondHookCallback { request_id, response, reply }) => {
                             log::debug!("[actor] RespondHookCallback: run_id={}, req_id={}", self.run_id, request_id);
+                            self.clear_pending_interactive_request(&request_id);
                             let result = self.write_control_response(&request_id, response).await;
                             let _ = reply.send(result);
                         }
                         Some(ActorCommand::RespondElicitation { request_id, response, reply }) => {
                             log::debug!("[actor] RespondElicitation: run_id={}, req_id={}", self.run_id, request_id);
+                            self.clear_pending_interactive_request(&request_id);
                             let result = self.write_control_response(&request_id, response).await;
                             let _ = reply.send(result);
                         }
@@ -982,9 +1005,10 @@ impl SessionActor {
                 if Instant::now() >= deadline {
                     // Quarantine secondary timeout → hard-kill
                     log::warn!(
-                        "[turn] quarantine hard-timeout: killing process for run_id={} (from_internal={})",
+                        "[turn] quarantine hard-timeout: run_id={}, from_internal={}, pending_request={:?}",
                         self.run_id,
-                        self.quarantine_from_internal
+                        self.quarantine_from_internal,
+                        self.pending_interactive_request.as_ref().map(|r| (&r.subtype, &r.detail, r.received_at.elapsed().as_secs()))
                     );
                     self.protocol.set_pending_slash_command(None);
                     if let Some(ref mut child) = self.child {
@@ -992,8 +1016,15 @@ impl SessionActor {
                     }
                     let error_msg = if self.quarantine_from_internal {
                         "Auto-context hard timeout — process killed".to_string()
+                    } else if let Some(ref req) = self.pending_interactive_request {
+                        let wait_secs = req.received_at.elapsed().as_secs();
+                        format!(
+                            "Session timeout — waited {}s for {} response ({}). Process killed.",
+                            wait_secs, req.subtype, req.detail
+                        )
                     } else {
-                        "Session hard timeout — process killed".to_string()
+                        "Session timeout — no response from CLI for 10 minutes. Process killed."
+                            .to_string()
                     };
                     self.emit_state("failed", None, Some(error_msg), true);
                     self.fail_all_pending_replies("Session hard timeout");
@@ -1071,9 +1102,10 @@ impl SessionActor {
         // but hard_deadline provides a safety net
         else if now >= turn.hard_deadline {
             log::warn!(
-                "[turn] user hard timeout: entering quarantine for run_id={} (turn_seq={})",
+                "[turn] user hard timeout: entering quarantine for run_id={} (turn_seq={}), pending_request={:?}",
                 self.run_id,
-                turn.turn_seq
+                turn.turn_seq,
+                self.pending_interactive_request.as_ref().map(|r| (&r.subtype, &r.detail, r.received_at.elapsed().as_secs()))
             );
             self.protocol.set_pending_slash_command(None);
             self.active_turn = None;
@@ -1264,7 +1296,23 @@ impl SessionActor {
             self.run_id,
             request_id,
         );
+        self.clear_pending_interactive_request(request_id);
         self.write_control_response(request_id, response).await
+    }
+
+    /// Clear pending interactive request if it matches the given request_id.
+    fn clear_pending_interactive_request(&mut self, request_id: &str) {
+        if let Some(ref req) = self.pending_interactive_request {
+            if req.request_id == request_id {
+                log::debug!(
+                    "[actor] clearing pending_interactive_request: subtype={}, detail={}, waited={}s",
+                    req.subtype,
+                    req.detail,
+                    req.received_at.elapsed().as_secs()
+                );
+                self.pending_interactive_request = None;
+            }
+        }
     }
 
     /// Send a control_cancel_request to CLI stdin (top-level message type).
@@ -1712,6 +1760,12 @@ impl SessionActor {
                 }
             }
             if hook_event == "PreToolUse" {
+                self.pending_interactive_request = Some(PendingInteractiveRequest {
+                    request_id: request_id.clone(),
+                    subtype: "hook_callback".to_string(),
+                    detail: format!("PreToolUse:{}", hook_label),
+                    received_at: Instant::now(),
+                });
                 notify_if_background(
                     self.emitter.app(),
                     "Hook Review Required",
@@ -1784,6 +1838,12 @@ impl SessionActor {
                 url,
                 requested_schema,
             });
+            self.pending_interactive_request = Some(PendingInteractiveRequest {
+                request_id: request_id.clone(),
+                subtype: "elicitation".to_string(),
+                detail: mcp_server_name.clone(),
+                received_at: Instant::now(),
+            });
             notify_if_background(
                 self.emitter.app(),
                 "MCP Input Required",
@@ -1838,13 +1898,19 @@ impl SessionActor {
             let tool_label = tool_name.clone();
             self.persist_and_emit(&BusEvent::PermissionPrompt {
                 run_id: self.run_id.clone(),
-                request_id,
+                request_id: request_id.clone(),
                 tool_name,
                 tool_use_id,
                 tool_input,
                 decision_reason,
                 parent_tool_use_id,
                 suggestions,
+            });
+            self.pending_interactive_request = Some(PendingInteractiveRequest {
+                request_id,
+                subtype: "can_use_tool".to_string(),
+                detail: tool_label.clone(),
+                received_at: Instant::now(),
             });
             notify_if_background(
                 self.emitter.app(),

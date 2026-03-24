@@ -4188,9 +4188,11 @@
                 ? "💰"
                 : classified.category === "server_issue"
                   ? "☁"
-                  : classified.category === "tool_issue"
-                    ? "🔧"
-                    : "❌"}
+                  : classified.category === "session_timeout"
+                    ? "⏱"
+                    : classified.category === "tool_issue"
+                      ? "🔧"
+                      : "❌"}
         <div class="absolute bottom-14 left-3 right-3 z-10">
           <div
             class="rounded-lg border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm backdrop-blur-sm animate-fade-in"

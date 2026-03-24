@@ -486,6 +486,7 @@
   "plugin_failedDeleteSkill": "删除技能失败：{error}",
   "plugin_searchFailed": "搜索失败：{error}",
   "plugin_failedLoadDetail": "加载详情失败：{error}",
+  "plugin_skillUnavailable": "技能不可用",
   "plugin_installedSkill": "已安装 {name}",
   "plugin_errorGeneric": "错误：{error}",
   "plugin_uninstallTitle": "卸载插件",
@@ -1133,6 +1134,7 @@
   "error_category_budget_limit": "预算超限",
   "error_category_auth_issue": "认证问题",
   "error_category_server_issue": "服务器问题",
+  "error_category_session_timeout": "会话超时",
   "error_category_tool_issue": "工具问题",
   "error_category_unknown": "错误",
 
@@ -1140,6 +1142,7 @@
   "error_guidance_budget_limit": "已达预算限制。在设置中调整 max_budget_usd 以继续。",
   "error_guidance_auth_issue": "认证失败。请在设置中检查 API 密钥或登录状态。",
   "error_guidance_server_issue": "服务器临时问题。稍等片刻后重试。",
+  "error_guidance_session_timeout": "会话等待响应超时。可能原因：未处理的权限请求、API 响应慢、MCP 服务器无响应。尝试恢复会话或新建对话。",
   "error_guidance_tool_issue": "工具遇到错误。查看工具输出了解详情。",
   "error_guidance_unknown": "发生意外错误。你可以重试或关闭。",
 

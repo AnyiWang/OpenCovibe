@@ -486,6 +486,7 @@
   "plugin_failedDeleteSkill": "Failed to delete skill: {error}",
   "plugin_searchFailed": "Search failed: {error}",
   "plugin_failedLoadDetail": "Failed to load detail: {error}",
+  "plugin_skillUnavailable": "Skill Unavailable",
   "plugin_installedSkill": "Installed {name}",
   "plugin_errorGeneric": "Error: {error}",
   "plugin_uninstallTitle": "Uninstall Plugin",
@@ -1133,6 +1134,7 @@
   "error_category_budget_limit": "Budget Limit",
   "error_category_auth_issue": "Auth Issue",
   "error_category_server_issue": "Server Issue",
+  "error_category_session_timeout": "Session Timeout",
   "error_category_tool_issue": "Tool Issue",
   "error_category_unknown": "Error",
 
@@ -1140,6 +1142,7 @@
   "error_guidance_budget_limit": "Budget limit reached. Adjust max_budget_usd in settings to continue.",
   "error_guidance_auth_issue": "Authentication failed. Check your API key or login status in settings.",
   "error_guidance_server_issue": "Temporary server issue. Wait a moment and retry.",
+  "error_guidance_session_timeout": "The session timed out waiting for a response. This may be caused by a pending permission prompt, slow API, or unresponsive MCP server. Try resuming or starting a new chat.",
   "error_guidance_tool_issue": "A tool encountered an error. Check the tool output for details.",
   "error_guidance_unknown": "An unexpected error occurred. You can retry or dismiss.",
 

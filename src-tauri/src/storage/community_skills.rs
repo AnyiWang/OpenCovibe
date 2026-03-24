@@ -405,10 +405,15 @@ async fn fallback_detail(source: &str, skill_id: &str) -> Result<CommunitySkillD
         .map_err(|e| format!("Failed to download SKILL.md: {e}"))?;
 
     if !resp.status().is_success() {
-        return Err(format!(
-            "Could not fetch skill detail (HTTP {})",
-            resp.status()
-        ));
+        let status = resp.status();
+        return Err(if status == reqwest::StatusCode::NOT_FOUND {
+            format!(
+                "Skill source unavailable — the repository {}/{} may have been removed or restructured (HTTP 404)",
+                source, skill_id
+            )
+        } else {
+            format!("Could not fetch skill detail (HTTP {})", status)
+        });
     }
 
     // Check content length

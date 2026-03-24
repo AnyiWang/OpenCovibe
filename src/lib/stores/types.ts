@@ -103,6 +103,7 @@ export type ErrorCategory =
   | "budget_limit"
   | "auth_issue"
   | "server_issue"
+  | "session_timeout"
   | "tool_issue"
   | "unknown";
 
@@ -177,6 +178,9 @@ export function classifyError(subtype?: string, errorMsg?: string): ClassifiedEr
   }
   if (/api.?key|auth|401|403/i.test(msg)) {
     return { category: "auth_issue", canRetry: false, canFork: false, settingsLink: "/settings" };
+  }
+  if (/session timeout|hard timeout|process killed/i.test(msg)) {
+    return { category: "session_timeout", canRetry: true, canFork: false, settingsLink: "" };
   }
   if (/rate.?limit|overloaded|timeout|network|connection|60s/i.test(msg)) {
     return { category: "server_issue", canRetry: true, canFork: false, settingsLink: "" };
