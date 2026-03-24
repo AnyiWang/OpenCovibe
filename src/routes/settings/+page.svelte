@@ -1872,6 +1872,7 @@
                     active_platform_id: null,
                     auth_env_var: null,
                   });
+                  api.removeCliApiKey().catch(() => {});
                   api
                     .getAuthOverview()
                     .then((ov) => (authOverview = ov))
