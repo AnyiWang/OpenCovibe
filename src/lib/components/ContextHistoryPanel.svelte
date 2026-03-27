@@ -6,6 +6,7 @@
    */
   import type { ContextSnapshot, SessionInfoData } from "$lib/types";
   import type { TurnUsage } from "$lib/stores/types";
+  import { formatTokenCount } from "$lib/utils/format";
   import { getColor, getIcon, computeContextDelta } from "$lib/utils/context-parser";
   import { t } from "$lib/i18n/index.svelte";
 
@@ -99,12 +100,6 @@
     }
   }
 
-  function formatTokens(n: number): string {
-    if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M";
-    if (n >= 1_000) return (n / 1_000).toFixed(1) + "k";
-    return String(n);
-  }
-
   function formatCost(n: number): string {
     if (n >= 1) return "$" + n.toFixed(2);
     if (n >= 0.01) return "$" + n.toFixed(3);
@@ -141,7 +136,7 @@
 
   function formatResourceDelta(value: number): string {
     if (value <= 0) return "";
-    return "+" + formatTokens(value);
+    return "+" + formatTokenCount(value);
   }
 
   function formatCostDelta(value: number): string {
@@ -258,7 +253,7 @@
               <span class="text-muted-foreground">{t("infoPanel_inputTokens")}</span>
               <span class="flex items-center gap-1">
                 <span class="text-foreground/80 font-mono tabular-nums">
-                  {formatTokens(sessionInfo.inputTokens)}
+                  {formatTokenCount(sessionInfo.inputTokens)}
                   {#if sessionInfo.tokensEstimated}<span class="text-muted-foreground text-[10px]"
                       >{t("infoPanel_estimated")}</span
                     >{/if}
@@ -274,7 +269,7 @@
               <span class="text-muted-foreground">{t("infoPanel_outputTokens")}</span>
               <span class="flex items-center gap-1">
                 <span class="text-foreground/80 font-mono tabular-nums">
-                  {formatTokens(sessionInfo.outputTokens)}
+                  {formatTokenCount(sessionInfo.outputTokens)}
                   {#if sessionInfo.tokensEstimated}<span class="text-muted-foreground text-[10px]"
                       >{t("infoPanel_estimated")}</span
                     >{/if}
@@ -291,7 +286,7 @@
                 <span class="text-muted-foreground">{t("infoPanel_cacheRead")}</span>
                 <span class="flex items-center gap-1">
                   <span class="text-foreground/80 font-mono tabular-nums"
-                    >{formatTokens(sessionInfo.cacheReadTokens)}</span
+                    >{formatTokenCount(sessionInfo.cacheReadTokens)}</span
                   >
                   {#if latestTurnUsage && latestTurnUsage.cacheReadTokens > 0}
                     <span class="text-[10px] text-amber-500 font-mono tabular-nums"
@@ -304,7 +299,7 @@
                 <span class="text-muted-foreground">{t("infoPanel_cacheWrite")}</span>
                 <span class="flex items-center gap-1">
                   <span class="text-foreground/80 font-mono tabular-nums"
-                    >{formatTokens(sessionInfo.cacheWriteTokens)}</span
+                    >{formatTokenCount(sessionInfo.cacheWriteTokens)}</span
                   >
                   {#if latestTurnUsage && latestTurnUsage.cacheWriteTokens > 0}
                     <span class="text-[10px] text-amber-500 font-mono tabular-nums"
@@ -318,7 +313,7 @@
               <div class="flex items-center justify-between text-[11px]">
                 <span class="text-muted-foreground">{t("infoPanel_contextWindow")}</span>
                 <span class="text-foreground/80 font-mono tabular-nums">
-                  {formatTokens(sessionInfo.contextWindow)}
+                  {formatTokenCount(sessionInfo.contextWindow)}
                   <span class="text-muted-foreground text-[10px] ml-0.5"
                     >({Math.round(sessionInfo.contextUtilization * 100)}%)</span
                   >
@@ -388,7 +383,7 @@
               {#if entry.tu}
                 <div class="flex items-center gap-2 mt-0.5 text-[10px] text-muted-foreground">
                   <span>{formatCost(getTurnCost(entry.tu))}</span>
-                  <span>{formatTokens(entry.tu.inputTokens + entry.tu.outputTokens)} tok</span>
+                  <span>{formatTokenCount(entry.tu.inputTokens + entry.tu.outputTokens)} tok</span>
                   {#if entry.tu.durationMs}
                     <span>{formatDuration(entry.tu.durationMs)}</span>
                   {/if}
@@ -421,13 +416,13 @@
                     <div class="flex items-center justify-between text-[10px]">
                       <span class="text-muted-foreground">{t("infoPanel_inputTokens")}</span>
                       <span class="text-foreground/70 font-mono tabular-nums"
-                        >{formatTokens(entry.tu.inputTokens)}</span
+                        >{formatTokenCount(entry.tu.inputTokens)}</span
                       >
                     </div>
                     <div class="flex items-center justify-between text-[10px]">
                       <span class="text-muted-foreground">{t("infoPanel_outputTokens")}</span>
                       <span class="text-foreground/70 font-mono tabular-nums"
-                        >{formatTokens(entry.tu.outputTokens)}</span
+                        >{formatTokenCount(entry.tu.outputTokens)}</span
                       >
                     </div>
                     {#if entry.tu.durationMs}

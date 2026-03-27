@@ -98,28 +98,26 @@ pub async fn list_installed_plugins() -> Result<Vec<InstalledPlugin>, String> {
     crate::storage::plugins::list_installed_plugins_cli().await
 }
 
-#[tauri::command]
-pub async fn install_plugin(
-    name: String,
-    scope: String,
-    cwd: Option<String>,
+/// Shared helper for install/uninstall/enable/disable/update — all have identical structure.
+async fn plugin_lifecycle_op(
+    verb: &str,
+    name: &str,
+    scope: &str,
+    cwd: Option<&str>,
 ) -> Result<PluginOperationResult, String> {
     log::debug!(
-        "[plugins] install_plugin: name={}, scope={}, cwd={:?}",
+        "[plugins] {}: name={}, scope={}, cwd={:?}",
+        verb,
         name,
         scope,
         cwd
     );
-    crate::storage::plugins::validate_plugin_name(&name)?;
-    crate::storage::plugins::validate_scope(&scope)?;
-    let effective_cwd = validate_plugin_cwd(&scope, cwd.as_deref())?;
-
-    let result = crate::storage::plugins::run_plugin_command(
-        &["install", &name, "--scope", &scope],
-        effective_cwd,
-    )
-    .await?;
-
+    crate::storage::plugins::validate_plugin_name(name)?;
+    crate::storage::plugins::validate_scope(scope)?;
+    let effective_cwd = validate_plugin_cwd(scope, cwd)?;
+    let result =
+        crate::storage::plugins::run_plugin_command(&[verb, name, "--scope", scope], effective_cwd)
+            .await?;
     Ok(PluginOperationResult {
         success: result.success,
         message: if result.success {
@@ -128,6 +126,15 @@ pub async fn install_plugin(
             result.stderr.trim().to_string()
         },
     })
+}
+
+#[tauri::command]
+pub async fn install_plugin(
+    name: String,
+    scope: String,
+    cwd: Option<String>,
+) -> Result<PluginOperationResult, String> {
+    plugin_lifecycle_op("install", &name, &scope, cwd.as_deref()).await
 }
 
 #[tauri::command]
@@ -136,30 +143,7 @@ pub async fn uninstall_plugin(
     scope: String,
     cwd: Option<String>,
 ) -> Result<PluginOperationResult, String> {
-    log::debug!(
-        "[plugins] uninstall_plugin: name={}, scope={}, cwd={:?}",
-        name,
-        scope,
-        cwd
-    );
-    crate::storage::plugins::validate_plugin_name(&name)?;
-    crate::storage::plugins::validate_scope(&scope)?;
-    let effective_cwd = validate_plugin_cwd(&scope, cwd.as_deref())?;
-
-    let result = crate::storage::plugins::run_plugin_command(
-        &["uninstall", &name, "--scope", &scope],
-        effective_cwd,
-    )
-    .await?;
-
-    Ok(PluginOperationResult {
-        success: result.success,
-        message: if result.success {
-            result.stdout.trim().to_string()
-        } else {
-            result.stderr.trim().to_string()
-        },
-    })
+    plugin_lifecycle_op("uninstall", &name, &scope, cwd.as_deref()).await
 }
 
 #[tauri::command]
@@ -168,30 +152,7 @@ pub async fn enable_plugin(
     scope: String,
     cwd: Option<String>,
 ) -> Result<PluginOperationResult, String> {
-    log::debug!(
-        "[plugins] enable_plugin: name={}, scope={}, cwd={:?}",
-        name,
-        scope,
-        cwd
-    );
-    crate::storage::plugins::validate_plugin_name(&name)?;
-    crate::storage::plugins::validate_scope(&scope)?;
-    let effective_cwd = validate_plugin_cwd(&scope, cwd.as_deref())?;
-
-    let result = crate::storage::plugins::run_plugin_command(
-        &["enable", &name, "--scope", &scope],
-        effective_cwd,
-    )
-    .await?;
-
-    Ok(PluginOperationResult {
-        success: result.success,
-        message: if result.success {
-            result.stdout.trim().to_string()
-        } else {
-            result.stderr.trim().to_string()
-        },
-    })
+    plugin_lifecycle_op("enable", &name, &scope, cwd.as_deref()).await
 }
 
 #[tauri::command]
@@ -200,30 +161,7 @@ pub async fn disable_plugin(
     scope: String,
     cwd: Option<String>,
 ) -> Result<PluginOperationResult, String> {
-    log::debug!(
-        "[plugins] disable_plugin: name={}, scope={}, cwd={:?}",
-        name,
-        scope,
-        cwd
-    );
-    crate::storage::plugins::validate_plugin_name(&name)?;
-    crate::storage::plugins::validate_scope(&scope)?;
-    let effective_cwd = validate_plugin_cwd(&scope, cwd.as_deref())?;
-
-    let result = crate::storage::plugins::run_plugin_command(
-        &["disable", &name, "--scope", &scope],
-        effective_cwd,
-    )
-    .await?;
-
-    Ok(PluginOperationResult {
-        success: result.success,
-        message: if result.success {
-            result.stdout.trim().to_string()
-        } else {
-            result.stderr.trim().to_string()
-        },
-    })
+    plugin_lifecycle_op("disable", &name, &scope, cwd.as_deref()).await
 }
 
 #[tauri::command]
@@ -232,30 +170,7 @@ pub async fn update_plugin(
     scope: String,
     cwd: Option<String>,
 ) -> Result<PluginOperationResult, String> {
-    log::debug!(
-        "[plugins] update_plugin: name={}, scope={}, cwd={:?}",
-        name,
-        scope,
-        cwd
-    );
-    crate::storage::plugins::validate_plugin_name(&name)?;
-    crate::storage::plugins::validate_scope(&scope)?;
-    let effective_cwd = validate_plugin_cwd(&scope, cwd.as_deref())?;
-
-    let result = crate::storage::plugins::run_plugin_command(
-        &["update", &name, "--scope", &scope],
-        effective_cwd,
-    )
-    .await?;
-
-    Ok(PluginOperationResult {
-        success: result.success,
-        message: if result.success {
-            result.stdout.trim().to_string()
-        } else {
-            result.stderr.trim().to_string()
-        },
-    })
+    plugin_lifecycle_op("update", &name, &scope, cwd.as_deref()).await
 }
 
 #[tauri::command]

@@ -649,6 +649,21 @@ export class SessionStore {
     }
   }
 
+  /** Push an optimistic user message to the timeline (deduped by content in _reduce). */
+  private _pushOptimisticUser(content: string, attachments?: Attachment[]): void {
+    const id = uuid();
+    this._pushTimeline(null, {
+      kind: "user",
+      id,
+      anchorId: id,
+      content,
+      ts: new Date().toISOString(),
+      ...(attachments && attachments.length > 0
+        ? { attachments: timelineAttachments(attachments) }
+        : {}),
+    });
+  }
+
   /** Append a hook event entry and update tool index if applicable.
    *  Index uses first-match semantics — only set if not already present. */
   private _pushHookEntry(ctx: ReduceCtx | null, heEntry: HookEvent): void {
@@ -1616,15 +1631,7 @@ export class SessionStore {
         // api.startSession(), but the middleware subscription isn't set up
         // until after goto() triggers the URL $effect.  Content-based dedup
         // in _reduce(user_message) prevents double display.
-        const optId1 = uuid();
-        this._pushTimeline(null, {
-          kind: "user",
-          id: optId1,
-          anchorId: optId1,
-          content: prompt,
-          ts: new Date().toISOString(),
-          ...(attachments.length > 0 ? { attachments: timelineAttachments(attachments) } : {}),
-        });
+        this._pushOptimisticUser(prompt, attachments);
         // Subscribe middleware BEFORE spawning so no bus-events are dropped.
         // The $effect in chat page will call subscribeCurrent again (idempotent).
         const mw = getEventMiddleware();
@@ -1677,15 +1684,7 @@ export class SessionStore {
         // Optimistic user message — matches the pattern in startSession().
         // Content-based dedup in _reduce(user_message) prevents double display
         // when the backend's UserMessage bus event arrives.
-        const optId2 = uuid();
-        this._pushTimeline(null, {
-          kind: "user",
-          id: optId2,
-          anchorId: optId2,
-          content: text,
-          ts: new Date().toISOString(),
-          ...(attachments.length > 0 ? { attachments: timelineAttachments(attachments) } : {}),
-        });
+        this._pushOptimisticUser(text, attachments);
         await api.sendSessionMessage(this.run.id, text, mapAttachments(attachments) ?? undefined);
         if (this.isKnownSlashCommand(text)) {
           dbg("store", "skip response timeout for slash command", { cmd: text.split(" ")[0] });
@@ -1903,17 +1902,7 @@ export class SessionStore {
       // Must be before startSession IPC so the user sees their message immediately.
       // Backend's UserMessage bus event will be deduped by content match in _reduce.
       if (initialMessage) {
-        const optId3 = uuid();
-        this._pushTimeline(null, {
-          kind: "user" as const,
-          id: optId3,
-          anchorId: optId3,
-          content: initialMessage,
-          ts: new Date().toISOString(),
-          ...(attachments && attachments.length > 0
-            ? { attachments: timelineAttachments(attachments) }
-            : {}),
-        });
+        this._pushOptimisticUser(initialMessage, attachments ?? undefined);
       }
 
       // Explicitly set phase — replay didn't touch it

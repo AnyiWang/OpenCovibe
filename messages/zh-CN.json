@@ -1329,6 +1329,8 @@
   "hooks_timeout": "超时（毫秒）",
   "hooks_async": "异步",
   "hooks_once": "仅一次",
+  "hooks_condition": "条件",
+  "hooks_conditionPlaceholder": "例如 Bash(git *) — 权限规则语法",
   "hooks_statusMessage": "状态消息",
   "hooks_statusMessagePlaceholder": "执行期间显示的状态消息...",
   "hooks_model": "模型",

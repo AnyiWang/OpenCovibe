@@ -81,7 +81,7 @@
   import { executeAddDir } from "$lib/utils/add-dir";
   import { buildDoctorReport } from "$lib/utils/doctor";
   import type { RewindCandidate, RewindMarker } from "$lib/utils/rewind";
-  import { truncate, cwdDisplayLabel } from "$lib/utils/format";
+  import { truncate, cwdDisplayLabel, formatTokenCount } from "$lib/utils/format";
   import { uuid } from "$lib/utils/uuid";
   import RewindModal from "$lib/components/RewindModal.svelte";
   import type { ElementSelection } from "$lib/types";
@@ -707,12 +707,6 @@
   });
 
   // ── Per-turn usage annotations in timeline ──
-
-  function formatTokens(n: number): string {
-    if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M";
-    if (n >= 1_000) return (n / 1_000).toFixed(1) + "k";
-    return String(n);
-  }
 
   let usageByTurn = $derived(new Map(store.turnUsages.map((tu) => [tu.turnIndex, tu])));
 
@@ -1772,6 +1766,8 @@
         const runId = await store.startSession(text, cwd, attachments);
         goto(`/chat?run=${runId}`, { replaceState: true });
         window.dispatchEvent(new Event("ocv:runs-changed"));
+        // Re-detect CLI version on new session (picks up external updates)
+        loadCliVersionInfo();
 
         // CLI PTY mode: queue message and spawn PTY
         if (!store.useStreamSession && store.agent === "claude") {
@@ -3911,13 +3907,13 @@
                             <div class="flex items-center gap-3">
                               <div class="h-px flex-1 bg-border/40"></div>
                               <span class="text-[10px] tabular-nums text-muted-foreground">
-                                {formatTokens(tu.inputTokens)}
-                                {t("chat_usageIn")} · {formatTokens(tu.outputTokens)}
+                                {formatTokenCount(tu.inputTokens)}
+                                {t("chat_usageIn")} · {formatTokenCount(tu.outputTokens)}
                                 {t("chat_usageOut")}
                                 {#if tu.cacheReadTokens > 0 || tu.cacheWriteTokens > 0}
                                   · {t("chat_usageCache", {
-                                    read: formatTokens(tu.cacheReadTokens),
-                                    write: formatTokens(tu.cacheWriteTokens),
+                                    read: formatTokenCount(tu.cacheReadTokens),
+                                    write: formatTokenCount(tu.cacheWriteTokens),
                                   })}
                                 {/if}
                               </span>
@@ -4089,13 +4085,13 @@
                     <div class="flex items-center gap-3">
                       <div class="h-px flex-1 bg-border/40"></div>
                       <span class="text-[10px] tabular-nums text-muted-foreground">
-                        {formatTokens(lastTurnUsage.inputTokens)}
-                        {t("chat_usageIn")} · {formatTokens(lastTurnUsage.outputTokens)}
+                        {formatTokenCount(lastTurnUsage.inputTokens)}
+                        {t("chat_usageIn")} · {formatTokenCount(lastTurnUsage.outputTokens)}
                         {t("chat_usageOut")}
                         {#if lastTurnUsage.cacheReadTokens > 0 || lastTurnUsage.cacheWriteTokens > 0}
                           · {t("chat_usageCache", {
-                            read: formatTokens(lastTurnUsage.cacheReadTokens),
-                            write: formatTokens(lastTurnUsage.cacheWriteTokens),
+                            read: formatTokenCount(lastTurnUsage.cacheReadTokens),
+                            write: formatTokenCount(lastTurnUsage.cacheWriteTokens),
                           })}
                         {/if}
                       </span>

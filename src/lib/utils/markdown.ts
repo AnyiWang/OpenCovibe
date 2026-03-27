@@ -1,4 +1,5 @@
 import { Marked } from "marked";
+import { escapeHtml } from "$lib/utils/ansi";
 import hljs from "highlight.js/lib/core";
 import javascript from "highlight.js/lib/languages/javascript";
 import typescript from "highlight.js/lib/languages/typescript";
@@ -45,14 +46,6 @@ hljs.registerLanguage("cpp", cpp);
 hljs.registerLanguage("c", cpp);
 hljs.registerLanguage("diff", diff);
 hljs.registerLanguage("shell", shell);
-
-function escapeHtml(str: string): string {
-  return str
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
 
 const marked = new Marked();
 

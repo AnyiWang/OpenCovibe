@@ -8,6 +8,18 @@ use crate::models::BusEvent;
 use serde_json::Value;
 use std::collections::HashMap;
 
+/// Extract a string field from a JSON Value, returning "" if missing/non-string.
+#[inline]
+fn str_field<'a>(v: &'a Value, key: &str) -> &'a str {
+    v.get(key).and_then(|v| v.as_str()).unwrap_or("")
+}
+
+/// Extract an optional owned string field from a JSON Value.
+#[inline]
+fn opt_str(v: &Value, key: &str) -> Option<String> {
+    v.get(key).and_then(|v| v.as_str()).map(String::from)
+}
+
 /// Parsing statistics for Claude protocol — accumulated per-session, never reset.
 /// Codex stats are NOT included here; Codex path only logs, no counters
 /// (codex_parser lives in a separate stream.rs path, not ProtocolState).
@@ -184,9 +196,7 @@ impl ProtocolState {
 
         // Unwrap stream_event envelope: CLI wraps API streaming events as
         // {type: "stream_event", event: {type: "content_block_delta", ...}}
-        let (raw, parent_tool_use_id) = if raw.get("type").and_then(|v| v.as_str())
-            == Some("stream_event")
-        {
+        let (raw, parent_tool_use_id) = if str_field(raw, "type") == "stream_event" {
             let inner = raw.get("event");
             if let Some(inner_val) = inner.filter(|v| {
                 v.get("type")
@@ -222,12 +232,12 @@ impl ProtocolState {
             (raw, ptui)
         };
 
-        let event_type = raw.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        let event_type = str_field(raw, "type");
 
         match event_type {
             // ── system init ──
             "system" => {
-                let subtype = raw.get("subtype").and_then(|v| v.as_str()).unwrap_or("");
+                let subtype = str_field(raw, "subtype");
                 if subtype == "init" {
                     let session_id = raw
                         .get("session_id")
@@ -282,10 +292,8 @@ impl ProtocolState {
                                         .and_then(|v| v.as_str())
                                         .unwrap_or("pending")
                                         .to_string();
-                                    let server_type =
-                                        s.get("type").and_then(|v| v.as_str()).map(String::from);
-                                    let error =
-                                        s.get("error").and_then(|v| v.as_str()).map(String::from);
+                                    let server_type = opt_str(s, "type");
+                                    let error = opt_str(s, "error");
                                     Some(crate::models::McpServerInfo {
                                         name,
                                         status,
@@ -421,7 +429,7 @@ impl ProtocolState {
                         pre_tokens: None,
                     });
                 } else if subtype == "status" {
-                    let status = raw.get("status").and_then(|v| v.as_str()).map(String::from);
+                    let status = opt_str(raw, "status");
                     log::debug!("[protocol] system/status: {:?}", status);
                     events.push(BusEvent::SystemStatus {
                         run_id: run_id.to_string(),
@@ -488,8 +496,8 @@ impl ProtocolState {
                         .get("hook_name")
                         .and_then(|v| v.as_str())
                         .map(String::from);
-                    let hook_stdout = raw.get("stdout").and_then(|v| v.as_str()).map(String::from);
-                    let hook_stderr = raw.get("stderr").and_then(|v| v.as_str()).map(String::from);
+                    let hook_stdout = opt_str(raw, "stdout");
+                    let hook_stderr = opt_str(raw, "stderr");
                     let hook_exit_code = raw
                         .get("exit_code")
                         .and_then(|v| v.as_i64())
@@ -662,7 +670,7 @@ impl ProtocolState {
 
             "content_block_delta" => {
                 if let Some(delta) = raw.get("delta") {
-                    let delta_type = delta.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                    let delta_type = str_field(delta, "type");
                     match delta_type {
                         "text_delta" => {
                             if let Some(text) = delta.get("text").and_then(|v| v.as_str()) {
@@ -677,7 +685,7 @@ impl ProtocolState {
                         }
                         "thinking_delta" | "thinking" => {
                             // Extended thinking: stream reasoning text
-                            let text = delta.get("thinking").and_then(|v| v.as_str()).unwrap_or("");
+                            let text = str_field(delta, "thinking");
                             if !text.is_empty() {
                                 events.push(BusEvent::ThinkingDelta {
                                     run_id: run_id.to_string(),
@@ -729,7 +737,7 @@ impl ProtocolState {
                 let message_id = message
                     .get("id")
                     .and_then(|v| v.as_str())
-                    .unwrap_or_else(|| raw.get("id").and_then(|v| v.as_str()).unwrap_or(""))
+                    .unwrap_or_else(|| str_field(raw, "id"))
                     .to_string();
 
                 // Extract per-message metadata from message object
@@ -755,7 +763,7 @@ impl ProtocolState {
                     let mut text_parts: Vec<String> = Vec::new();
 
                     for block in content {
-                        let block_type = block.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                        let block_type = str_field(block, "type");
                         match block_type {
                             "text" => {
                                 if let Some(t) = block.get("text").and_then(|v| v.as_str()) {
@@ -911,7 +919,7 @@ impl ProtocolState {
 
                 if let Some(content) = message.get("content").and_then(|v| v.as_array()) {
                     for block in content {
-                        let block_type = block.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                        let block_type = str_field(block, "type");
                         if block_type == "tool_result" {
                             let tool_use_id = block
                                 .get("tool_use_id")
@@ -953,7 +961,7 @@ impl ProtocolState {
 
             // ── result (turn complete) ──
             "result" => {
-                let subtype = raw.get("subtype").and_then(|v| v.as_str()).unwrap_or("");
+                let subtype = str_field(raw, "subtype");
 
                 // Extract usage
                 if let Some(usage) = raw.get("usage") {

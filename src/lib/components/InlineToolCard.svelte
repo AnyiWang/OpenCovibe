@@ -1249,7 +1249,7 @@
                 </svg>
                 <span class="text-[11px] font-medium text-indigo-300">{planContent.fileName}</span>
               </div>
-              <div class="px-4 py-3 max-h-96 overflow-hidden prose-chat">
+              <div class="px-4 py-3 max-h-96 overflow-y-auto prose-chat">
                 <MarkdownContent text={planContent.content} />
               </div>
             </div>
@@ -1758,7 +1758,7 @@
         </svg>
         <span class="text-[11px] font-medium text-indigo-300">{planContent.fileName}</span>
       </div>
-      <div class="px-4 py-3 max-h-96 overflow-hidden prose-chat">
+      <div class="px-4 py-3 max-h-96 overflow-y-auto prose-chat">
         <MarkdownContent text={planContent.content} />
       </div>
     </div>

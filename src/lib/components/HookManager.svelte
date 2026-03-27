@@ -120,6 +120,7 @@
                 typeof hObj.statusMessage === "string" ? hObj.statusMessage : undefined,
               model: typeof hObj.model === "string" ? hObj.model : undefined,
               once: typeof hObj.once === "boolean" ? hObj.once : undefined,
+              if: typeof hObj.if === "string" ? hObj.if : undefined,
             } as HookHandler;
           }
           return { type: "command" as const, command: "" };
@@ -157,6 +158,7 @@
       if (h.once === true) handler.once = true;
       if (h.statusMessage) handler.statusMessage = h.statusMessage;
       if (h.type === "prompt" && h.model) handler.model = h.model;
+      if (h.if) handler.if = h.if;
       return handler;
     });
     return group;
@@ -524,6 +526,25 @@
                     </div>
                     <span class="text-[10px] text-muted-foreground">{t("hooks_once")}</span>
                   </button>
+                </div>
+
+                <!-- Conditional filter -->
+                <div>
+                  <label class="block text-[10px] text-muted-foreground mb-0.5"
+                    >{t("hooks_condition")}</label
+                  >
+                  <input
+                    type="text"
+                    class="w-full rounded-md border border-border bg-background px-2 py-1 text-xs text-foreground font-mono placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+                    placeholder={t("hooks_conditionPlaceholder")}
+                    value={handler.if ?? ""}
+                    oninput={(e) => {
+                      editorHandlers[hi] = {
+                        ...handler,
+                        if: (e.target as HTMLInputElement).value || undefined,
+                      };
+                    }}
+                  />
                 </div>
 
                 <!-- Status message -->

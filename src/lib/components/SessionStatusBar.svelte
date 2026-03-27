@@ -7,7 +7,7 @@
   import { getCliModels } from "$lib/stores/cli-info.svelte";
   import { t } from "$lib/i18n/index.svelte";
   import { fmtNumber } from "$lib/i18n/format";
-  import { truncate } from "$lib/utils/format";
+  import { truncate, formatTokenCount } from "$lib/utils/format";
 
   let {
     run = null,
@@ -192,12 +192,6 @@
     if (c === 0) return "$0.00";
     if (c < 0.01) return "<$0.01";
     return "$" + c.toFixed(2);
-  }
-
-  function formatTokens(t: number): string {
-    if (t === 0) return "0";
-    if (t >= 1000) return (t / 1000).toFixed(1) + "k";
-    return t.toString();
   }
 
   function formatDuration(ms: number): string {
@@ -727,13 +721,14 @@
           <span
             class="shrink-0"
             title={`${t("statusbar_inputLabel")}: ${fmtNumber(inputTokens)} / ${t("statusbar_outputLabel")}: ${fmtNumber(outputTokens)}${cacheReadTokens ? `\n${t("statusbar_cacheReadLabel")}: ${fmtNumber(cacheReadTokens)}` : ""}${cacheWriteTokens ? `\n${t("statusbar_cacheWriteLabel")}: ${fmtNumber(cacheWriteTokens)}` : ""}`}
-            >{formatTokens(inputTokens)} / {formatTokens(outputTokens)} {t("statusbar_tok")}</span
+            >{formatTokenCount(inputTokens)} / {formatTokenCount(outputTokens)}
+            {t("statusbar_tok")}</span
           >
           {#if cacheReadTokens > 0 || cacheWriteTokens > 0}
             <span class="text-foreground/60 text-[10px] shrink-0"
               >{t("statusbar_cacheRW", {
-                read: formatTokens(cacheReadTokens),
-                write: formatTokens(cacheWriteTokens),
+                read: formatTokenCount(cacheReadTokens),
+                write: formatTokenCount(cacheWriteTokens),
               })}</span
             >
           {/if}

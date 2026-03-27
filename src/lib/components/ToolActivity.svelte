@@ -2,7 +2,7 @@
   import type { HookEvent, ContextSnapshot, SessionInfoData, FileEntry } from "$lib/types";
   import type { TimelineEntry, BusToolItem, TurnUsage } from "$lib/stores/types";
   import { getToolColor } from "$lib/utils/tool-colors";
-  import { splitPath, truncate } from "$lib/utils/format";
+  import { splitPath, truncate, formatTokenCount } from "$lib/utils/format";
   import { dbg } from "$lib/utils/debug";
   import { t } from "$lib/i18n/index.svelte";
   import ContextHistoryPanel from "$lib/components/ContextHistoryPanel.svelte";
@@ -58,12 +58,6 @@
   });
 
   // ── Helpers ──
-
-  function formatTokens(n: number): string {
-    if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M";
-    if (n >= 1_000) return (n / 1_000).toFixed(1) + "k";
-    return String(n);
-  }
 
   function shortPath(v: unknown): string {
     if (!v || typeof v !== "string") return "";
@@ -715,7 +709,7 @@
                     {#if (usage.tool_uses || usage.duration_ms) && usage.total_tokens}
                       ·
                     {/if}
-                    {#if usage.total_tokens}{formatTokens(usage.total_tokens)} tok{/if}
+                    {#if usage.total_tokens}{formatTokenCount(usage.total_tokens)} tok{/if}
                   </div>
                 {/if}
               </button>
@@ -867,7 +861,7 @@
                 <span class="ml-auto flex items-center gap-1.5">
                   {#if tu}
                     <span class="text-[10px] text-muted-foreground"
-                      >{formatTokens(tu.inputTokens + tu.outputTokens)}</span
+                      >{formatTokenCount(tu.inputTokens + tu.outputTokens)}</span
                     >
                   {/if}
                   <span

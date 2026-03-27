@@ -1,5 +1,6 @@
 <script lang="ts">
   import "../app.css";
+  import { escapeHtml } from "$lib/utils/ansi";
   import {
     listRuns,
     getUserSettings,
@@ -427,10 +428,6 @@
     const q = escapeHtml(query.trim());
     const re = new RegExp(`(${q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")})`, "gi");
     return escaped.replace(re, "<mark>$1</mark>");
-  }
-
-  function escapeHtml(s: string): string {
-    return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   }
 
   async function loadSettings() {

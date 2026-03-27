@@ -1120,6 +1120,8 @@ export interface HookHandler {
   statusMessage?: string;
   model?: string;
   once?: boolean;
+  /** Conditional filter using permission rule syntax (e.g., `Bash(git *)`) — CLI 2.1.85+ */
+  if?: string;
 }
 
 export interface HookMatcherGroup {

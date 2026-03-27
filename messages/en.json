@@ -1329,6 +1329,8 @@
   "hooks_timeout": "Timeout (ms)",
   "hooks_async": "Async",
   "hooks_once": "Once",
+  "hooks_condition": "Condition",
+  "hooks_conditionPlaceholder": "e.g. Bash(git *) — permission rule syntax",
   "hooks_statusMessage": "Status Message",
   "hooks_statusMessagePlaceholder": "Status message shown during execution...",
   "hooks_model": "Model",
