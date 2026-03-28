@@ -120,6 +120,29 @@
   let localAdvancedOpen = $state(false);
   let localProxyStatuses = $state<Record<string, { running: boolean; needsAuth: boolean }>>({});
 
+  // ── API connectivity test state ──
+  let apiTestLoading = $state(false);
+  let apiTestResult = $state<import("$lib/types").ApiTestResult | null>(null);
+  let apiTestRequestId = $state(0);
+  // Derive effective auth env var (tracks platformCredentials + selectedPlatformId)
+  let effectiveAuthEnvVar = $derived(
+    findCredential(platformCredentials, selectedPlatformId ?? "")?.auth_env_var ||
+      selectedPlatform?.auth_env_var ||
+      "ANTHROPIC_API_KEY",
+  );
+  // Clear stale test result AND invalidate in-flight requests when any relevant input changes
+  $effect(() => {
+    void anthropicApiKey;
+    void anthropicBaseUrl;
+    void platformModels;
+    void effectiveAuthEnvVar;
+    return () => {
+      apiTestResult = null;
+      apiTestRequestId++; // invalidate in-flight request
+      apiTestLoading = false;
+    };
+  });
+
   // ── Web Server state (desktop-only) ──
   let webToken = $state<string | null>(null);
   let webStatus = $state<{
@@ -786,6 +809,7 @@
 
   /** Load display fields (key + URL) from credential store for a given platform. */
   function loadFieldsFromCredential(platformId: string | null) {
+    apiTestResult = null;
     if (!platformId) {
       anthropicApiKey = "";
       anthropicBaseUrl = "";
@@ -2279,8 +2303,112 @@
                     >
                       {showApiKey ? t("settings_general_hide") : t("settings_general_show")}
                     </button>
+                    {#if selectedPlatform?.category !== "local"}
+                      {@const cred = findCredential(platformCredentials, selectedPlatformId ?? "")}
+                      {@const authEnvVar =
+                        cred?.auth_env_var || selectedPlatform?.auth_env_var || "ANTHROPIC_API_KEY"}
+                      {@const parsedModels = platformModels
+                        .split(",")
+                        .map((s) => s.trim())
+                        .filter(Boolean)}
+                      {@const testModel = parsedModels[0] || selectedPlatform?.models?.[0] || ""}
+                      {@const isCustom = isCustomPlatform(selectedPlatformId ?? "")}
+                      {@const noKey = !anthropicApiKey}
+                      {@const noUrl = isCustom && !anthropicBaseUrl.trim()}
+                      {@const disableReason = noKey
+                        ? t("settings_apiTest_noKey")
+                        : noUrl
+                          ? t("settings_apiTest_noUrl")
+                          : ""}
+                      <button
+                        class="rounded-md border px-3 py-2 text-xs transition-colors {disableReason ||
+                        apiTestLoading
+                          ? 'text-muted-foreground/50 cursor-not-allowed'
+                          : 'text-muted-foreground hover:bg-accent hover:text-foreground'}"
+                        disabled={!!disableReason || apiTestLoading}
+                        title={disableReason || ""}
+                        onclick={async () => {
+                          const myRequestId = ++apiTestRequestId;
+                          const myPlatformId = selectedPlatformId;
+                          apiTestLoading = true;
+                          apiTestResult = null;
+                          dbg("settings", "testApi start", {
+                            platform: myPlatformId,
+                            model: testModel,
+                            authEnvVar,
+                            reqId: myRequestId,
+                          });
+                          try {
+                            const result = await api.testApiConnectivity(
+                              anthropicApiKey,
+                              anthropicBaseUrl,
+                              authEnvVar,
+                              testModel,
+                            );
+                            if (myRequestId !== apiTestRequestId) return;
+                            if (myPlatformId !== selectedPlatformId) return;
+                            apiTestResult = result;
+                            if (result.success) {
+                              dbg("settings", "testApi success", { latencyMs: result.latencyMs });
+                            } else {
+                              dbgWarn("settings", "testApi error", result.error);
+                            }
+                          } catch (e) {
+                            if (
+                              myRequestId !== apiTestRequestId ||
+                              myPlatformId !== selectedPlatformId
+                            )
+                              return;
+                            apiTestResult = {
+                              success: false,
+                              latencyMs: 0,
+                              error: String(e),
+                              partial: false,
+                            };
+                            dbgWarn("settings", "testApi error", e);
+                          } finally {
+                            if (myRequestId === apiTestRequestId) apiTestLoading = false;
+                          }
+                        }}
+                      >
+                        {t("settings_apiTest")}
+                      </button>
+                    {/if}
                   </div>
-                  {#if selectedPlatform?.id === "ollama"}
+                  <!-- API test result -->
+                  {#if apiTestLoading}
+                    <div class="mt-1.5 flex items-center gap-1.5">
+                      <span class="h-2 w-2 rounded-full bg-amber-400 animate-pulse"></span>
+                      <span class="text-xs text-muted-foreground"
+                        >{t("settings_apiTest_testing")}</span
+                      >
+                    </div>
+                  {:else if apiTestResult?.success && apiTestResult.partial}
+                    <div class="mt-1.5 flex items-center gap-1.5">
+                      <span class="h-2 w-2 rounded-full bg-green-500"></span>
+                      <span class="text-xs text-green-600 dark:text-green-400"
+                        >{t("settings_apiTest_partial", {
+                          latency: String(apiTestResult.latencyMs),
+                        })}</span
+                      >
+                    </div>
+                  {:else if apiTestResult?.success}
+                    <div class="mt-1.5 flex items-center gap-1.5">
+                      <span class="h-2 w-2 rounded-full bg-green-500"></span>
+                      <span class="text-xs text-green-600 dark:text-green-400"
+                        >{t("settings_apiTest_success", {
+                          latency: String(apiTestResult.latencyMs),
+                        })}</span
+                      >
+                    </div>
+                  {:else if apiTestResult && !apiTestResult.success}
+                    <div class="mt-1.5 flex items-center gap-1.5">
+                      <span class="h-2 w-2 rounded-full bg-red-500"></span>
+                      <span class="text-xs text-red-600 dark:text-red-400"
+                        >{apiTestResult.error ?? t("settings_apiTest_failed")}</span
+                      >
+                    </div>
+                  {:else if selectedPlatform?.id === "ollama"}
                     <p class="mt-1 text-xs text-muted-foreground">{t("setup_noKeyNeeded")}</p>
                   {:else}
                     <p class="mt-1 text-xs text-muted-foreground">

@@ -185,8 +185,29 @@
     }),
   );
 
-  // Installed skill names (for community install status check)
-  let installedSkillNames = $derived(new Set(skills.map((s) => s.name.toLowerCase())));
+  // Installed skill slugs (for community install status check)
+  // Extract parent directory name from skill.path as the installed slug
+  // path format: "~/.claude/skills/react-components/SKILL.md"
+  function installedSlug(skillPath: string): string {
+    const parts = skillPath.replace(/\\/g, "/").split("/");
+    return parts.length >= 2 ? parts[parts.length - 2].toLowerCase() : "";
+  }
+  // Match backend to_local_slug: rsplit('/') → colon→hyphen → keep alphanumeric/-/_
+  function toLocalSlug(s: string): string {
+    const base = s.split("/").pop() ?? s;
+    return base
+      .replace(/:/g, "-")
+      .replace(/[^a-zA-Z0-9_-]/g, "")
+      .toLowerCase();
+  }
+  let installedSlugsByScope = $derived.by(() => {
+    const map: Record<string, Set<string>> = { user: new Set(), project: new Set() };
+    for (const s of skills) {
+      const slug = installedSlug(s.path);
+      if (slug && s.scope && map[s.scope]) map[s.scope].add(slug);
+    }
+    return map;
+  });
 
   // MCP: installed plugins that declare mcp_servers
 
@@ -491,7 +512,7 @@
     communityDetail = null;
     communityDetailError = null;
     try {
-      communityDetail = await getCommunitySkillDetail(skill.source, skill.name);
+      communityDetail = await getCommunitySkillDetail(skill.source, skill.skill_id);
     } catch (e) {
       communityDetailError = String(e);
     } finally {
@@ -504,12 +525,14 @@
     try {
       const result = await installCommunitySkill(
         skill.source,
-        skill.name,
+        skill.skill_id,
         communityScope,
         projectCwd || undefined,
       );
       showToast(
-        result.success ? t("plugin_installedSkill", { name: skill.name }) : result.message,
+        result.success
+          ? t("plugin_installedSkill", { name: skill.name }) + " " + t("plugin_skillRestartHint")
+          : result.message,
         result.success ? "success" : "error",
       );
       if (result.success) {
@@ -1065,7 +1088,9 @@
                 <!-- Left: scrollable skill list -->
                 <div class="w-[280px] shrink-0 overflow-y-auto space-y-1.5 pr-1">
                   {#each communityDisplayResults as skill}
-                    {@const isInstalled = installedSkillNames.has(skill.name.toLowerCase())}
+                    {@const isInstalled = (
+                      installedSlugsByScope[communityScope] ?? new Set<string>()
+                    ).has(toLocalSlug(skill.skill_id))}
                     <div
                       class="w-full text-left rounded-lg border px-3 py-2 transition-colors cursor-pointer {communityDetail?.id ===
                       skill.id

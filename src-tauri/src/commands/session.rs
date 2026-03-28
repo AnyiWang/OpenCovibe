@@ -22,9 +22,20 @@ fn truncate_str(s: &str, max: usize) -> &str {
     &s[..end]
 }
 
+/// Helper: get the actor command sender for a run_id.
+async fn get_cmd_tx(
+    sessions: &ActorSessionMap,
+    run_id: &str,
+) -> Result<tokio::sync::mpsc::Sender<ActorCommand>, String> {
+    let map = sessions.lock().await;
+    map.get(run_id)
+        .map(|h| h.cmd_tx.clone())
+        .ok_or_else(|| format!("Session {} not found", run_id))
+}
+
 /// Helper: stop an existing actor for a run_id, await its shutdown.
 /// Returns true if an actor was stopped.
-async fn stop_actor(sessions: &ActorSessionMap, run_id: &str) -> Result<bool, String> {
+pub(super) async fn stop_actor(sessions: &ActorSessionMap, run_id: &str) -> Result<bool, String> {
     let handle = {
         let mut map = sessions.lock().await;
         map.remove(run_id)
@@ -693,12 +704,7 @@ pub async fn send_session_message(
     );
 
     // Get channel sender
-    let cmd_tx = {
-        let map = sessions.lock().await;
-        map.get(&run_id)
-            .map(|h| h.cmd_tx.clone())
-            .ok_or_else(|| format!("Session {} not found", run_id))?
-    };
+    let cmd_tx = get_cmd_tx(&sessions, &run_id).await?;
 
     // Send message through actor channel
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
@@ -778,12 +784,7 @@ pub async fn send_session_control(
         subtype
     );
 
-    let cmd_tx = {
-        let map = sessions.lock().await;
-        map.get(&run_id)
-            .map(|h| h.cmd_tx.clone())
-            .ok_or_else(|| format!("Session {} not found", run_id))?
-    };
+    let cmd_tx = get_cmd_tx(&sessions, &run_id).await?;
 
     // Build control request
     let mut request = serde_json::json!({ "subtype": subtype });
@@ -1190,12 +1191,7 @@ pub(crate) async fn approve_session_tool_impl(
         "The tool {} is now allowed. Please retry your previous action using this tool.",
         tool_name
     );
-    let cmd_tx = {
-        let map = sessions.lock().await;
-        map.get(&run_id)
-            .map(|h| h.cmd_tx.clone())
-            .ok_or_else(|| format!("Session {} not found after approve restart", run_id))?
-    };
+    let cmd_tx = get_cmd_tx(sessions, &run_id).await?;
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
     cmd_tx
         .send(ActorCommand::SendMessage {
@@ -1261,12 +1257,7 @@ pub async fn respond_permission(
         interrupt,
     );
 
-    let cmd_tx = {
-        let map = sessions.lock().await;
-        map.get(&run_id)
-            .map(|h| h.cmd_tx.clone())
-            .ok_or_else(|| format!("Session {} not found", run_id))?
-    };
+    let cmd_tx = get_cmd_tx(&sessions, &run_id).await?;
 
     // Build the response payload for Claude CLI.
     // CLI validates with Zod: allow requires `updatedInput` (record<string,unknown>),
@@ -1332,12 +1323,7 @@ pub async fn respond_hook_callback(
         decision
     );
 
-    let cmd_tx = {
-        let map = sessions.lock().await;
-        map.get(&run_id)
-            .map(|h| h.cmd_tx.clone())
-            .ok_or_else(|| format!("Session {} not found", run_id))?
-    };
+    let cmd_tx = get_cmd_tx(&sessions, &run_id).await?;
 
     let response = serde_json::json!({ "decision": decision });
 
@@ -1374,12 +1360,7 @@ pub async fn cancel_control_request(
         request_id
     );
 
-    let cmd_tx = {
-        let map = sessions.lock().await;
-        map.get(&run_id)
-            .map(|h| h.cmd_tx.clone())
-            .ok_or_else(|| format!("Session {} not found", run_id))?
-    };
+    let cmd_tx = get_cmd_tx(&sessions, &run_id).await?;
 
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
     cmd_tx
@@ -1428,12 +1409,7 @@ pub async fn respond_elicitation(
         other => serde_json::json!({"action": other}),
     };
 
-    let cmd_tx = {
-        let map = sessions.lock().await;
-        map.get(&run_id)
-            .map(|h| h.cmd_tx.clone())
-            .ok_or_else(|| format!("Session {} not found", run_id))?
-    };
+    let cmd_tx = get_cmd_tx(&sessions, &run_id).await?;
 
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
     cmd_tx
@@ -2079,12 +2055,7 @@ pub async fn start_ralph_loop(
         completion_promise
     );
 
-    let cmd_tx = {
-        let map = sessions.lock().await;
-        map.get(&run_id)
-            .map(|h| h.cmd_tx.clone())
-            .ok_or_else(|| format!("Session {} not found", run_id))?
-    };
+    let cmd_tx = get_cmd_tx(&sessions, &run_id).await?;
 
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
     cmd_tx
@@ -2109,12 +2080,7 @@ pub async fn cancel_ralph_loop(
 ) -> Result<RalphCancelResult, String> {
     log::debug!("[session] cancel_ralph_loop: run_id={}", run_id);
 
-    let cmd_tx = {
-        let map = sessions.lock().await;
-        map.get(&run_id)
-            .map(|h| h.cmd_tx.clone())
-            .ok_or_else(|| format!("Session {} not found", run_id))?
-    };
+    let cmd_tx = get_cmd_tx(&sessions, &run_id).await?;
 
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
     cmd_tx

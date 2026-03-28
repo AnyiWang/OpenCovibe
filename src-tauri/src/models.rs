@@ -13,6 +13,17 @@ pub struct LocalProxyStatus {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApiTestResult {
+    pub success: bool,
+    pub latency_ms: u64,
+    pub reply: Option<String>,
+    pub error: Option<String>,
+    /// True when auth+connectivity OK but probe model was rejected (no user model configured).
+    pub partial: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct MemoryFileCandidate {
     pub path: String,
     pub label: String,
@@ -1426,6 +1437,7 @@ pub struct PluginOperationResult {
 pub struct CommunitySkillResult {
     pub id: String,
     pub name: String,
+    pub skill_id: String,
     pub installs: u64,
     pub source: String,
 }

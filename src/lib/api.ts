@@ -349,6 +349,21 @@ export async function detectLocalProxy(
   return invoke<import("./types").LocalProxyStatus>("detect_local_proxy", { proxyId, baseUrl });
 }
 
+export async function testApiConnectivity(
+  apiKey: string,
+  baseUrl: string,
+  authEnvVar: string,
+  model: string,
+): Promise<import("./types").ApiTestResult> {
+  dbg("api", "testApiConnectivity", { baseUrl, authEnvVar, model });
+  return invoke<import("./types").ApiTestResult>("test_api_connectivity", {
+    apiKey,
+    baseUrl,
+    authEnvVar,
+    model,
+  });
+}
+
 export async function runDiagnostics(cwd: string): Promise<DiagnosticsReport> {
   dbg("api", "runDiagnostics", { cwd });
   return invoke<DiagnosticsReport>("run_diagnostics", { cwd });

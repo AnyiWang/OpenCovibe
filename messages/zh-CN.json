@@ -49,6 +49,14 @@
   "settings_local_setupHint_ccr": "运行 \"ccr start\" 仅启动路由服务（请勿使用 \"ccr code\"）。安装：npm i -g @musistudio/claude-code-router",
   "settings_local_setupHint_ollama": "运行 \"ollama serve\" 启动 Ollama 服务",
 
+  "settings_apiTest": "测试",
+  "settings_apiTest_testing": "测试中...",
+  "settings_apiTest_success": "已连通 ({latency}ms)",
+  "settings_apiTest_partial": "认证通过 ({latency}ms) — 配置模型后可完整测试",
+  "settings_apiTest_failed": "连接失败",
+  "settings_apiTest_noKey": "请先输入 API Key",
+  "settings_apiTest_noUrl": "请先填写 Base URL",
+
   "settings_general_setupWizard": "设置向导",
   "settings_general_setupWizardDesc": "重新运行初始设置向导以重新配置 CLI 和认证。",
   "settings_general_runWizard": "运行向导",
@@ -488,6 +496,7 @@
   "plugin_failedLoadDetail": "加载详情失败：{error}",
   "plugin_skillUnavailable": "技能不可用",
   "plugin_installedSkill": "已安装 {name}",
+  "plugin_skillRestartHint": "开始新会话即可使用。",
   "plugin_errorGeneric": "错误：{error}",
   "plugin_uninstallTitle": "卸载插件",
   "plugin_uninstallMsg": "确定要卸载 \"{name}\" 吗？",

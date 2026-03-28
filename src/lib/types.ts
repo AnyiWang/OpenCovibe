@@ -285,6 +285,15 @@ export interface LocalProxyStatus {
   error?: string;
 }
 
+export interface ApiTestResult {
+  success: boolean;
+  latencyMs: number;
+  reply?: string;
+  error?: string;
+  /** True when auth+connectivity OK but probe model was rejected (no user model configured). */
+  partial: boolean;
+}
+
 export interface ModelUsageSummary {
   inputTokens: number;
   outputTokens: number;
@@ -656,6 +665,7 @@ export interface PluginOperationResult {
 export interface CommunitySkillResult {
   id: string;
   name: string;
+  skill_id: string;
   installs: number;
   source: string;
 }

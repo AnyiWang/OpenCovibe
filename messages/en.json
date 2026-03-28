@@ -49,6 +49,14 @@
   "settings_local_setupHint_ccr": "Run \"ccr start\" to start the router only (do NOT use \"ccr code\"). Install: npm i -g @musistudio/claude-code-router",
   "settings_local_setupHint_ollama": "Run \"ollama serve\" to start the Ollama service",
 
+  "settings_apiTest": "Test",
+  "settings_apiTest_testing": "Testing...",
+  "settings_apiTest_success": "Connected ({latency}ms)",
+  "settings_apiTest_partial": "Auth OK ({latency}ms) — configure a model for full test",
+  "settings_apiTest_failed": "Connection failed",
+  "settings_apiTest_noKey": "Enter an API key first",
+  "settings_apiTest_noUrl": "Enter a base URL first",
+
   "settings_general_setupWizard": "Setup Wizard",
   "settings_general_setupWizardDesc": "Re-run the initial setup wizard to reconfigure CLI and authentication.",
   "settings_general_runWizard": "Run Wizard",
@@ -488,6 +496,7 @@
   "plugin_failedLoadDetail": "Failed to load detail: {error}",
   "plugin_skillUnavailable": "Skill Unavailable",
   "plugin_installedSkill": "Installed {name}",
+  "plugin_skillRestartHint": "Start a new session to use it.",
   "plugin_errorGeneric": "Error: {error}",
   "plugin_uninstallTitle": "Uninstall Plugin",
   "plugin_uninstallMsg": "Are you sure you want to uninstall \"{name}\"?",

@@ -1,9 +1,9 @@
 use crate::agent::claude_stream::augmented_path;
 use crate::agent::ssh::{expand_local_tilde, shell_escape};
 use crate::models::{
-    AuthDiagnostics, ClaudeMdInfo, CliCheckResult, CliDiagnostics, CliDistTags, ConfigDiagnostics,
-    ConfigIssue, DiagnosticsReport, LocalProxyStatus, ProjectDiagnostics, ProjectInitStatus,
-    RemoteTestResult, ServicesDiagnostics, SshKeyInfo, SystemDiagnostics,
+    ApiTestResult, AuthDiagnostics, ClaudeMdInfo, CliCheckResult, CliDiagnostics, CliDistTags,
+    ConfigDiagnostics, ConfigIssue, DiagnosticsReport, LocalProxyStatus, ProjectDiagnostics,
+    ProjectInitStatus, RemoteTestResult, ServicesDiagnostics, SshKeyInfo, SystemDiagnostics,
 };
 use crate::process_ext::HideConsole;
 use std::path::Path;
@@ -131,6 +131,216 @@ pub async fn detect_local_proxy(
     base_url: String,
 ) -> Result<LocalProxyStatus, String> {
     Ok(detect_proxy_inner(&proxy_id, &base_url).await)
+}
+
+// ── API connectivity test ──
+
+/// Probe model used when the user hasn't configured one — just for connectivity testing.
+const PROBE_MODEL: &str = "claude-sonnet-4-6";
+
+async fn test_api_inner(
+    api_key: &str,
+    base_url: &str,
+    auth_env_var: &str,
+    model: &str,
+) -> ApiTestResult {
+    let is_probe = model.is_empty();
+    let effective_model = if is_probe { PROBE_MODEL } else { model };
+    let effective_base_url = if base_url.is_empty() {
+        "https://api.anthropic.com"
+    } else {
+        base_url
+    };
+    let url = format!("{}/v1/messages", effective_base_url.trim_end_matches('/'));
+
+    log::debug!(
+        "[diagnostics] test_api_connectivity: url={}, auth={}, model={}, probe={}",
+        url,
+        auth_env_var,
+        effective_model,
+        is_probe
+    );
+    log::debug!(
+        "[diagnostics] test_api_connectivity: key_len={}",
+        api_key.len()
+    );
+
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            log::debug!(
+                "[diagnostics] test_api_connectivity: client build failed: {}",
+                e
+            );
+            return ApiTestResult {
+                success: false,
+                latency_ms: 0,
+                reply: None,
+                error: Some(format!("HTTP client build failed: {}", e)),
+                partial: false,
+            };
+        }
+    };
+
+    let mut req = client
+        .post(&url)
+        .header("content-type", "application/json")
+        .header("anthropic-version", "2023-06-01");
+
+    req = match auth_env_var {
+        "ANTHROPIC_AUTH_TOKEN" => req.header("authorization", format!("Bearer {}", api_key)),
+        _ => req.header("x-api-key", api_key),
+    };
+
+    let body = serde_json::json!({
+        "model": effective_model,
+        "max_tokens": 1,
+        "messages": [{"role": "user", "content": "hi"}]
+    });
+
+    let start = std::time::Instant::now();
+    let resp = match req.json(&body).send().await {
+        Ok(r) => r,
+        Err(e) => {
+            let latency_ms = start.elapsed().as_millis() as u64;
+            let error = if e.is_timeout() {
+                "Connection timed out".to_string()
+            } else if e.is_connect() {
+                "Connection refused — is the service running?".to_string()
+            } else {
+                format!("Request failed: {}", e)
+            };
+            log::debug!(
+                "[diagnostics] test_api_connectivity: failed, error={}",
+                error
+            );
+            return ApiTestResult {
+                success: false,
+                latency_ms,
+                reply: None,
+                error: Some(error),
+                partial: false,
+            };
+        }
+    };
+
+    let latency_ms = start.elapsed().as_millis() as u64;
+    let status = resp.status().as_u16();
+
+    if status == 200 {
+        // Parse successful response — must contain content[0].text to count as valid
+        let body_text = resp.text().await.unwrap_or_default();
+        let reply = serde_json::from_str::<serde_json::Value>(&body_text)
+            .ok()
+            .and_then(|v| {
+                v.get("content")?
+                    .get(0)?
+                    .get("text")?
+                    .as_str()
+                    .map(String::from)
+            })
+            .map(|s| {
+                if s.len() > 50 {
+                    format!("{}…", &s[..50])
+                } else {
+                    s
+                }
+            });
+
+        if reply.is_some() {
+            log::debug!(
+                "[diagnostics] test_api_connectivity: success, latency={}ms",
+                latency_ms
+            );
+            ApiTestResult {
+                success: true,
+                latency_ms,
+                reply,
+                error: None,
+                partial: false,
+            }
+        } else {
+            log::debug!("[diagnostics] test_api_connectivity: 200 but invalid response body");
+            ApiTestResult {
+                success: false,
+                latency_ms,
+                reply: None,
+                error: Some(
+                    "Received 200 but response is not a valid Messages API reply".to_string(),
+                ),
+                partial: false,
+            }
+        }
+    } else {
+        // Parse error response
+        let body_text = resp.text().await.unwrap_or_default();
+        let api_error = serde_json::from_str::<serde_json::Value>(&body_text)
+            .ok()
+            .and_then(|v| v.get("error")?.get("message")?.as_str().map(String::from));
+
+        // Probe mode: 400 with model-related error means auth+connectivity OK, just wrong model
+        let is_model_error = status == 400
+            && api_error
+                .as_deref()
+                .map(|m| {
+                    let lower = m.to_lowercase();
+                    lower.contains("model") || lower.contains("not found")
+                })
+                .unwrap_or(false);
+
+        if is_probe && is_model_error {
+            log::debug!(
+                "[diagnostics] test_api_connectivity: partial success (probe model rejected), latency={}ms",
+                latency_ms
+            );
+            return ApiTestResult {
+                success: true,
+                latency_ms,
+                reply: None,
+                error: None,
+                partial: true,
+            };
+        }
+
+        let error = match status {
+            401 | 403 => "Authentication failed — check your API key".to_string(),
+            404 => "Endpoint not found — check your base URL".to_string(),
+            429 => "Rate limited — try again later".to_string(),
+            _ => {
+                if let Some(msg) = api_error {
+                    format!("HTTP {}: {}", status, msg)
+                } else {
+                    format!("HTTP {}", status)
+                }
+            }
+        };
+
+        log::debug!(
+            "[diagnostics] test_api_connectivity: failed, status={}, error={}",
+            status,
+            error
+        );
+        ApiTestResult {
+            success: false,
+            latency_ms,
+            reply: None,
+            error: Some(error),
+            partial: false,
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn test_api_connectivity(
+    api_key: String,
+    base_url: String,
+    auth_env_var: String,
+    model: String,
+) -> Result<ApiTestResult, String> {
+    Ok(test_api_inner(&api_key, &base_url, &auth_env_var, &model).await)
 }
 
 /// Platform-aware message for missing SSH binaries.
@@ -422,27 +632,15 @@ pub async fn run_diagnostics(cwd: String) -> Result<DiagnosticsReport, String> {
 
 async fn check_cli_inner() -> CliDiagnostics {
     let aug_path = augmented_path();
-    let (found, path) = match crate::agent::claude_stream::which_binary("claude") {
-        Some(p) => (true, Some(p)),
-        None => (false, None),
-    };
-
-    let version = if found {
-        match Command::new("claude")
-            .arg("--version")
-            .env("PATH", &aug_path)
-            .hide_console()
-            .output()
-        {
-            Ok(output) if output.status.success() => {
-                let raw = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                Some(raw.find(" (").map(|i| raw[..i].to_string()).unwrap_or(raw))
-            }
-            _ => None,
-        }
-    } else {
-        None
-    };
+    // Reuse check_agent_cli for CLI detection + version
+    let cli = check_agent_cli("claude".into())
+        .await
+        .unwrap_or(CliCheckResult {
+            agent: "claude".into(),
+            found: false,
+            path: None,
+            version: None,
+        });
 
     let ripgrep_available = Command::new("rg")
         .arg("--version")
@@ -455,9 +653,9 @@ async fn check_cli_inner() -> CliDiagnostics {
         .unwrap_or(false);
 
     CliDiagnostics {
-        found,
-        version,
-        path,
+        found: cli.found,
+        version: cli.version,
+        path: cli.path,
         latest: None,              // filled by caller after dist tags fetch
         stable: None,              // filled by caller
         auto_update_channel: None, // filled by caller
@@ -1131,62 +1329,250 @@ mod tests {
         });
         timeout.await.expect("test timed out");
     }
+
+    // ── test_api_connectivity tests ──
+
+    #[tokio::test]
+    async fn test_api_connectivity_success_200() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let timeout = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            tokio::spawn(async move {
+                if let Ok((mut stream, _)) = listener.accept().await {
+                    let mut buf = [0u8; 4096];
+                    let _ = AsyncReadExt::read(&mut stream, &mut buf).await;
+                    let body = r#"{"content":[{"text":"Hello!"}]}"#;
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    let _ = stream.write_all(resp.as_bytes()).await;
+                }
+            });
+            let url = format!("http://127.0.0.1:{}", port);
+            let result = test_api_inner("test-key", &url, "ANTHROPIC_API_KEY", "test-model").await;
+            assert!(result.success);
+            assert!(!result.partial);
+            assert!(result.latency_ms > 0);
+            assert_eq!(result.reply, Some("Hello!".to_string()));
+            assert!(result.error.is_none());
+        });
+        timeout.await.expect("test timed out");
+    }
+
+    #[tokio::test]
+    async fn test_api_connectivity_auth_failure_401() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let timeout = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            tokio::spawn(async move {
+                if let Ok((mut stream, _)) = listener.accept().await {
+                    let mut buf = [0u8; 4096];
+                    let _ = AsyncReadExt::read(&mut stream, &mut buf).await;
+                    let body = r#"{"error":{"message":"Invalid API key"}}"#;
+                    let resp = format!(
+                        "HTTP/1.1 401 Unauthorized\r\nContent-Length: {}\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    let _ = stream.write_all(resp.as_bytes()).await;
+                }
+            });
+            let url = format!("http://127.0.0.1:{}", port);
+            let result = test_api_inner("bad-key", &url, "ANTHROPIC_API_KEY", "test-model").await;
+            assert!(!result.success);
+            assert!(
+                result
+                    .error
+                    .as_deref()
+                    .unwrap()
+                    .contains("Authentication failed"),
+                "error was: {:?}",
+                result.error
+            );
+        });
+        timeout.await.expect("test timed out");
+    }
+
+    #[tokio::test]
+    async fn test_api_connectivity_not_found_404() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let timeout = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            tokio::spawn(async move {
+                if let Ok((mut stream, _)) = listener.accept().await {
+                    let mut buf = [0u8; 4096];
+                    let _ = AsyncReadExt::read(&mut stream, &mut buf).await;
+                    let resp = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n";
+                    let _ = stream.write_all(resp.as_bytes()).await;
+                }
+            });
+            let url = format!("http://127.0.0.1:{}", port);
+            let result = test_api_inner("test-key", &url, "ANTHROPIC_API_KEY", "test-model").await;
+            assert!(!result.success);
+            assert!(
+                result
+                    .error
+                    .as_deref()
+                    .unwrap()
+                    .contains("Endpoint not found"),
+                "error was: {:?}",
+                result.error
+            );
+        });
+        timeout.await.expect("test timed out");
+    }
+
+    #[tokio::test]
+    async fn test_api_connectivity_header_x_api_key() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let timeout = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let (tx, rx) = tokio::sync::oneshot::channel::<String>();
+            tokio::spawn(async move {
+                if let Ok((mut stream, _)) = listener.accept().await {
+                    let mut buf = [0u8; 4096];
+                    let n = AsyncReadExt::read(&mut stream, &mut buf).await.unwrap();
+                    let req_str = String::from_utf8_lossy(&buf[..n]).to_string();
+                    let _ = tx.send(req_str);
+                    let body = r#"{"content":[{"text":"ok"}]}"#;
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    let _ = stream.write_all(resp.as_bytes()).await;
+                }
+            });
+            let url = format!("http://127.0.0.1:{}", port);
+            let result =
+                test_api_inner("test-key-123", &url, "ANTHROPIC_API_KEY", "test-model").await;
+            assert!(result.success);
+            let req_str = rx.await.unwrap();
+            let req_lower = req_str.to_lowercase();
+            assert!(
+                req_lower.contains("x-api-key: test-key-123"),
+                "expected x-api-key header, got: {}",
+                req_str
+            );
+        });
+        timeout.await.expect("test timed out");
+    }
+
+    #[tokio::test]
+    async fn test_api_connectivity_header_bearer() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let timeout = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let (tx, rx) = tokio::sync::oneshot::channel::<String>();
+            tokio::spawn(async move {
+                if let Ok((mut stream, _)) = listener.accept().await {
+                    let mut buf = [0u8; 4096];
+                    let n = AsyncReadExt::read(&mut stream, &mut buf).await.unwrap();
+                    let req_str = String::from_utf8_lossy(&buf[..n]).to_string();
+                    let _ = tx.send(req_str);
+                    let body = r#"{"content":[{"text":"ok"}]}"#;
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    let _ = stream.write_all(resp.as_bytes()).await;
+                }
+            });
+            let url = format!("http://127.0.0.1:{}", port);
+            let result = test_api_inner(
+                "test-bearer-key",
+                &url,
+                "ANTHROPIC_AUTH_TOKEN",
+                "test-model",
+            )
+            .await;
+            assert!(result.success);
+            let req_str = rx.await.unwrap();
+            let req_lower = req_str.to_lowercase();
+            assert!(
+                req_lower.contains("authorization: bearer test-bearer-key"),
+                "expected Bearer header, got: {}",
+                req_str
+            );
+        });
+        timeout.await.expect("test timed out");
+    }
+
+    #[tokio::test]
+    async fn test_api_connectivity_probe_partial_success() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let timeout = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            tokio::spawn(async move {
+                if let Ok((mut stream, _)) = listener.accept().await {
+                    let mut buf = [0u8; 4096];
+                    let _ = AsyncReadExt::read(&mut stream, &mut buf).await;
+                    // Simulate a 400 "model not found" response
+                    let body = r#"{"error":{"message":"model: claude-sonnet-4-6 not found"}}"#;
+                    let resp = format!(
+                        "HTTP/1.1 400 Bad Request\r\nContent-Length: {}\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    let _ = stream.write_all(resp.as_bytes()).await;
+                }
+            });
+            let url = format!("http://127.0.0.1:{}", port);
+            // model="" triggers probe mode
+            let result = test_api_inner("test-key", &url, "ANTHROPIC_API_KEY", "").await;
+            assert!(result.success, "expected partial success");
+            assert!(result.partial, "expected partial=true");
+            assert!(result.error.is_none());
+        });
+        timeout.await.expect("test timed out");
+    }
+
+    #[tokio::test]
+    async fn test_api_connectivity_non_probe_400_is_failure() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let timeout = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            tokio::spawn(async move {
+                if let Ok((mut stream, _)) = listener.accept().await {
+                    let mut buf = [0u8; 4096];
+                    let _ = AsyncReadExt::read(&mut stream, &mut buf).await;
+                    let body = r#"{"error":{"message":"model: foo not found"}}"#;
+                    let resp = format!(
+                        "HTTP/1.1 400 Bad Request\r\nContent-Length: {}\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    let _ = stream.write_all(resp.as_bytes()).await;
+                }
+            });
+            let url = format!("http://127.0.0.1:{}", port);
+            // model="foo" — NOT probe mode, so 400 should be a real failure
+            let result = test_api_inner("test-key", &url, "ANTHROPIC_API_KEY", "foo").await;
+            assert!(!result.success, "expected failure for non-probe 400");
+            assert!(!result.partial);
+            assert!(result.error.is_some());
+        });
+        timeout.await.expect("test timed out");
+    }
 }
 
 /// Fetch npm dist-tags for @anthropic-ai/claude-code.
 /// Returns latest/stable version strings. Non-fatal: returns None on failure.
 #[tauri::command]
 pub async fn get_cli_dist_tags() -> Result<CliDistTags, String> {
-    log::debug!("[diagnostics] get_cli_dist_tags: fetching npm dist-tags");
-
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()
-        .map_err(|e| format!("HTTP client error: {}", e))?;
-
-    let resp = client
-        .get("https://registry.npmjs.org/-/package/@anthropic-ai/claude-code/dist-tags")
-        .header("Accept", "application/json")
-        .send()
-        .await;
-
-    match resp {
-        Ok(r) if r.status().is_success() => {
-            let body: serde_json::Value = r
-                .json()
-                .await
-                .map_err(|e| format!("JSON parse error: {}", e))?;
-            let latest = body
-                .get("latest")
-                .and_then(|v| v.as_str())
-                .map(String::from);
-            let stable = body
-                .get("stable")
-                .and_then(|v| v.as_str())
-                .map(String::from);
-            log::debug!(
-                "[diagnostics] get_cli_dist_tags: latest={:?}, stable={:?}",
-                latest,
-                stable
-            );
-            Ok(CliDistTags { latest, stable })
-        }
-        Ok(r) => {
-            let status = r.status();
-            log::debug!("[diagnostics] get_cli_dist_tags: HTTP {}", status);
-            Ok(CliDistTags {
-                latest: None,
-                stable: None,
-            })
-        }
-        Err(e) => {
-            log::debug!("[diagnostics] get_cli_dist_tags: request failed: {}", e);
-            Ok(CliDistTags {
-                latest: None,
-                stable: None,
-            })
-        }
-    }
+    log::debug!("[diagnostics] get_cli_dist_tags");
+    let (latest, stable, _channel) = fetch_dist_tags_inner().await;
+    Ok(CliDistTags { latest, stable })
 }
 
 /// Check for existing SSH key pairs. Returns info about the first usable pair found.

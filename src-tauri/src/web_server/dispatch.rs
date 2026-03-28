@@ -591,6 +591,20 @@ pub async fn dispatch_command(
                 crate::commands::diagnostics::detect_local_proxy(proxy_id, base_url).await?;
             serde_json::to_value(result).map_err(|e| e.to_string())
         }
+        "test_api_connectivity" => {
+            let api_key = extract_str(&params, "api_key")?;
+            let base_url = extract_str(&params, "base_url")?;
+            let auth_env_var = extract_str(&params, "auth_env_var")?;
+            let model = extract_str(&params, "model")?;
+            let result = crate::commands::diagnostics::test_api_connectivity(
+                api_key,
+                base_url,
+                auth_env_var,
+                model,
+            )
+            .await?;
+            serde_json::to_value(result).map_err(|e| e.to_string())
+        }
         "test_remote_host" => {
             let host = extract_str(&params, "host")?;
             let user = extract_str(&params, "user")?;
