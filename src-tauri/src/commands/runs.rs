@@ -1,5 +1,4 @@
 use crate::agent::adapter::ActorSessionMap;
-use crate::agent::session_actor::ActorCommand;
 use crate::models::{PromptFavorite, PromptSearchResult, RunStatus, TaskRun};
 use crate::storage;
 use std::collections::{HashMap, HashSet};
@@ -122,57 +121,22 @@ pub async fn stop_run(
     log::debug!("[runs] stop_run: id={}", id);
 
     // Try actor session first (primary mode)
-    let actor_stopped = {
-        let handle = {
-            let mut map = sessions.lock().await;
-            map.remove(&id)
-        };
-        if let Some(handle) = handle {
-            let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-            if handle
-                .cmd_tx
-                .send(ActorCommand::Stop { reply: reply_tx })
-                .await
-                .is_ok()
-            {
-                let _ = reply_rx.await;
-            }
-            let _ =
-                tokio::time::timeout(std::time::Duration::from_secs(5), handle.join_handle).await;
-            true
-        } else {
-            false
-        }
-    };
+    let actor_stopped = super::session::stop_actor(&sessions, &id)
+        .await
+        .unwrap_or(false);
 
     if actor_stopped {
         log::debug!("[runs] stop_run: stopped actor session for id={}", id);
-        if let Err(e) = storage::runs::update_status(
-            &id,
-            RunStatus::Stopped,
-            None,
-            Some("Stopped by user".to_string()),
-        ) {
-            log::warn!("[runs] stop_run: failed to update status: {}", e);
+    } else {
+        // Fall through to PTY / pipe
+        let pty_killed = crate::agent::pty::close_pty(pty_map.inner(), &id).unwrap_or(false);
+        if !pty_killed {
+            crate::agent::stream::stop_process(&process_map, &id).await;
         }
-        return Ok(true);
     }
 
-    // Fall through to PTY / pipe
-    let pty_killed = crate::agent::pty::close_pty(pty_map.inner(), &id).unwrap_or(false);
-    if !pty_killed {
-        let killed = crate::agent::stream::stop_process(&process_map, &id).await;
-        if !killed {
-            if let Err(e) = storage::runs::update_status(
-                &id,
-                RunStatus::Stopped,
-                None,
-                Some("Stopped by user".to_string()),
-            ) {
-                log::warn!("[runs] stop_run: failed to update status: {}", e);
-            }
-        }
-    } else if let Err(e) = storage::runs::update_status(
+    // Update status regardless of which path stopped the process
+    if let Err(e) = storage::runs::update_status(
         &id,
         RunStatus::Stopped,
         None,

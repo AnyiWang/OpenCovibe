@@ -297,14 +297,21 @@ pub async fn search(query: &str, limit: u32) -> Result<Vec<CommunitySkillResult>
         .skills
         .into_iter()
         .map(|item| {
+            // Compute reliable skill_id: prefer explicit skillId, fall back to last segment of id
+            let effective_skill_id = if !item.skill_id.is_empty() {
+                item.skill_id.clone()
+            } else {
+                item.id.rsplit('/').next().unwrap_or(&item.id).to_string()
+            };
             let display_name = if item.name.is_empty() {
-                item.skill_id
+                effective_skill_id.clone()
             } else {
                 item.name
             };
             CommunitySkillResult {
                 id: item.id,
                 name: display_name,
+                skill_id: effective_skill_id,
                 installs: item.installs,
                 source: item.source,
             }
@@ -795,6 +802,59 @@ mod tests {
             path.to_str().unwrap(),
             "/project/.claude/skills/react-components/SKILL.md"
         );
+    }
+
+    #[test]
+    fn test_search_mapping_skill_id_fallback() {
+        // Simulate the mapping logic inline (mirrors the search() mapping)
+        let items = vec![
+            // First item: no skillId → extract from id's last segment
+            SkillsShItem {
+                id: "vercel-labs/agent-skills/vercel-react-best-practices".into(),
+                name: "vercel-react-best-practices".into(),
+                skill_id: String::new(), // empty
+                installs: 100,
+                source: "vercel-labs/agent-skills".into(),
+            },
+            // Second item: has skillId → use directly
+            SkillsShItem {
+                id: "google-labs/stitch-skills/react:components".into(),
+                name: "react-components".into(),
+                skill_id: "react-components".into(),
+                installs: 50,
+                source: "google-labs/stitch-skills".into(),
+            },
+        ];
+
+        let results: Vec<CommunitySkillResult> = items
+            .into_iter()
+            .map(|item| {
+                let effective_skill_id = if !item.skill_id.is_empty() {
+                    item.skill_id.clone()
+                } else {
+                    item.id.rsplit('/').next().unwrap_or(&item.id).to_string()
+                };
+                let display_name = if item.name.is_empty() {
+                    effective_skill_id.clone()
+                } else {
+                    item.name
+                };
+                CommunitySkillResult {
+                    id: item.id,
+                    name: display_name,
+                    skill_id: effective_skill_id,
+                    installs: item.installs,
+                    source: item.source,
+                }
+            })
+            .collect();
+
+        // First: no skillId → fallback to last segment of id
+        assert_eq!(results[0].skill_id, "vercel-react-best-practices");
+        assert_eq!(results[0].name, "vercel-react-best-practices");
+        // Second: has skillId → used directly
+        assert_eq!(results[1].skill_id, "react-components");
+        assert_eq!(results[1].name, "react-components");
     }
 
     #[test]
