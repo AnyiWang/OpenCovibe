@@ -2,7 +2,12 @@
   import type { BusToolItem, TimelineEntry, PermissionSuggestion } from "$lib/types";
   import type { TaskNotificationItem } from "$lib/stores/session-store.svelte";
   import { getToolColor } from "$lib/utils/tool-colors";
-  import { fileName as pathFileName, isAbsolutePath } from "$lib/utils/format";
+  import {
+    fileName as pathFileName,
+    isAbsolutePath,
+    formatDuration,
+    formatTokenCount,
+  } from "$lib/utils/format";
   import {
     extractOutputText,
     friendlyToolName,
@@ -17,6 +22,7 @@
   } from "$lib/utils/tool-rendering";
   import MarkdownContent from "$lib/components/MarkdownContent.svelte";
   import ToolDetailView from "$lib/components/ToolDetailView.svelte";
+  import StatusIcon from "$lib/components/StatusIcon.svelte";
   import { t } from "$lib/i18n/index.svelte";
   import { dbg } from "$lib/utils/debug";
 
@@ -363,13 +369,7 @@
   });
 
   // Duration display
-  let durationLabel = $derived(
-    tool.duration_ms != null
-      ? tool.duration_ms < 1000
-        ? `${tool.duration_ms}ms`
-        : `${(tool.duration_ms / 1000).toFixed(1)}s`
-      : "",
-  );
+  let durationLabel = $derived(tool.duration_ms != null ? formatDuration(tool.duration_ms) : "");
 
   // Elapsed time from tool_progress (shown while running)
   let elapsedLabel = $derived(
@@ -446,9 +446,8 @@
         const ms = tur.totalDurationMs as number | undefined;
         const tokens = tur.totalTokens as number | undefined;
         const parts: string[] = [`${tools} tools`];
-        if (ms != null) parts.push(`${(ms / 1000).toFixed(1)}s`);
-        if (tokens != null)
-          parts.push(`${tokens >= 1000 ? `${(tokens / 1000).toFixed(1)}k` : tokens} tok`);
+        if (ms != null) parts.push(formatDuration(ms));
+        if (tokens != null) parts.push(`${formatTokenCount(tokens)} tok`);
         return parts.join(" \u00b7 ");
       }
       if ((tur as Record<string, unknown>).status === "async_launched") {
@@ -1602,37 +1601,10 @@
       </div>
 
       <!-- Status icon -->
-      {#if statusKind === "done"}
-        <svg
-          class="h-3.5 w-3.5 text-emerald-500 dark:text-emerald-400 shrink-0"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="2.5"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-        >
-          <path d="M20 6 9 17l-5-5" />
-        </svg>
-      {:else if statusKind === "error"}
-        <svg
-          class="h-3.5 w-3.5 text-destructive shrink-0"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="2.5"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-        >
-          <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
-        </svg>
-      {:else}
-        <div class="h-3.5 w-3.5 shrink-0">
-          <div
-            class="h-3 w-3 rounded-full border-2 border-border border-t-muted-foreground animate-spin"
-          ></div>
-        </div>
-      {/if}
+      <StatusIcon
+        status={statusKind === "done" ? "done" : statusKind === "error" ? "error" : "running"}
+        size="md"
+      />
 
       <!-- Expand chevron: absolute to not affect right-edge alignment of status icon -->
       <svg

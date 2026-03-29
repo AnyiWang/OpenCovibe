@@ -259,7 +259,7 @@ pub async fn fork_oneshot(
     api_key: Option<&str>,
     auth_token: Option<&str>,
     base_url: Option<&str>,
-    default_model: Option<&str>,
+    models: Option<&[String]>,
     extra_env: Option<&std::collections::HashMap<String, String>>,
 ) -> Result<String, String> {
     let claude_bin = resolve_claude_path();
@@ -295,7 +295,7 @@ pub async fn fork_oneshot(
             api_key,
             auth_token,
             base_url,
-            default_model,
+            models,
             extra_env,
         );
         let mut ssh_cmd = super::ssh::build_ssh_command(remote, &remote_cmd);
@@ -336,12 +336,11 @@ pub async fn fork_oneshot(
         if let Some(url) = base_url {
             local_cmd.env("ANTHROPIC_BASE_URL", url);
         }
-        // Inject default model for third-party platforms
-        if let Some(model) = default_model {
-            local_cmd.env("ANTHROPIC_MODEL", model);
-            local_cmd.env("ANTHROPIC_DEFAULT_HAIKU_MODEL", model);
-            local_cmd.env("ANTHROPIC_DEFAULT_SONNET_MODEL", model);
-            local_cmd.env("ANTHROPIC_DEFAULT_OPUS_MODEL", model);
+        // Inject model tier env vars for third-party platforms
+        if let Some(m) = models {
+            for (k, v) in crate::commands::session::resolve_model_tiers(m) {
+                local_cmd.env(k, v);
+            }
         }
         // Inject extra env vars for third-party platforms
         if let Some(extra) = extra_env {

@@ -2,7 +2,7 @@
  * Random spinner verbs displayed while waiting for the model to respond.
  * Ported from Claude Code CLI's built-in verb list.
  */
-export const SPINNER_VERBS = [
+const SPINNER_VERBS = [
   "Accomplishing",
   "Actioning",
   "Actualizing",

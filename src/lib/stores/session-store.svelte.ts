@@ -314,6 +314,8 @@ export class SessionStore {
 
   // Generation counter: prevents stale async loadRun from overwriting state
   private _loadGen = 0;
+  /** True while loadRun is replaying events — suppresses isThinking flash on session switch. */
+  private _isLoadingReplay = false;
 
   // Spawn timeout: fail if CLI never emits session_init
   private _spawnTimer: ReturnType<typeof setTimeout> | null = null;
@@ -520,6 +522,10 @@ export class SessionStore {
 
   get isThinking(): boolean {
     if (!this.isRunning || this.streamingText) return false;
+    // During loadRun replay, phase is set to "running" before events are loaded.
+    // Without this guard, isThinking flashes true on session switch (especially on
+    // Windows where replay is slower). Suppress during the loading window.
+    if (this._isLoadingReplay) return false;
     return !this.hasPendingPermission && !this.hasElicitation;
   }
 
@@ -923,6 +929,22 @@ export class SessionStore {
     }
   }
 
+  /** Accumulate partial JSON and try to parse. Returns merged tool fields. */
+  private static _accumulateJsonInput(
+    tool: Record<string, unknown>,
+    partialJson: string,
+  ): { input?: Record<string, unknown>; _inputJsonAccum: string } {
+    const prevAccum = ((tool as Record<string, unknown>)._inputJsonAccum as string) ?? "";
+    const newAccum = prevAccum + partialJson;
+    let parsed: Record<string, unknown> | null = null;
+    try {
+      parsed = JSON.parse(newAccum);
+    } catch {
+      /* incomplete JSON */
+    }
+    return { ...(parsed ? { input: parsed } : {}), _inputJsonAccum: newAccum };
+  }
+
   /** Route tool_input_delta to a child tool inside a parent's subTimeline. */
   private _updateSubTimelineToolInput(
     parentToolUseId: string,
@@ -934,19 +956,8 @@ export class SessionStore {
       parentToolUseId,
       childToolUseId,
       (t) => {
-        const prevAccum = ((t as Record<string, unknown>)._inputJsonAccum as string) ?? "";
-        const newAccum = prevAccum + partialJson;
-        let parsed: Record<string, unknown> | null = null;
-        try {
-          parsed = JSON.parse(newAccum);
-        } catch {
-          /* incomplete JSON */
-        }
-        return {
-          ...t,
-          ...(parsed ? { input: parsed } : {}),
-          _inputJsonAccum: newAccum,
-        } as typeof t;
+        const accum = SessionStore._accumulateJsonInput(t as Record<string, unknown>, partialJson);
+        return { ...t, ...accum } as typeof t;
       },
       ctx,
     );
@@ -1239,6 +1250,7 @@ export class SessionStore {
   reset(): void {
     this._setPhase("empty");
     this.run = null;
+    this._isLoadingReplay = false;
     this._clearContentState();
   }
 
@@ -1454,6 +1466,8 @@ export class SessionStore {
       this.agent = this.run.agent;
       this.remoteHostName = this.run.remote_host_name ?? null;
       this.platformId = this.run.platform_id ?? null;
+      // Suppress isThinking during event replay (prevents "thinking" flash on session switch)
+      this._isLoadingReplay = true;
 
       // Determine phase from run status
       const st = this.run.status;
@@ -1552,6 +1566,7 @@ export class SessionStore {
           }
         }
 
+        this._isLoadingReplay = false;
         dbg("store", "loadRun", {
           total: Math.round(performance.now() - loadStart),
           snapshotHit,
@@ -1559,6 +1574,7 @@ export class SessionStore {
           entries: this.timeline.length,
         });
       } else {
+        this._isLoadingReplay = false;
         // CLI mode: replay history in terminal
         const events = await api.getRunEvents(id);
         if (gen !== this._loadGen) {
@@ -1605,6 +1621,7 @@ export class SessionStore {
       }
     } catch (e) {
       if (gen !== this._loadGen) return;
+      this._isLoadingReplay = false;
       this.error = String(e);
       this._setPhase("failed");
     }
@@ -1616,6 +1633,47 @@ export class SessionStore {
     this._setPhase("spawning");
 
     try {
+      // Refresh platformId and permissionMode from latest settings for new sessions.
+      // Both may be stale (carried over from a previous run / earlier user selection)
+      // if the user changed settings without navigating away from chat.
+      try {
+        const freshSettings = await api.getUserSettings();
+        if (freshSettings.auth_mode === "api") {
+          const freshPid = freshSettings.active_platform_id ?? "anthropic";
+          if (freshPid !== this.platformId) {
+            dbg("store", "startSession: refreshing platformId", {
+              old: this.platformId,
+              new: freshPid,
+            });
+            this.platformId = freshPid;
+          }
+        }
+        // Settings stores app-internal names (auto_all, auto_read, etc.)
+        // Store uses CLI names (bypassPermissions, acceptEdits, etc.)
+        const APP_TO_CLI: Record<string, string> = {
+          ask: "default",
+          auto_read: "acceptEdits",
+          auto_all: "bypassPermissions",
+          plan: "plan",
+          auto: "auto",
+          dont_ask: "dontAsk",
+        };
+        if (freshSettings.permission_mode) {
+          const freshPerm =
+            APP_TO_CLI[freshSettings.permission_mode] ?? freshSettings.permission_mode;
+          if (freshPerm !== this.permissionMode) {
+            dbg("store", "startSession: refreshing permissionMode", {
+              old: this.permissionMode,
+              new: freshPerm,
+            });
+            this.permissionMode = freshPerm;
+            this.permissionModeSetByUser = true;
+          }
+        }
+      } catch {
+        // Non-fatal: fall through with current store values
+      }
+
       const run = await api.startRun(
         prompt,
         cwd,
@@ -2106,25 +2164,28 @@ export class SessionStore {
     }
   }
 
-  /** Optimistic local update: resolve a permission_prompt tool to permission_denied.
-   *  Traverses ALL timeline + subTimeline entries (no early return) to handle
-   *  duplicate requestId entries from fallback/synthetic sources. */
-  resolvePermissionDeny(requestId: string): void {
-    dbg("store", "resolvePermissionDeny", { requestId });
+  /** Unified permission resolution: traverses ALL timeline + subTimeline entries
+   *  (no early return) to handle duplicate requestId entries from fallback/synthetic sources.
+   *  - "deny" → permission_denied
+   *  - "allow" → running (skips AskUserQuestion to avoid double-submit) */
+  private _resolvePermission(action: "allow" | "deny", requestId: string): void {
+    dbg("store", `resolvePermission${action === "allow" ? "Allow" : "Deny"}`, { requestId });
+    const targetStatus = action === "allow" ? ("running" as const) : ("permission_denied" as const);
+    const skipAsk = action === "allow";
     let changed = false;
     const u = [...this.timeline];
     for (let i = 0; i < u.length; i++) {
       const entry = u[i];
       if (entry.kind !== "tool") continue;
-      // Main timeline match
       if (
         entry.tool.status === "permission_prompt" &&
         entry.tool.permission_request_id === requestId
       ) {
-        u[i] = { ...entry, tool: { ...entry.tool, status: "permission_denied" as const } };
-        changed = true;
+        if (!(skipAsk && entry.tool.tool_name === "AskUserQuestion")) {
+          u[i] = { ...entry, tool: { ...entry.tool, status: targetStatus } };
+          changed = true;
+        }
       }
-      // subTimeline match
       if (entry.subTimeline) {
         let subChanged = false;
         const newSub = [...entry.subTimeline];
@@ -2133,9 +2194,10 @@ export class SessionStore {
           if (
             sub.kind === "tool" &&
             sub.tool.status === "permission_prompt" &&
-            sub.tool.permission_request_id === requestId
+            sub.tool.permission_request_id === requestId &&
+            !(skipAsk && sub.tool.tool_name === "AskUserQuestion")
           ) {
-            newSub[j] = { ...sub, tool: { ...sub.tool, status: "permission_denied" as const } };
+            newSub[j] = { ...sub, tool: { ...sub.tool, status: targetStatus } };
             subChanged = true;
           }
         }
@@ -2148,50 +2210,12 @@ export class SessionStore {
     if (changed) this.timeline = u;
   }
 
-  /** Optimistic local update: resolve a permission_prompt tool to running.
-   *  Called after Allow IPC succeeds. Skips AskUserQuestion tools (interactive).
-   *  Traverses ALL timeline + subTimeline entries (no early return). */
+  resolvePermissionDeny(requestId: string): void {
+    this._resolvePermission("deny", requestId);
+  }
+
   resolvePermissionAllow(requestId: string): void {
-    dbg("store", "resolvePermissionAllow", { requestId });
-    let changed = false;
-    const u = [...this.timeline];
-    for (let i = 0; i < u.length; i++) {
-      const entry = u[i];
-      if (entry.kind !== "tool") continue;
-      // Main timeline match
-      if (
-        entry.tool.status === "permission_prompt" &&
-        entry.tool.permission_request_id === requestId
-      ) {
-        // AskUserQuestion running = interactive question card, switching back would cause double-submit
-        if (entry.tool.tool_name !== "AskUserQuestion") {
-          u[i] = { ...entry, tool: { ...entry.tool, status: "running" as const } };
-          changed = true;
-        }
-      }
-      // subTimeline match
-      if (entry.subTimeline) {
-        let subChanged = false;
-        const newSub = [...entry.subTimeline];
-        for (let j = 0; j < newSub.length; j++) {
-          const sub = newSub[j];
-          if (
-            sub.kind === "tool" &&
-            sub.tool.status === "permission_prompt" &&
-            sub.tool.permission_request_id === requestId &&
-            sub.tool.tool_name !== "AskUserQuestion"
-          ) {
-            newSub[j] = { ...sub, tool: { ...sub.tool, status: "running" as const } };
-            subChanged = true;
-          }
-        }
-        if (subChanged) {
-          u[i] = { ...u[i], subTimeline: newSub };
-          changed = true;
-        }
-      }
-    }
-    if (changed) this.timeline = u;
+    this._resolvePermission("allow", requestId);
   }
 
   /** Handle PTY exit event. */
@@ -2447,23 +2471,13 @@ export class SessionStore {
         const tIdx = this._findToolIdx(ctx, ev.tool_use_id);
         if (tIdx >= 0) {
           const old = tl[tIdx] as Extract<TimelineEntry, { kind: "tool" }>;
-          // Accumulate partial JSON into _inputJsonAccum on the tool item
-          const prevAccum = ((old.tool as Record<string, unknown>)._inputJsonAccum as string) ?? "";
-          const newAccum = prevAccum + ev.partial_json;
-          // Try to parse the accumulated JSON — if valid, update input
-          let parsed: Record<string, unknown> | null = null;
-          try {
-            parsed = JSON.parse(newAccum);
-          } catch {
-            // Not yet complete JSON — store accumulator, keep existing input
-          }
+          const accum = SessionStore._accumulateJsonInput(
+            old.tool as Record<string, unknown>,
+            ev.partial_json,
+          );
           const updated: TimelineEntry = {
             ...old,
-            tool: {
-              ...old.tool,
-              ...(parsed ? { input: parsed } : {}),
-              _inputJsonAccum: newAccum,
-            } as typeof old.tool,
+            tool: { ...old.tool, ...accum } as typeof old.tool,
           };
           if (ctx) {
             ctx.tl[tIdx] = updated;

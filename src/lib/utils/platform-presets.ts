@@ -31,7 +31,7 @@ export const PLATFORM_PRESETS: PlatformPreset[] = [
     description: "Moonshot AI",
     key_placeholder: "your-kimi-key",
     category: "provider",
-    models: ["kimi-k2.5", "kimi-k2"],
+    models: ["kimi-k2.5"],
     docs_url: "https://platform.moonshot.ai/docs/guide/agent-support",
   },
   {
@@ -51,7 +51,6 @@ export const PLATFORM_PRESETS: PlatformPreset[] = [
     description: "Zhipu AI — bigmodel.cn",
     key_placeholder: "your-zhipu-key",
     category: "provider",
-    models: ["glm-4.7", "glm-4.5-air", "glm-4.5-flash"],
     docs_url: "https://docs.bigmodel.cn/cn/guide/develop/claude/introduction",
   },
   {
@@ -62,7 +61,6 @@ export const PLATFORM_PRESETS: PlatformPreset[] = [
     description: "Zhipu AI — z.ai",
     key_placeholder: "your-zhipu-key",
     category: "provider",
-    models: ["glm-4.7", "glm-4.5-air", "glm-4.5-flash"],
     docs_url: "https://docs.z.ai/devpack/tool/claude",
   },
   {
@@ -73,7 +71,7 @@ export const PLATFORM_PRESETS: PlatformPreset[] = [
     description: "Alibaba DashScope",
     key_placeholder: "your-bailian-key",
     category: "provider",
-    models: ["qwen3-max", "qwen3.5-plus", "qwen-plus", "qwen-flash"],
+    models: ["qwen3.5-plus", "qwen3-coder-next"],
     docs_url: "https://help.aliyun.com/zh/model-studio/anthropic-api-messages",
   },
   {
@@ -95,7 +93,7 @@ export const PLATFORM_PRESETS: PlatformPreset[] = [
     description: "MiniMax AI — api.minimax.io",
     key_placeholder: "your-minimax-key",
     category: "provider",
-    models: ["MiniMax-M2.5", "MiniMax-M2.5-highspeed"],
+    models: ["MiniMax-M2.7"],
     docs_url: "https://platform.minimax.io/docs/api-reference/text-anthropic-api",
   },
   {
@@ -106,7 +104,7 @@ export const PLATFORM_PRESETS: PlatformPreset[] = [
     description: "MiniMax AI — api.minimaxi.com",
     key_placeholder: "your-minimax-key",
     category: "provider",
-    models: ["MiniMax-M2.5", "MiniMax-M2.5-highspeed"],
+    models: ["MiniMax-M2.7"],
     docs_url: "https://platform.minimax.io/docs/api-reference/text-anthropic-api",
   },
   {
@@ -240,6 +238,34 @@ export function buildPlatformList(
       extra_env: c.extra_env,
     }));
   return [...builtins, ...customs];
+}
+
+/**
+ * Expand a credential's models array into [opus, sonnet, haiku] tier tuple.
+ * Mirrors backend resolve_model_tiers expansion:
+ * 1 model → all same; 2 models → [0]=opus+sonnet, [1]=haiku; 3+ → positional.
+ */
+export function expandModelsToTiers(models?: string[]): [string, string, string] {
+  if (!models || models.length === 0) return ["", "", ""];
+  if (models.length === 1) return [models[0], models[0], models[0]];
+  if (models.length === 2) return [models[0], models[0], models[1]];
+  return [models[0], models[1], models[2]];
+}
+
+/**
+ * Compress [opus, sonnet, haiku] tier inputs back to a models array for storage.
+ * Returns undefined when all three are empty (→ backend falls back to preset).
+ */
+export function compressModelsFromTiers(
+  opus: string,
+  sonnet: string,
+  haiku: string,
+): string[] | undefined {
+  const o = opus.trim(),
+    s = sonnet.trim(),
+    h = haiku.trim();
+  if (!o && !s && !h) return undefined;
+  return [o, s, h];
 }
 
 /** Check if a platform_id represents a user-created custom endpoint. */

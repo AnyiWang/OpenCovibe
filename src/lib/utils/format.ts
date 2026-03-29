@@ -11,9 +11,22 @@ export function formatTokenCount(n: number): string {
 }
 
 export function formatDuration(ms: number): string {
+  if (ms <= 0) return "";
   if (ms < 1000) return `${ms}ms`;
   if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
-  return `${Math.floor(ms / 60000)}m ${Math.round((ms % 60000) / 1000)}s`;
+  const totalSec = Math.floor(ms / 1000);
+  const h = Math.floor(totalSec / 3600);
+  const m = Math.floor((totalSec % 3600) / 60);
+  const s = totalSec % 60;
+  if (h > 0) return `${h}h ${m}m ${s}s`;
+  return `${m}m ${s}s`;
+}
+
+/** Compact cost display for UI (status bars, lists). Shows "<$0.01" for tiny amounts. */
+export function formatCostDisplay(cost: number): string {
+  if (cost === 0) return "$0.00";
+  if (cost < 0.01) return "<$0.01";
+  return `$${cost.toFixed(2)}`;
 }
 
 export { fmtRelative as relativeTime } from "$lib/i18n/format";

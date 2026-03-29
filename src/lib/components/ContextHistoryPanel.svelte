@@ -6,7 +6,7 @@
    */
   import type { ContextSnapshot, SessionInfoData } from "$lib/types";
   import type { TurnUsage } from "$lib/stores/types";
-  import { formatTokenCount } from "$lib/utils/format";
+  import { formatTokenCount, formatDuration, formatCost } from "$lib/utils/format";
   import { getColor, getIcon, computeContextDelta } from "$lib/utils/context-parser";
   import { t } from "$lib/i18n/index.svelte";
 
@@ -98,22 +98,6 @@
     } catch {
       return "";
     }
-  }
-
-  function formatCost(n: number): string {
-    if (n >= 1) return "$" + n.toFixed(2);
-    if (n >= 0.01) return "$" + n.toFixed(3);
-    if (n > 0) return "$" + n.toFixed(4);
-    return "$0.00";
-  }
-
-  function formatDuration(ms: number): string {
-    if (ms <= 0) return "—";
-    const totalSec = Math.floor(ms / 1000);
-    const m = Math.floor(totalSec / 60);
-    const s = totalSec % 60;
-    if (m > 0) return `${m}m ${s}s`;
-    return `${s}s`;
   }
 
   // Latest turn usage (for showing deltas in resource summary)

@@ -20,6 +20,8 @@
     buildPlatformList,
     isCustomPlatform,
     findCredential,
+    expandModelsToTiers,
+    compressModelsFromTiers,
   } from "$lib/utils/platform-presets";
   import type { PlatformPreset, PlatformCredential } from "$lib/types";
   import {
@@ -91,7 +93,9 @@
   let anthropicBaseUrl = $state("");
   let showApiKey = $state(false);
   let generalSaved = $state(false);
-  let platformModels = $state("");
+  let modelOpus = $state("");
+  let modelSonnet = $state("");
+  let modelHaiku = $state("");
   let selectedPlatformId = $state<string | null>(null);
   let platformCredentials = $state<PlatformCredential[]>([]);
   let platformExtraEnv = $state<Array<{ key: string; value: string }>>([]);
@@ -134,7 +138,9 @@
   $effect(() => {
     void anthropicApiKey;
     void anthropicBaseUrl;
-    void platformModels;
+    void modelOpus;
+    void modelSonnet;
+    void modelHaiku;
     void effectiveAuthEnvVar;
     return () => {
       apiTestResult = null;
@@ -821,9 +827,12 @@
     anthropicApiKey = cred?.api_key ?? "";
     // base_url: credential override > preset default > empty
     anthropicBaseUrl = cred?.base_url ?? preset?.base_url ?? "";
-    // models: credential override > preset default > empty
+    // models: credential override > preset default > expand to 3 tiers
     const models = cred?.models ?? preset?.models;
-    platformModels = models?.join(", ") ?? "";
+    const [o, s, h] = expandModelsToTiers(models);
+    modelOpus = o;
+    modelSonnet = s;
+    modelHaiku = h;
     // extra_env: credential explicit value (including {}) takes priority; undefined falls back to preset
     const extraEnv = cred?.extra_env !== undefined ? cred.extra_env : (preset?.extra_env ?? {});
     platformExtraEnv = Object.entries(extraEnv).map(([key, value]) => ({ key, value }));
@@ -832,7 +841,7 @@
       platformId,
       hasKey: !!anthropicApiKey,
       url: anthropicBaseUrl,
-      models: platformModels,
+      models: [modelOpus, modelSonnet, modelHaiku],
       extraEnvKeys: Object.keys(extraEnv),
       extraEnvSource: cred?.extra_env !== undefined ? "credential" : "preset",
     });
@@ -842,12 +851,10 @@
   function saveCurrentToCredential() {
     if (!selectedPlatformId) return;
     const preset = PLATFORM_PRESETS.find((p) => p.id === selectedPlatformId);
-    // Parse user-edited models (comma-separated) — falls back to preset if empty
-    const parsedModels = platformModels
-      .split(",")
-      .map((s) => s.trim())
-      .filter(Boolean);
-    const modelsToSave = parsedModels.length > 0 ? parsedModels : preset?.models;
+    // Compress 3 tier inputs → models array; undefined when all empty (→ backend preset fallback).
+    // Do NOT fall back to preset?.models here — undefined means "use provider defaults",
+    // and baking preset values into credential would prevent future preset updates from taking effect.
+    const modelsToSave = compressModelsFromTiers(modelOpus, modelSonnet, modelHaiku);
 
     // Convert extra_env array back to Record, filter empty keys, warn on duplicates
     const extraEnvRecord: Record<string, string> = {};
@@ -2307,11 +2314,15 @@
                       {@const cred = findCredential(platformCredentials, selectedPlatformId ?? "")}
                       {@const authEnvVar =
                         cred?.auth_env_var || selectedPlatform?.auth_env_var || "ANTHROPIC_API_KEY"}
-                      {@const parsedModels = platformModels
-                        .split(",")
-                        .map((s) => s.trim())
-                        .filter(Boolean)}
-                      {@const testModel = parsedModels[0] || selectedPlatform?.models?.[0] || ""}
+                      {@const [presetOpusTest, presetSonnetTest] = expandModelsToTiers(
+                        selectedPlatform?.models,
+                      )}
+                      {@const testModel =
+                        modelSonnet.trim() ||
+                        modelOpus.trim() ||
+                        presetSonnetTest ||
+                        presetOpusTest ||
+                        ""}
                       {@const isCustom = isCustomPlatform(selectedPlatformId ?? "")}
                       {@const noKey = !anthropicApiKey}
                       {@const noUrl = isCustom && !anthropicBaseUrl.trim()}
@@ -2443,18 +2454,53 @@
                   </p>
                 </div>
 
-                <!-- Models -->
+                <!-- Models (3-tier: Opus / Sonnet / Haiku) -->
+                {@const [presetOpus, presetSonnet, presetHaiku] = expandModelsToTiers(
+                  selectedPlatform?.models,
+                )}
+                {@const phOpus = presetOpus || t("settings_general_modelsPlaceholder")}
+                {@const phSonnet = presetSonnet || t("settings_general_modelsPlaceholder")}
+                {@const phHaiku = presetHaiku || t("settings_general_modelsPlaceholder")}
                 <div>
-                  <label class="text-sm font-medium mb-1.5 block" for="platform-models"
+                  <label class="text-sm font-medium mb-1.5 block"
                     >{t("settings_general_models")}</label
                   >
-                  <Input
-                    bind:value={platformModels}
-                    placeholder={selectedPlatform?.models?.join(", ") ||
-                      t("settings_general_modelsPlaceholder")}
-                    class="mt-1 font-mono text-xs"
-                    onblur={() => persistCurrentPlatform()}
-                  />
+                  <div class="mt-1 space-y-1.5">
+                    <div class="flex items-center gap-2">
+                      <span class="text-xs text-muted-foreground w-24 shrink-0 text-right"
+                        >{t("settings_general_modelOpus")}</span
+                      >
+                      <Input
+                        bind:value={modelOpus}
+                        placeholder={phOpus}
+                        class="flex-1 font-mono text-xs"
+                        onblur={() => persistCurrentPlatform()}
+                      />
+                    </div>
+                    <div class="flex items-center gap-2">
+                      <span
+                        class="text-xs text-muted-foreground w-24 shrink-0 text-right font-medium"
+                        >{t("settings_general_modelSonnet")}</span
+                      >
+                      <Input
+                        bind:value={modelSonnet}
+                        placeholder={phSonnet}
+                        class="flex-1 font-mono text-xs"
+                        onblur={() => persistCurrentPlatform()}
+                      />
+                    </div>
+                    <div class="flex items-center gap-2">
+                      <span class="text-xs text-muted-foreground w-24 shrink-0 text-right"
+                        >{t("settings_general_modelHaiku")}</span
+                      >
+                      <Input
+                        bind:value={modelHaiku}
+                        placeholder={phHaiku}
+                        class="flex-1 font-mono text-xs"
+                        onblur={() => persistCurrentPlatform()}
+                      />
+                    </div>
+                  </div>
                   <p class="mt-1 text-xs text-muted-foreground">
                     {t("settings_general_modelsHelp")}
                   </p>

@@ -5,7 +5,6 @@
   import { onMount } from "svelte";
   import { t } from "$lib/i18n/index.svelte";
   import type { MessageKey } from "$lib/i18n/types";
-  import { dbg } from "$lib/utils/debug";
 
   const CATEGORY_I18N: Record<SlashCategory, MessageKey> = {
     session: "slashMenu_catSession",
@@ -133,6 +132,40 @@
       <div class="border-t border-border"></div>
     {/if}
 
+    {#snippet commandItem(cmd: import("$lib/types").SlashCommand, idx: number, py: string)}
+      {@const interaction = getCommandInteraction(cmd)}
+      {@const hint = getArgumentHint(cmd)}
+      <button
+        data-index={idx}
+        class="flex w-full items-center gap-2 px-3 {py} text-left text-sm transition-colors {idx ===
+        selectedIndex
+          ? 'bg-accent text-foreground'
+          : 'text-muted-foreground hover:bg-accent/50'}"
+        onmouseenter={() => onHover(idx)}
+        onclick={() => onSelect(cmd)}
+      >
+        <span class="shrink-0 font-mono text-xs text-foreground">/{cmd.name}</span>
+        <span class="flex-1 min-w-0 truncate text-xs opacity-70">
+          {cmd.description}
+          {#if hint}
+            <span class="italic opacity-50"> · {hint}</span>
+          {/if}
+        </span>
+        {#if interaction === "enum"}
+          <span class="shrink-0 text-xs text-muted-foreground/40">&rarr;</span>
+        {/if}
+        {#if cmd.aliases?.length > 0}
+          <span class="flex shrink-0 gap-1">
+            {#each cmd.aliases ?? [] as alias}
+              <span class="rounded bg-muted px-1 py-0.5 text-[10px] font-mono text-muted-foreground"
+                >{alias}</span
+              >
+            {/each}
+          </span>
+        {/if}
+      </button>
+    {/snippet}
+
     {#if slashGroups}
       <!-- Grouped mode (empty query) -->
       <div class="max-h-[320px] overflow-y-auto">
@@ -143,42 +176,7 @@
             {t(CATEGORY_I18N[group.category])}
           </p>
           {#each group.commands as cmd, i}
-            {@const globalIndex = group.startIndex + i}
-            {@const interaction = getCommandInteraction(cmd)}
-            {@const hint = getArgumentHint(cmd)}
-            <button
-              data-index={globalIndex}
-              class="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm transition-colors {globalIndex ===
-              selectedIndex
-                ? 'bg-accent text-foreground'
-                : 'text-muted-foreground hover:bg-accent/50'}"
-              onmouseenter={() => onHover(globalIndex)}
-              onclick={() => {
-                dbg("slash", "select", { index: globalIndex, name: cmd.name });
-                onSelect(cmd);
-              }}
-            >
-              <span class="shrink-0 font-mono text-xs text-foreground">/{cmd.name}</span>
-              <span class="flex-1 min-w-0 truncate text-xs opacity-70">
-                {cmd.description}
-                {#if hint}
-                  <span class="italic opacity-50"> · {hint}</span>
-                {/if}
-              </span>
-              {#if interaction === "enum"}
-                <span class="shrink-0 text-xs text-muted-foreground/40">&rarr;</span>
-              {/if}
-              {#if cmd.aliases?.length > 0}
-                <span class="flex shrink-0 gap-1">
-                  {#each cmd.aliases ?? [] as alias}
-                    <span
-                      class="rounded bg-muted px-1 py-0.5 text-[10px] font-mono text-muted-foreground"
-                      >{alias}</span
-                    >
-                  {/each}
-                </span>
-              {/if}
-            </button>
+            {@render commandItem(cmd, group.startIndex + i, "py-1.5")}
           {/each}
         {/each}
       </div>
@@ -186,38 +184,7 @@
       <!-- Flat mode (has query) -->
       <div class="max-h-[240px] overflow-y-auto">
         {#each commands as cmd, i (i)}
-          {@const interaction = getCommandInteraction(cmd)}
-          {@const hint = getArgumentHint(cmd)}
-          <button
-            data-index={i}
-            class="flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors {i ===
-            selectedIndex
-              ? 'bg-accent text-foreground'
-              : 'text-muted-foreground hover:bg-accent/50'}"
-            onmouseenter={() => onHover(i)}
-            onclick={() => onSelect(cmd)}
-          >
-            <span class="shrink-0 font-mono text-xs text-foreground">/{cmd.name}</span>
-            <span class="flex-1 min-w-0 truncate text-xs opacity-70">
-              {cmd.description}
-              {#if hint}
-                <span class="italic opacity-50"> · {hint}</span>
-              {/if}
-            </span>
-            {#if interaction === "enum"}
-              <span class="shrink-0 text-xs text-muted-foreground/40">&rarr;</span>
-            {/if}
-            {#if cmd.aliases?.length > 0}
-              <span class="flex shrink-0 gap-1">
-                {#each cmd.aliases ?? [] as alias}
-                  <span
-                    class="rounded bg-muted px-1 py-0.5 text-[10px] font-mono text-muted-foreground"
-                    >{alias}</span
-                  >
-                {/each}
-              </span>
-            {/if}
-          </button>
+          {@render commandItem(cmd, i, "py-2")}
         {/each}
       </div>
     {:else}

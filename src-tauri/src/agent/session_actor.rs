@@ -1217,11 +1217,6 @@ impl SessionActor {
         &mut self,
         request: Value,
     ) -> Result<(String, oneshot::Receiver<Value>), String> {
-        let stdin = self
-            .stdin
-            .as_mut()
-            .ok_or_else(|| "stdin closed".to_string())?;
-
         let request_id = format!("ocv_ctrl_{}", uuid::Uuid::new_v4());
         let subtype = request
             .get("subtype")
@@ -1248,24 +1243,7 @@ impl SessionActor {
         let (tx, rx) = oneshot::channel();
         self.control_waiters.insert(request_id.clone(), tx);
 
-        let mut line = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
-        line.push('\n');
-        log::debug!(
-            "[actor] writing control request to stdin: {}",
-            truncate_str(&line, 200)
-        );
-
-        stdin
-            .write_all(line.as_bytes())
-            .await
-            .map_err(|e| format!("control write failed: {}", e))?;
-        if let Err(e) = stdin.flush().await {
-            log::warn!(
-                "[actor] stdin flush failed for run_id={}: {}",
-                self.run_id,
-                e
-            );
-        }
+        self.write_json_line(&payload, "control request").await?;
 
         Ok((request_id, rx))
     }
@@ -1317,27 +1295,31 @@ impl SessionActor {
 
     /// Send a control_cancel_request to CLI stdin (top-level message type).
     async fn handle_cancel_control_request(&mut self, request_id: &str) -> Result<(), String> {
-        let stdin = self
-            .stdin
-            .as_mut()
-            .ok_or_else(|| "stdin closed".to_string())?;
-
         let payload = serde_json::json!({
             "type": "control_cancel_request",
             "request_id": request_id,
         });
-        let mut line = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
-        line.push('\n');
         log::debug!(
             "[actor] cancel_control_request: run_id={}, req_id={}",
             self.run_id,
             request_id,
         );
+        self.write_json_line(&payload, "cancel control request")
+            .await
+    }
 
+    /// Low-level helper: serialize JSON payload, write to stdin, flush.
+    async fn write_json_line(&mut self, payload: &Value, context: &str) -> Result<(), String> {
+        let stdin = self
+            .stdin
+            .as_mut()
+            .ok_or_else(|| "stdin closed".to_string())?;
+        let mut line = serde_json::to_string(payload).map_err(|e| e.to_string())?;
+        line.push('\n');
         stdin
             .write_all(line.as_bytes())
             .await
-            .map_err(|e| format!("cancel control request write failed: {}", e))?;
+            .map_err(|e| format!("{} write failed: {}", context, e))?;
         if let Err(e) = stdin.flush().await {
             log::warn!(
                 "[actor] stdin flush failed for run_id={}: {}",
@@ -1345,7 +1327,6 @@ impl SessionActor {
                 e
             );
         }
-
         Ok(())
     }
 
@@ -1355,11 +1336,6 @@ impl SessionActor {
         request_id: &str,
         response: Value,
     ) -> Result<(), String> {
-        let stdin = self
-            .stdin
-            .as_mut()
-            .ok_or_else(|| "stdin closed".to_string())?;
-
         // CLI expects: {"type":"control_response","response":{"subtype":"success","request_id":"...","response":{...}}}
         // request_id must be INSIDE the response wrapper, with subtype:"success"
         let payload = serde_json::json!({
@@ -1370,28 +1346,12 @@ impl SessionActor {
                 "response": response,
             },
         });
-        let mut line = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
-        line.push('\n');
         log::debug!(
-            "[actor] write_control_response: run_id={}, req_id={}, payload={}",
+            "[actor] write_control_response: run_id={}, req_id={}",
             self.run_id,
             request_id,
-            truncate_str(&line, 200)
         );
-
-        stdin
-            .write_all(line.as_bytes())
-            .await
-            .map_err(|e| format!("control response write failed: {}", e))?;
-        if let Err(e) = stdin.flush().await {
-            log::warn!(
-                "[actor] stdin flush failed for run_id={}: {}",
-                self.run_id,
-                e
-            );
-        }
-
-        Ok(())
+        self.write_json_line(&payload, "control response").await
     }
 
     // ── I/O handlers ──

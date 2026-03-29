@@ -583,11 +583,14 @@ export function getToolDetail(input: Record<string, unknown> | undefined): strin
   if (!input || Object.keys(input).length === 0) return "";
   return (
     (input.file_path as string) ??
+    (input.notebook_path as string) ??
     (input.path as string) ??
     (input.command as string) ??
     (input.pattern as string) ??
     (input.query as string) ??
     (input.url as string) ??
+    (input.description as string) ??
+    (input.prompt as string) ??
     (input.team_name as string) ??
     (input.subject as string) ??
     (input.taskId != null || input.task_id != null

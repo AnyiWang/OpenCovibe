@@ -5,7 +5,7 @@ export interface ToolColor {
   border: string;
 }
 
-export const toolColors: Record<string, ToolColor> = {
+const toolColors: Record<string, ToolColor> = {
   read_file: {
     bg: "bg-blue-500/10",
     text: "text-blue-500 dark:text-blue-400",
@@ -188,7 +188,7 @@ export const toolColors: Record<string, ToolColor> = {
   },
 };
 
-export const defaultToolColor: ToolColor = {
+const defaultToolColor: ToolColor = {
   bg: "bg-muted",
   text: "text-muted-foreground",
   icon: "M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5",

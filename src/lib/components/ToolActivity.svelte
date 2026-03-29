@@ -2,12 +2,14 @@
   import type { HookEvent, ContextSnapshot, SessionInfoData, FileEntry } from "$lib/types";
   import type { TimelineEntry, BusToolItem, TurnUsage } from "$lib/stores/types";
   import { getToolColor } from "$lib/utils/tool-colors";
-  import { splitPath, truncate, formatTokenCount } from "$lib/utils/format";
+  import { truncate, formatTokenCount, formatDuration } from "$lib/utils/format";
+  import { getToolDetail as getToolDetailRaw } from "$lib/utils/tool-rendering";
   import { dbg } from "$lib/utils/debug";
   import { t } from "$lib/i18n/index.svelte";
   import ContextHistoryPanel from "$lib/components/ContextHistoryPanel.svelte";
   import FilesPanel from "$lib/components/FilesPanel.svelte";
   import SessionInfoPanel from "$lib/components/SessionInfoPanel.svelte";
+  import StatusIcon from "$lib/components/StatusIcon.svelte";
   import {
     extractFilesFromTimeline,
     extractFilesFromHooks,
@@ -59,69 +61,12 @@
 
   // ── Helpers ──
 
-  function shortPath(v: unknown): string {
-    if (!v || typeof v !== "string") return "";
-    const parts = splitPath(v);
-    return parts.length > 2 ? "\u2026/" + parts.slice(-2).join("/") : v;
-  }
-
   function getToolDetail(tool: BusToolItem): string {
-    const inp = tool.input;
-    if (!inp || typeof inp !== "object") return "";
-    switch (tool.tool_name) {
-      case "Read":
-      case "Write":
-      case "Edit":
-      case "NotebookEdit":
-        return shortPath(inp.file_path ?? inp.notebook_path);
-      case "Bash":
-        return truncate(String(inp.command ?? ""), 50);
-      case "Grep":
-      case "Glob":
-        return truncate(String(inp.pattern ?? ""), 40);
-      case "WebFetch":
-        return truncate(String(inp.url ?? ""), 50);
-      case "WebSearch":
-        return truncate(String(inp.query ?? ""), 50);
-      case "Task":
-        return truncate(String(inp.description ?? inp.prompt ?? ""), 50);
-      default: {
-        // First string value
-        for (const v of Object.values(inp)) {
-          if (typeof v === "string" && v.length > 0) return truncate(v, 50);
-        }
-        return "";
-      }
-    }
+    return truncate(getToolDetailRaw(tool.input as Record<string, unknown>), 50);
   }
 
   function getHookDetail(event: HookEvent): string {
-    const input = event.tool_input;
-    if (!input || typeof input !== "object") return "";
-    const inp = input as Record<string, unknown>;
-    const name = event.tool_name ?? "";
-    switch (name) {
-      case "Read":
-      case "Write":
-      case "Edit":
-      case "NotebookEdit":
-        return shortPath(inp.file_path ?? inp.path ?? inp.notebook_path);
-      case "Bash":
-        return truncate(String(inp.command ?? ""), 50);
-      case "Grep":
-      case "Glob":
-        return truncate(String(inp.pattern ?? ""), 40);
-      case "WebFetch":
-        return truncate(String(inp.url ?? ""), 50);
-      case "WebSearch":
-        return truncate(String(inp.query ?? ""), 50);
-      case "Task":
-        return truncate(String(inp.description ?? inp.prompt ?? ""), 50);
-      default:
-        return (
-          truncate(String(inp.path ?? inp.command ?? inp.pattern ?? inp.query ?? ""), 50) || ""
-        );
-    }
+    return truncate(getToolDetailRaw(event.tool_input as Record<string, unknown>), 50);
   }
 
   type StatusCategory = "done" | "running" | "error" | "other";
@@ -411,34 +356,7 @@
 </script>
 
 {#snippet statusIcon(category: StatusCategory)}
-  {#if category === "done"}
-    <svg
-      class="h-3 w-3 text-emerald-500 dark:text-emerald-400 shrink-0"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      stroke-width="2.5"
-      stroke-linecap="round"
-      stroke-linejoin="round"><path d="M20 6 9 17l-5-5" /></svg
-    >
-  {:else if category === "error"}
-    <svg
-      class="h-3 w-3 text-destructive shrink-0"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      stroke-width="2.5"
-      stroke-linecap="round"
-      stroke-linejoin="round"
-      ><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg
-    >
-  {:else if category === "running"}
-    <div
-      class="h-3 w-3 rounded-full border-2 border-border border-t-muted-foreground animate-spin shrink-0"
-    ></div>
-  {:else}
-    <div class="h-3 w-3 rounded-full bg-muted-foreground/30 shrink-0"></div>
-  {/if}
+  <StatusIcon status={category} size="sm" />
 {/snippet}
 
 {#snippet toolNodeView(node: ToolNode)}
@@ -661,35 +579,7 @@
                 title={toolUseId ? t("toolActivity_scrollToTool") : ""}
               >
                 <div class="flex items-center gap-2">
-                  {#if isActive}
-                    <div
-                      class="h-3 w-3 shrink-0 rounded-full border-2 border-border border-t-muted-foreground animate-spin"
-                    ></div>
-                  {:else if isDone}
-                    <svg
-                      class="h-3 w-3 shrink-0 text-emerald-500"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      stroke-width="2.5"
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
-                    >
-                      <path d="M20 6 9 17l-5-5" />
-                    </svg>
-                  {:else}
-                    <svg
-                      class="h-3 w-3 shrink-0 text-destructive"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      stroke-width="2.5"
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
-                    >
-                      <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
-                    </svg>
-                  {/if}
+                  <StatusIcon status={isActive ? "running" : isDone ? "done" : "error"} size="sm" />
                   <span class="flex-1 min-w-0 truncate text-[11px]"
                     >{item.summary || item.message}</span
                   >
@@ -705,7 +595,7 @@
                     {#if usage.tool_uses && usage.duration_ms}
                       ·
                     {/if}
-                    {#if usage.duration_ms}{(usage.duration_ms / 1000).toFixed(1)}s{/if}
+                    {#if usage.duration_ms}{formatDuration(usage.duration_ms)}{/if}
                     {#if (usage.tool_uses || usage.duration_ms) && usage.total_tokens}
                       ·
                     {/if}
@@ -751,35 +641,11 @@
                   {/if}
                   <span class="ml-auto">
                     {#if isDone}
-                      <svg
-                        class="h-3 w-3 text-emerald-500"
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        stroke-width="2.5"
-                        stroke-linecap="round"
-                        stroke-linejoin="round"><path d="M20 6 9 17l-5-5" /></svg
-                      >
+                      <StatusIcon status="done" size="sm" />
                     {:else if isError}
-                      <svg
-                        class="h-3 w-3 text-destructive"
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        stroke-width="2.5"
-                        stroke-linecap="round"
-                        stroke-linejoin="round"
-                        ><line x1="18" y1="6" x2="6" y2="18" /><line
-                          x1="6"
-                          y1="6"
-                          x2="18"
-                          y2="18"
-                        /></svg
-                      >
+                      <StatusIcon status="error" size="sm" />
                     {:else if isRunning}
-                      <div
-                        class="h-3 w-3 rounded-full border-2 border-border border-t-muted-foreground animate-spin"
-                      ></div>
+                      <StatusIcon status="running" size="sm" />
                     {/if}
                   </span>
                 </div>
@@ -794,7 +660,7 @@
                     {#if sa.toolCount > 0 && sa.durationMs != null}
                       ·
                     {/if}
-                    {#if sa.durationMs != null}{(sa.durationMs / 1000).toFixed(1)}s{/if}
+                    {#if sa.durationMs != null}{formatDuration(sa.durationMs)}{/if}
                   </div>
                 {/if}
               </button>
@@ -921,38 +787,19 @@
           <div class="flex items-center gap-3 text-[11px]">
             {#if toolStats.doneCount > 0}
               <span class="flex items-center gap-1 text-emerald-500 dark:text-emerald-400">
-                <svg
-                  class="h-3 w-3"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2.5"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"><path d="M20 6 9 17l-5-5" /></svg
-                >
+                <StatusIcon status="done" size="sm" />
                 {toolStats.doneCount}
               </span>
             {/if}
             {#if toolStats.runningCount > 0}
               <span class="flex items-center gap-1 text-muted-foreground">
-                <div
-                  class="h-3 w-3 rounded-full border-2 border-border border-t-muted-foreground animate-spin"
-                ></div>
+                <StatusIcon status="running" size="sm" />
                 {toolStats.runningCount}
               </span>
             {/if}
             {#if toolStats.errorCount > 0}
               <span class="flex items-center gap-1 text-destructive">
-                <svg
-                  class="h-3 w-3"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2.5"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  ><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg
-                >
+                <StatusIcon status="error" size="sm" />
                 {toolStats.errorCount}
               </span>
             {/if}

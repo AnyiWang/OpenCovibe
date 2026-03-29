@@ -82,6 +82,7 @@
   import { buildDoctorReport } from "$lib/utils/doctor";
   import type { RewindCandidate, RewindMarker } from "$lib/utils/rewind";
   import { truncate, cwdDisplayLabel, formatTokenCount } from "$lib/utils/format";
+  import { mapSettled } from "$lib/utils/async-utils";
   import { uuid } from "$lib/utils/uuid";
   import RewindModal from "$lib/components/RewindModal.svelte";
   import type { ElementSelection } from "$lib/types";
@@ -2884,28 +2885,6 @@
   let dragProcessing = $derived(dragProcessingCount > 0);
 
   /** Concurrency-limited parallel map returning PromiseSettledResult for each item. */
-  async function mapSettled<T, R>(
-    items: T[],
-    fn: (item: T) => Promise<R>,
-    concurrency: number,
-  ): Promise<PromiseSettledResult<R>[]> {
-    const results: PromiseSettledResult<R>[] = new Array(items.length);
-    let next = 0;
-    const c = Math.max(1, Math.min(concurrency, items.length));
-    async function worker() {
-      while (next < items.length) {
-        const i = next++;
-        try {
-          results[i] = { status: "fulfilled", value: await fn(items[i]) };
-        } catch (e) {
-          results[i] = { status: "rejected", reason: e };
-        }
-      }
-    }
-    await Promise.all(Array.from({ length: c }, () => worker()));
-    return results;
-  }
-
   async function handleTauriDrop(payload: { paths: string[] }) {
     pageDragActive = false;
     const paths = payload.paths;

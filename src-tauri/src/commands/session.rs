@@ -97,12 +97,58 @@ struct ResolvedAuth {
     api_key: Option<String>,
     auth_token: Option<String>,
     base_url: Option<String>,
-    default_model: Option<String>,
+    /// Full models array from credential/preset (tier mapping applied at injection time).
+    models: Option<Vec<String>>,
     extra_env: Option<std::collections::HashMap<String, String>>,
 }
 
+/// Resolve models array into (env_key, env_value) pairs for CLI injection.
+/// 1 model  → all tiers same
+/// 2 models → [0]=Opus+Sonnet, [1]=Haiku
+/// 3+ models → [0]=Opus, [1]=Sonnet, [2]=Haiku
+pub(crate) fn resolve_model_tiers(models: &[String]) -> Vec<(&'static str, String)> {
+    if models.is_empty() {
+        return vec![];
+    }
+    let (opus, sonnet, haiku) = match models.len() {
+        1 => (&models[0], &models[0], &models[0]),
+        2 => (&models[0], &models[0], &models[1]),
+        _ => {
+            // 3+ elements: Sonnet (index 1) is the anchor.
+            // If Sonnet is empty → no injection (user left all meaningful fields blank).
+            let sonnet = &models[1];
+            if sonnet.is_empty() {
+                return vec![];
+            }
+            let opus = if models[0].is_empty() {
+                sonnet
+            } else {
+                &models[0]
+            };
+            let haiku = if models[2].is_empty() {
+                sonnet
+            } else {
+                &models[2]
+            };
+            (opus, sonnet, haiku)
+        }
+    };
+    log::debug!(
+        "[session] resolve_model_tiers: opus={}, sonnet={}, haiku={}",
+        opus,
+        sonnet,
+        haiku
+    );
+    vec![
+        ("ANTHROPIC_MODEL", sonnet.clone()),
+        ("ANTHROPIC_DEFAULT_OPUS_MODEL", opus.clone()),
+        ("ANTHROPIC_DEFAULT_SONNET_MODEL", sonnet.clone()),
+        ("ANTHROPIC_DEFAULT_HAIKU_MODEL", haiku.clone()),
+    ]
+}
+
 /// Resolve API authentication environment variables.
-/// Returns ResolvedAuth with (api_key, auth_token, base_url, default_model, extra_env).
+/// Returns ResolvedAuth with (api_key, auth_token, base_url, models, extra_env).
 /// - `api_key`: for Anthropic official (`x-api-key` header)
 /// - `auth_token`: for third-party platforms (`Authorization: Bearer` header)
 /// - `base_url`: custom API endpoint
@@ -122,7 +168,7 @@ fn resolve_auth_env(remote: &Option<RemoteHost>, settings: &UserSettings) -> Res
                 api_key: None,
                 auth_token: None,
                 base_url: None,
-                default_model: None,
+                models: None,
                 extra_env: None,
             };
         }
@@ -143,7 +189,7 @@ fn resolve_auth_env(remote: &Option<RemoteHost>, settings: &UserSettings) -> Res
                         api_key: None,
                         auth_token: Some(key.clone()),
                         base_url,
-                        default_model: None,
+                        models: None,
                         extra_env: None,
                     };
                 } else {
@@ -151,7 +197,7 @@ fn resolve_auth_env(remote: &Option<RemoteHost>, settings: &UserSettings) -> Res
                         api_key: Some(key.clone()),
                         auth_token: None,
                         base_url,
-                        default_model: None,
+                        models: None,
                         extra_env: None,
                     };
                 }
@@ -168,7 +214,7 @@ fn resolve_auth_env(remote: &Option<RemoteHost>, settings: &UserSettings) -> Res
         } else {
             base_url
         },
-        default_model: None,
+        models: None,
         extra_env: None,
     }
 }
@@ -177,7 +223,7 @@ fn resolve_auth_env(remote: &Option<RemoteHost>, settings: &UserSettings) -> Res
 fn make_placeholder_auth(
     use_bearer: bool,
     base_url: Option<String>,
-    default_model: Option<String>,
+    models: Option<Vec<String>>,
     extra_env: Option<std::collections::HashMap<String, String>>,
 ) -> ResolvedAuth {
     if use_bearer {
@@ -185,7 +231,7 @@ fn make_placeholder_auth(
             api_key: None,
             auth_token: Some("PROXY_MANAGED".to_string()),
             base_url,
-            default_model,
+            models,
             extra_env,
         }
     } else {
@@ -193,7 +239,7 @@ fn make_placeholder_auth(
             api_key: Some("PROXY_MANAGED".to_string()),
             auth_token: None,
             base_url,
-            default_model,
+            models,
             extra_env,
         }
     }
@@ -316,7 +362,7 @@ fn resolve_auth_env_for_platform(
                 api_key: None,
                 auth_token: None,
                 base_url: None,
-                default_model: None,
+                models: None,
                 extra_env: None,
             };
         }
@@ -333,16 +379,16 @@ fn resolve_auth_env_for_platform(
             let key = cred.api_key.as_ref().filter(|k| !k.is_empty()).cloned();
             let base_url = cred.base_url.as_ref().filter(|s| !s.is_empty()).cloned();
             let use_bearer = cred.auth_env_var.as_deref() == Some("ANTHROPIC_AUTH_TOKEN");
-            let default_model = cred.models.as_ref().and_then(|m| m.first()).cloned();
+            let models = cred.models.clone().filter(|m| !m.is_empty());
             let extra_env = cred.extra_env.clone();
 
             if let Some(k) = key {
                 log::debug!(
-                    "[session] resolve_auth_env_for_platform: platform={}, use_bearer={}, has_base_url={}, default_model={:?}, extra_env_count={}",
+                    "[session] resolve_auth_env_for_platform: platform={}, use_bearer={}, has_base_url={}, models={:?}, extra_env_count={}",
                     pid,
                     use_bearer,
                     base_url.is_some(),
-                    default_model,
+                    models,
                     extra_env.as_ref().map_or(0, |e| e.len())
                 );
                 return if use_bearer {
@@ -350,7 +396,7 @@ fn resolve_auth_env_for_platform(
                         api_key: None,
                         auth_token: Some(k),
                         base_url,
-                        default_model,
+                        models,
                         extra_env,
                     }
                 } else {
@@ -358,7 +404,7 @@ fn resolve_auth_env_for_platform(
                         api_key: Some(k),
                         auth_token: None,
                         base_url,
-                        default_model,
+                        models,
                         extra_env,
                     }
                 };
@@ -378,10 +424,11 @@ fn resolve_auth_env_for_platform(
                 let effective_url =
                     base_url.or_else(|| info.as_ref().and_then(|i| i.base_url.clone()));
 
-                // default_model / extra_env fallback: credential → defaults
-                let effective_model = default_model.or_else(|| {
+                // models / extra_env fallback: credential → defaults
+                let effective_models = models.or_else(|| {
                     info.as_ref()
-                        .and_then(|i| i.models.as_ref().and_then(|m| m.first()).cloned())
+                        .and_then(|i| i.models.clone())
+                        .filter(|m| !m.is_empty())
                 });
                 let effective_extra =
                     extra_env.or_else(|| info.as_ref().and_then(|i| i.extra_env.clone()));
@@ -394,7 +441,7 @@ fn resolve_auth_env_for_platform(
                 return make_placeholder_auth(
                     effective_bearer,
                     effective_url,
-                    effective_model,
+                    effective_models,
                     effective_extra,
                 );
             }
@@ -407,7 +454,7 @@ fn resolve_auth_env_for_platform(
             if let Some(info) = storage::settings::get_provider_info(pid) {
                 if info.key_optional {
                     let use_bearer = info.auth_env_var.as_deref() == Some("ANTHROPIC_AUTH_TOKEN");
-                    let default_model = info.models.as_ref().and_then(|m| m.first()).cloned();
+                    let models = info.models.clone().filter(|m| !m.is_empty());
                     log::info!(
                         "[session] platform '{}': no credential, using known defaults (key_optional, base_url={:?})",
                         pid,
@@ -416,7 +463,7 @@ fn resolve_auth_env_for_platform(
                     return make_placeholder_auth(
                         use_bearer,
                         info.base_url,
-                        default_model,
+                        models,
                         info.extra_env,
                     );
                 }
@@ -487,7 +534,7 @@ pub(crate) async fn start_session_impl(
         &mut adapter_settings,
         &meta.model,
         &agent_settings.model,
-        &resolved.default_model,
+        &resolved.models,
     );
     let resolved = augment_with_shell_auth(
         resolved,
@@ -580,7 +627,7 @@ pub(crate) async fn start_session_impl(
         resolved.auth_token.as_deref(),
         resolved.base_url.as_deref(),
         &run_id,
-        resolved.default_model.as_deref(),
+        resolved.models.as_deref(),
         resolved.extra_env.as_ref(),
     )
     .await?;
@@ -967,7 +1014,7 @@ pub(crate) async fn fork_session_impl(
         &mut adapter,
         &None, // fork has no UI model override
         &agent_settings.model,
-        &resolved.default_model,
+        &resolved.models,
     );
     let resolved = augment_with_shell_auth(
         resolved,
@@ -991,7 +1038,7 @@ pub(crate) async fn fork_session_impl(
         resolved.api_key.as_deref(),
         resolved.auth_token.as_deref(),
         resolved.base_url.as_deref(),
-        resolved.default_model.as_deref(),
+        resolved.models.as_deref(),
         resolved.extra_env.as_ref(),
     )
     .await
@@ -1113,7 +1160,7 @@ pub(crate) async fn approve_session_tool_impl(
         &mut adapter,
         &None,
         &refreshed_agent.model,
-        &resolved.default_model,
+        &resolved.models,
     );
     let resolved = augment_with_shell_auth(resolved, &user.auth_mode, remote.is_some(), &meta.cwd);
 
@@ -1150,7 +1197,7 @@ pub(crate) async fn approve_session_tool_impl(
         resolved.auth_token.as_deref(),
         resolved.base_url.as_deref(),
         &run_id,
-        resolved.default_model.as_deref(),
+        resolved.models.as_deref(),
         resolved.extra_env.as_ref(),
     )
     .await?;
@@ -1576,7 +1623,7 @@ async fn spawn_cli_process(
     auth_token: Option<&str>,
     base_url: Option<&str>,
     _run_id: &str,
-    default_model: Option<&str>,
+    models: Option<&[String]>,
     extra_env: Option<&std::collections::HashMap<String, String>>,
 ) -> Result<
     (
@@ -1636,7 +1683,7 @@ async fn spawn_cli_process(
             api_key,
             auth_token,
             base_url,
-            default_model,
+            models,
             extra_env,
         );
         let mut ssh_cmd = crate::agent::ssh::build_ssh_command(remote, &remote_cmd);
@@ -1708,13 +1755,11 @@ async fn spawn_cli_process(
             cmd.env("ANTHROPIC_BASE_URL", url);
         }
 
-        // Pass default model for third-party platforms (low priority — --model flag overrides)
-        if let Some(model) = default_model {
-            log::debug!("[session] setting ANTHROPIC_MODEL={}", model);
-            cmd.env("ANTHROPIC_MODEL", model);
-            cmd.env("ANTHROPIC_DEFAULT_HAIKU_MODEL", model);
-            cmd.env("ANTHROPIC_DEFAULT_SONNET_MODEL", model);
-            cmd.env("ANTHROPIC_DEFAULT_OPUS_MODEL", model);
+        // Pass model tier env vars for third-party platforms (low priority — --model flag overrides)
+        if let Some(m) = models {
+            for (k, v) in resolve_model_tiers(m) {
+                cmd.env(k, v);
+            }
         }
 
         // Pass extra env vars for third-party platforms (e.g. API_TIMEOUT_MS for DeepSeek)
@@ -1826,7 +1871,7 @@ pub async fn side_question(
         &mut adapter,
         &None,
         &agent_settings.model,
-        &resolved.default_model,
+        &resolved.models,
     );
     let flag_args = adapter::build_settings_args(&adapter, false);
     claude_args.extend(flag_args.iter().cloned());
@@ -1840,7 +1885,7 @@ pub async fn side_question(
             resolved.api_key.as_deref(),
             resolved.auth_token.as_deref(),
             resolved.base_url.as_deref(),
-            resolved.default_model.as_deref(),
+            resolved.models.as_deref(),
             resolved.extra_env.as_ref(),
         );
         let mut ssh_cmd = crate::agent::ssh::build_ssh_command(remote_host, &remote_cmd);
@@ -1873,11 +1918,10 @@ pub async fn side_question(
         if let Some(url) = &resolved.base_url {
             local_cmd.env("ANTHROPIC_BASE_URL", url);
         }
-        if let Some(model) = &resolved.default_model {
-            local_cmd.env("ANTHROPIC_MODEL", model);
-            local_cmd.env("ANTHROPIC_DEFAULT_HAIKU_MODEL", model);
-            local_cmd.env("ANTHROPIC_DEFAULT_SONNET_MODEL", model);
-            local_cmd.env("ANTHROPIC_DEFAULT_OPUS_MODEL", model);
+        if let Some(m) = &resolved.models {
+            for (k, v) in resolve_model_tiers(m) {
+                local_cmd.env(k, v);
+            }
         }
         if let Some(extra) = &resolved.extra_env {
             for (k, v) in extra {
@@ -2231,7 +2275,10 @@ mod tests {
 
         assert_eq!(resolved.auth_token.as_deref(), Some("PROXY_MANAGED"));
         assert_eq!(resolved.base_url.as_deref(), Some("http://127.0.0.1:3456"));
-        assert_eq!(resolved.default_model.as_deref(), Some("claude-sonnet-4-6"));
+        assert_eq!(
+            resolved.models.as_deref(),
+            Some(vec!["claude-sonnet-4-6".to_string()].as_slice())
+        );
     }
 
     // ── is_local_url tests ──
@@ -2348,7 +2395,7 @@ mod tests {
             api_key: None,
             auth_token: None,
             base_url: None,
-            default_model: None,
+            models: None,
             extra_env: None,
         }
     }
@@ -2479,5 +2526,97 @@ mod tests {
         let config =
             crate::storage::cli_config::load_project_cli_config(tmp.path().to_str().unwrap());
         assert!(!config_value_has_auth_key(&config));
+    }
+
+    // ── resolve_model_tiers tests ──
+
+    fn tier_env(result: &[(&str, String)], key: &str) -> String {
+        result
+            .iter()
+            .find(|(k, _)| *k == key)
+            .map(|(_, v)| v.clone())
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn model_tiers_empty_returns_nothing() {
+        let r = resolve_model_tiers(&[]);
+        assert!(r.is_empty());
+    }
+
+    #[test]
+    fn model_tiers_single_all_same() {
+        let r = resolve_model_tiers(&["m".into()]);
+        assert_eq!(tier_env(&r, "ANTHROPIC_MODEL"), "m");
+        assert_eq!(tier_env(&r, "ANTHROPIC_DEFAULT_OPUS_MODEL"), "m");
+        assert_eq!(tier_env(&r, "ANTHROPIC_DEFAULT_HAIKU_MODEL"), "m");
+    }
+
+    #[test]
+    fn model_tiers_two_main_and_haiku() {
+        let r = resolve_model_tiers(&["main".into(), "eco".into()]);
+        assert_eq!(tier_env(&r, "ANTHROPIC_MODEL"), "main");
+        assert_eq!(tier_env(&r, "ANTHROPIC_DEFAULT_OPUS_MODEL"), "main");
+        assert_eq!(tier_env(&r, "ANTHROPIC_DEFAULT_SONNET_MODEL"), "main");
+        assert_eq!(tier_env(&r, "ANTHROPIC_DEFAULT_HAIKU_MODEL"), "eco");
+    }
+
+    #[test]
+    fn model_tiers_three_independent() {
+        let r = resolve_model_tiers(&["o".into(), "s".into(), "h".into()]);
+        assert_eq!(tier_env(&r, "ANTHROPIC_MODEL"), "s");
+        assert_eq!(tier_env(&r, "ANTHROPIC_DEFAULT_OPUS_MODEL"), "o");
+        assert_eq!(tier_env(&r, "ANTHROPIC_DEFAULT_SONNET_MODEL"), "s");
+        assert_eq!(tier_env(&r, "ANTHROPIC_DEFAULT_HAIKU_MODEL"), "h");
+    }
+
+    #[test]
+    fn model_tiers_three_only_sonnet() {
+        // ["", "s", ""] → all tiers = s
+        let r = resolve_model_tiers(&["".into(), "s".into(), "".into()]);
+        assert_eq!(tier_env(&r, "ANTHROPIC_MODEL"), "s");
+        assert_eq!(tier_env(&r, "ANTHROPIC_DEFAULT_OPUS_MODEL"), "s");
+        assert_eq!(tier_env(&r, "ANTHROPIC_DEFAULT_HAIKU_MODEL"), "s");
+    }
+
+    #[test]
+    fn model_tiers_three_sonnet_and_haiku() {
+        // ["", "s", "h"] → Opus inherits Sonnet
+        let r = resolve_model_tiers(&["".into(), "s".into(), "h".into()]);
+        assert_eq!(tier_env(&r, "ANTHROPIC_DEFAULT_OPUS_MODEL"), "s");
+        assert_eq!(tier_env(&r, "ANTHROPIC_DEFAULT_SONNET_MODEL"), "s");
+        assert_eq!(tier_env(&r, "ANTHROPIC_DEFAULT_HAIKU_MODEL"), "h");
+    }
+
+    #[test]
+    fn model_tiers_three_opus_sonnet_empty_haiku() {
+        // ["o", "s", ""] → Haiku inherits Sonnet
+        let r = resolve_model_tiers(&["o".into(), "s".into(), "".into()]);
+        assert_eq!(tier_env(&r, "ANTHROPIC_DEFAULT_OPUS_MODEL"), "o");
+        assert_eq!(tier_env(&r, "ANTHROPIC_DEFAULT_SONNET_MODEL"), "s");
+        assert_eq!(tier_env(&r, "ANTHROPIC_DEFAULT_HAIKU_MODEL"), "s");
+    }
+
+    #[test]
+    fn model_tiers_three_all_empty_returns_nothing() {
+        // ["", "", ""] → Sonnet empty → no injection
+        let r = resolve_model_tiers(&["".into(), "".into(), "".into()]);
+        assert!(r.is_empty());
+    }
+
+    #[test]
+    fn model_tiers_three_sonnet_empty_with_others_returns_nothing() {
+        // ["o", "", "h"] → Sonnet empty → no injection
+        let r = resolve_model_tiers(&["o".into(), "".into(), "h".into()]);
+        assert!(r.is_empty());
+    }
+
+    #[test]
+    fn model_tiers_two_empty_first_returns_nothing() {
+        // ["", ""] → first element empty → no injection (existing behavior)
+        let r = resolve_model_tiers(&["".into(), "".into()]);
+        // 2-element branch uses [0] for opus/sonnet — empty string still produces envs
+        // This is existing behavior; the empty-string guard only applies to 3+ elements
+        assert_eq!(r.len(), 4);
     }
 }

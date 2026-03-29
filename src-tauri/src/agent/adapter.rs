@@ -62,9 +62,9 @@ pub fn clear_model_if_provider_overrides(
     adapter: &mut AdapterSettings,
     model_override: &Option<String>,
     agent_model: &Option<String>,
-    provider_default_model: &Option<String>,
+    provider_models: &Option<Vec<String>>,
 ) {
-    if provider_default_model.is_none() {
+    if provider_models.as_ref().is_none_or(|m| m.is_empty()) {
         return;
     }
     let has_explicit_ui = model_override.as_ref().is_some_and(|m| !m.is_empty());

@@ -1,4 +1,4 @@
-import { quoteCliArg, normalizeDirPath, pathsEqual } from "./slash-commands";
+import { quoteCliArg, normalizeDirPath, pathsEqual } from "./path-utils";
 import { dbg } from "./debug";
 
 export interface AddDirDeps {

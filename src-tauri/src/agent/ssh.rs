@@ -82,7 +82,7 @@ pub fn build_remote_claude_command(
     api_key: Option<&str>,
     auth_token: Option<&str>,
     base_url: Option<&str>,
-    default_model: Option<&str>,
+    models: Option<&[String]>,
     extra_env: Option<&std::collections::HashMap<String, String>>,
 ) -> String {
     let claude_bin = remote.remote_claude_path.as_deref().unwrap_or("claude");
@@ -107,21 +107,11 @@ pub fn build_remote_claude_command(
     if let Some(url) = base_url {
         claude_parts.push(format!("ANTHROPIC_BASE_URL={}", shell_escape(url)));
     }
-    // Inject default model for third-party platforms
-    if let Some(model) = default_model {
-        claude_parts.push(format!("ANTHROPIC_MODEL={}", shell_escape(model)));
-        claude_parts.push(format!(
-            "ANTHROPIC_DEFAULT_HAIKU_MODEL={}",
-            shell_escape(model)
-        ));
-        claude_parts.push(format!(
-            "ANTHROPIC_DEFAULT_SONNET_MODEL={}",
-            shell_escape(model)
-        ));
-        claude_parts.push(format!(
-            "ANTHROPIC_DEFAULT_OPUS_MODEL={}",
-            shell_escape(model)
-        ));
+    // Inject model tier env vars for third-party platforms
+    if let Some(m) = models {
+        for (k, v) in crate::commands::session::resolve_model_tiers(m) {
+            claude_parts.push(format!("{}={}", k, shell_escape(&v)));
+        }
     }
     // Inject extra env vars (only allow safe key names: [A-Z0-9_])
     if let Some(extra) = extra_env {
@@ -154,7 +144,7 @@ pub fn build_remote_claude_command(
         api_key.is_some(),
         auth_token.is_some(),
         base_url.is_some(),
-        default_model.is_some(),
+        models.is_some(),
         extra_env.map_or(0, |e| e.len())
     );
 

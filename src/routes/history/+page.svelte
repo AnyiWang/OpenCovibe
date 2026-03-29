@@ -6,6 +6,7 @@
   import type { RunSearchFilters, RunSearchResponse } from "$lib/types";
   import { t } from "$lib/i18n/index.svelte";
   import { dbg, dbgWarn } from "$lib/utils/debug";
+  import { formatCostDisplay } from "$lib/utils/format";
 
   let filters = $state<RunSearchFilters>({});
   let response = $state<RunSearchResponse | null>(null);
@@ -47,10 +48,7 @@
     return new Date(iso).toLocaleDateString();
   }
 
-  function formatCost(cost: number): string {
-    if (cost < 0.01) return "<$0.01";
-    return `$${cost.toFixed(2)}`;
-  }
+  const formatCost = formatCostDisplay;
 
   function statusColor(status: string): string {
     switch (status) {

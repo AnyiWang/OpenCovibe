@@ -7,7 +7,7 @@
   import { getCliModels } from "$lib/stores/cli-info.svelte";
   import { t } from "$lib/i18n/index.svelte";
   import { fmtNumber } from "$lib/i18n/format";
-  import { truncate, formatTokenCount } from "$lib/utils/format";
+  import { truncate, formatTokenCount, formatDuration, formatCostDisplay } from "$lib/utils/format";
 
   let {
     run = null,
@@ -188,17 +188,7 @@
     titleEditing = false;
   }
 
-  function formatCost(c: number): string {
-    if (c === 0) return "$0.00";
-    if (c < 0.01) return "<$0.01";
-    return "$" + c.toFixed(2);
-  }
-
-  function formatDuration(ms: number): string {
-    if (ms <= 0) return "";
-    if (ms < 1000) return `${ms}ms`;
-    return `${(ms / 1000).toFixed(1)}s`;
-  }
+  const formatCost = formatCostDisplay;
 
   let permissionBadge = $derived.by(() => {
     if (!permissionMode || permissionMode === "default") return null;
