@@ -1,3 +1,4 @@
+use serde::de::Deserializer;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -31,9 +32,13 @@ struct AgentFrontmatter {
     description: Option<String>,
     #[serde(default)]
     model: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_opt_string_list")]
     tools: Option<Vec<String>>,
-    #[serde(default, rename = "disallowedTools")]
+    #[serde(
+        default,
+        rename = "disallowedTools",
+        deserialize_with = "deserialize_opt_string_list"
+    )]
     disallowed_tools: Option<Vec<String>>,
     #[serde(default, rename = "permissionMode")]
     permission_mode: Option<String>,
@@ -47,6 +52,47 @@ struct AgentFrontmatter {
     background: Option<bool>,
     #[serde(default)]
     isolation: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum StringListOrCsv {
+    List(Vec<String>),
+    Csv(String),
+}
+
+fn normalize_string_list(items: Vec<String>) -> Option<Vec<String>> {
+    let normalized: Vec<String> = items
+        .into_iter()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if normalized.is_empty() {
+        None
+    } else {
+        Some(normalized)
+    }
+}
+
+fn deserialize_opt_string_list<'de, D>(deserializer: D) -> Result<Option<Vec<String>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let raw = Option::<StringListOrCsv>::deserialize(deserializer)?;
+    let parsed = match raw {
+        None => None,
+        Some(StringListOrCsv::List(items)) => normalize_string_list(items),
+        Some(StringListOrCsv::Csv(csv)) => {
+            let items = csv
+                .split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .collect();
+            normalize_string_list(items)
+        }
+    };
+    Ok(parsed)
 }
 
 // ── Validation ──
@@ -687,6 +733,31 @@ You are a code reviewer."#;
         assert_eq!(fm.model, None);
         assert_eq!(fm.tools, None);
         assert_eq!(body, "Body here.");
+    }
+
+    #[test]
+    fn parse_frontmatter_tools_csv_string() {
+        let content = r#"---
+name: qwen-agent
+tools: "Bash, Read, Write"
+disallowedTools: "Edit, Grep"
+---
+Prompt."#;
+        let (fm, body) = parse_frontmatter(content);
+        let fm = fm.unwrap();
+        assert_eq!(
+            fm.tools,
+            Some(vec![
+                "Bash".to_string(),
+                "Read".to_string(),
+                "Write".to_string()
+            ])
+        );
+        assert_eq!(
+            fm.disallowed_tools,
+            Some(vec!["Edit".to_string(), "Grep".to_string()])
+        );
+        assert_eq!(body, "Prompt.");
     }
 
     #[test]
