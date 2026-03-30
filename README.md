@@ -157,7 +157,7 @@ You can re-run the wizard anytime from **Settings > General > Setup Wizard**.
 | Kimi For Coding | `api.kimi.com/coding/` | Bearer |
 | Zhipu (智谱) | `open.bigmodel.cn/api/anthropic` | Bearer |
 | Zhipu (智谱 Intl) | `api.z.ai/api/anthropic` | Bearer |
-| Bailian (百炼) | `coding.dashscope.aliyuncs.com/apps/anthropic` | Bearer |
+| Bailian (百炼) | `dashscope.aliyuncs.com/apps/anthropic` | Bearer |
 | DouBao (豆包) | `ark.cn-beijing.volces.com/api/coding` | Bearer |
 | MiniMax | `api.minimax.io/anthropic` | Bearer |
 | MiniMax (China) | `api.minimaxi.com/anthropic` | Bearer |

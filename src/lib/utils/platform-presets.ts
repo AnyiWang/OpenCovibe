@@ -66,7 +66,7 @@ export const PLATFORM_PRESETS: PlatformPreset[] = [
   {
     id: "bailian",
     name: "Bailian (\u767e\u70bc)",
-    base_url: "https://coding.dashscope.aliyuncs.com/apps/anthropic",
+    base_url: "https://dashscope.aliyuncs.com/apps/anthropic",
     auth_env_var: "ANTHROPIC_AUTH_TOKEN",
     description: "Alibaba DashScope",
     key_placeholder: "your-bailian-key",
