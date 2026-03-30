@@ -1600,7 +1600,6 @@
     // Codex pipe mode doesn't need resize — terminal is output-only
   }
 
-
   // ── Chat scroll ──
 
   /** Threshold (px) for "near bottom" detection. Shared concept with TerminalPane. */
@@ -1715,7 +1714,6 @@
         window.dispatchEvent(new Event("ocv:runs-changed"));
         // Re-detect CLI version on new session (picks up external updates)
         loadCliVersionInfo();
-
       } else if (store.useStreamSession && !store.sessionAlive && store.run.session_id) {
         // Stopped stream session: atomic resume + send (message written to CLI stdin at spawn)
         dbg("chat", "auto-resume on send", {
