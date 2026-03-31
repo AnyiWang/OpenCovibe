@@ -1780,7 +1780,7 @@ export class SessionStore {
         // Session may already be dead
       }
       this._setPhase("stopped");
-  
+
       this.run = { ...this.run, status: "stopped" };
     }
   }
@@ -1821,7 +1821,7 @@ export class SessionStore {
       // Always clean up frontend state, even if backend calls failed.
       // If the process is already dead, the UI must not stay stuck in "running".
       this._setPhase("stopped");
-  
+
       this.run = { ...this.run!, status: "stopped" };
       this._stopping = false;
     }
@@ -2207,7 +2207,6 @@ export class SessionStore {
   resolvePermissionAllow(requestId: string): void {
     this._resolvePermission("allow", requestId);
   }
-
 
   /** Handle chat-done event (pipe mode). */
   handleChatDone(_done: { ok: boolean; code: number; error?: string }): void {
