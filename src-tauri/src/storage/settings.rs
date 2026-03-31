@@ -2,8 +2,15 @@ use crate::models::{AgentSettings, AllSettings, UserSettings};
 use std::fs;
 use std::path::PathBuf;
 
+const BAILIAN_COMPAT_BASE_URL: &str = "https://dashscope.aliyuncs.com/apps/anthropic";
+const BAILIAN_LEGACY_COMPAT_BASE_URL: &str = "https://coding.dashscope.aliyuncs.com/apps/anthropic";
+
 fn settings_path() -> PathBuf {
     super::data_dir().join("settings.json")
+}
+
+fn url_eq_ignore_trailing_slash(a: &str, b: &str) -> bool {
+    a.trim_end_matches('/') == b.trim_end_matches('/')
 }
 
 pub fn load() -> AllSettings {
@@ -118,7 +125,7 @@ fn known_provider_defaults(pid: &str) -> Option<ProviderDefaults> {
             auth_env_var: None,
         }),
         "bailian" => Some(ProviderDefaults {
-            base_url: Some("https://coding.dashscope.aliyuncs.com/apps/anthropic"),
+            base_url: Some(BAILIAN_COMPAT_BASE_URL),
             models: Some(vec![
                 "qwen3-max".to_string(),
                 "qwen3.5-plus".to_string(),
@@ -272,6 +279,21 @@ fn migrate_platform_credentials(settings: &mut AllSettings) -> bool {
         // base_url is CRITICAL — without it, ANTHROPIC_BASE_URL is not set and
         // requests go to Anthropic's default endpoint instead of the third-party provider.
         if let Some(defaults) = known_provider_defaults(&cred.platform_id) {
+            // Migrate legacy Bailian compat endpoint to the current official endpoint.
+            if cred.platform_id == "bailian" {
+                if let Some(ref url) = cred.base_url {
+                    if url_eq_ignore_trailing_slash(url, BAILIAN_LEGACY_COMPAT_BASE_URL) {
+                        log::info!(
+                            "[storage/settings] migrating bailian base_url: {} -> {}",
+                            BAILIAN_LEGACY_COMPAT_BASE_URL,
+                            BAILIAN_COMPAT_BASE_URL
+                        );
+                        cred.base_url = Some(BAILIAN_COMPAT_BASE_URL.to_string());
+                        changed = true;
+                    }
+                }
+            }
+
             if cred.base_url.as_ref().is_none_or(|s| s.is_empty()) {
                 if let Some(url) = defaults.base_url {
                     log::info!(
@@ -343,6 +365,21 @@ fn migrate_platform_credentials(settings: &mut AllSettings) -> bool {
                 );
                 settings.user.auth_env_var = Some(correct.to_string());
                 changed = true;
+            }
+        }
+
+        // Keep global anthropic_base_url in sync for migrated Bailian endpoint.
+        if pid == "bailian" {
+            if let Some(ref url) = settings.user.anthropic_base_url {
+                if url_eq_ignore_trailing_slash(url, BAILIAN_LEGACY_COMPAT_BASE_URL) {
+                    log::info!(
+                        "[storage/settings] migrating global anthropic_base_url for bailian: {} -> {}",
+                        BAILIAN_LEGACY_COMPAT_BASE_URL,
+                        BAILIAN_COMPAT_BASE_URL
+                    );
+                    settings.user.anthropic_base_url = Some(BAILIAN_COMPAT_BASE_URL.to_string());
+                    changed = true;
+                }
             }
         }
     }
