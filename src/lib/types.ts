@@ -465,6 +465,14 @@ export interface McpServerInfo {
   error?: string;
 }
 
+export interface CodexAuthResult {
+  installed: boolean;
+  version?: string;
+  logged_in: boolean;
+  auth_method?: "chatgpt" | "api_key" | "unknown";
+  status_text?: string;
+}
+
 // ── Diagnostics report (run_diagnostics command) ──
 
 export interface DiagnosticsReport {

@@ -575,6 +575,10 @@ pub async fn dispatch_command(
             let result = crate::commands::diagnostics::check_agent_cli(agent).await?;
             serde_json::to_value(result).map_err(|e| e.to_string())
         }
+        "check_codex_auth" => {
+            let result = crate::commands::diagnostics::check_codex_auth().await?;
+            serde_json::to_value(result).map_err(|e| e.to_string())
+        }
         "check_project_init" => {
             let cwd = extract_str(&params, "cwd")?;
             let result = crate::commands::diagnostics::check_project_init(cwd)?;

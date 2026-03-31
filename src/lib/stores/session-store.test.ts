@@ -4942,4 +4942,82 @@ describe("SessionStore reducer", () => {
       expect(s.pendingToolPermissions[1].requestId).toBe("req-synth-2");
     });
   });
+
+  // ── Codex agent state isolation ──
+
+  describe("Codex agent state isolation", () => {
+    it("codex agent sets caps with pipe-exec transport", () => {
+      store.agent = "codex";
+      expect(store.caps.transport).toBe("pipe-exec");
+      expect(store.useStreamSession).toBe(false);
+      expect(store.caps.supportsResume).toBe(false);
+      expect(store.caps.supportsEffort).toBe(false);
+      expect(store.caps.supportsPermissionMode).toBe(false);
+    });
+
+    it("claude agent sets caps with stream-session transport", () => {
+      store.agent = "claude";
+      expect(store.caps.transport).toBe("stream-session");
+      expect(store.useStreamSession).toBe(true);
+      expect(store.caps.supportsResume).toBe(true);
+      expect(store.caps.supportsEffort).toBe(true);
+      expect(store.caps.supportsPermissionMode).toBe(true);
+    });
+
+    it("switching agent from claude to codex changes caps", () => {
+      store.agent = "claude";
+      expect(store.useStreamSession).toBe(true);
+
+      store.agent = "codex";
+      expect(store.useStreamSession).toBe(false);
+      expect(store.caps.transport).toBe("pipe-exec");
+    });
+
+    it("switching agent from codex to claude restores full caps", () => {
+      store.agent = "codex";
+      expect(store.caps.supportsResume).toBe(false);
+
+      store.agent = "claude";
+      expect(store.caps.supportsResume).toBe(true);
+      expect(store.caps.transport).toBe("stream-session");
+    });
+
+    it("unknown agent gets minimal (codex-equivalent) caps", () => {
+      store.agent = "some-unknown";
+      expect(store.caps.transport).toBe("pipe-exec");
+      expect(store.useStreamSession).toBe(false);
+      expect(store.caps.supportsResume).toBe(false);
+    });
+
+    it("codex run loads without polluting Claude state", () => {
+      // Simulate a codex run being loaded
+      store.run = makeRun("codex-run-1", { agent: "codex" });
+      store.agent = "codex";
+      store.phase = "running";
+
+      // Model should be independent — codex doesn't use Claude model system
+      store.model = "";
+      expect(store.model).toBe("");
+
+      // Caps should be codex
+      expect(store.useStreamSession).toBe(false);
+    });
+
+    it("permissionModeSetByUser flag behavior", () => {
+      // Initially false
+      expect(store.permissionModeSetByUser).toBe(false);
+
+      // Setting permissionMode directly doesn't set the flag
+      store.permissionMode = "plan";
+      expect(store.permissionModeSetByUser).toBe(false);
+
+      // Explicitly setting the flag
+      store.permissionModeSetByUser = true;
+      expect(store.permissionModeSetByUser).toBe(true);
+
+      // Resetting for agent switch
+      store.permissionModeSetByUser = false;
+      expect(store.permissionModeSetByUser).toBe(false);
+    });
+  });
 });

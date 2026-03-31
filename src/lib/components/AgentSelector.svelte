@@ -13,7 +13,7 @@
 
   const agents = [
     { id: "claude", label: "Claude" },
-    // { id: "codex", label: "Codex" }, // Codex disabled
+    { id: "codex", label: "Codex" },
   ];
 
   let currentLabel = $derived(agents.find((a) => a.id === value)?.label ?? "Claude");

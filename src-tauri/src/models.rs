@@ -624,6 +624,15 @@ pub struct CliCheckResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CodexAuthResult {
+    pub installed: bool,
+    pub version: Option<String>,
+    pub logged_in: bool,
+    pub auth_method: Option<String>,
+    pub status_text: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CliDistTags {
     pub latest: Option<String>,
     pub stable: Option<String>,

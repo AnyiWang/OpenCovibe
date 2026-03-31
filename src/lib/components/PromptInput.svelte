@@ -387,7 +387,7 @@
   let slashSubSelectedIndex = $state(0);
   let activeSlashCmd: CliCommand | null = $state(null);
 
-  let slashEnabled = $derived(agent === "claude" && !!useStreamSession);
+  let slashEnabled = $derived(!!useStreamSession);
   let slashBtnEl: HTMLButtonElement | undefined = $state();
   let savedInputForSlash = $state("");
 

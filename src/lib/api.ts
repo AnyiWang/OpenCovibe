@@ -42,6 +42,7 @@ import type {
   AgentDefinitionSummary,
   RunSearchFilters,
   RunSearchResponse,
+  CodexAuthResult,
 } from "./types";
 
 // Runs
@@ -328,6 +329,10 @@ export async function getHeatmapDaily(
 }
 
 // Diagnostics
+export async function checkCodexAuth(): Promise<CodexAuthResult> {
+  return invoke<CodexAuthResult>("check_codex_auth");
+}
+
 export async function checkAgentCli(agent: string): Promise<CliCheckResult> {
   dbg("api", "checkAgentCli", agent);
   return invoke<CliCheckResult>("check_agent_cli", { agent });

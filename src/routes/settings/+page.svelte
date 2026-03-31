@@ -9,6 +9,7 @@
     RemoteHost,
     RemoteTestResult,
     SshKeyInfo,
+    CodexAuthResult,
   } from "$lib/types";
   import Card from "$lib/components/Card.svelte";
   import Button from "$lib/components/Button.svelte";
@@ -550,6 +551,21 @@
   function getConflictWarning(key: string, context: string, excludeCmd: string): string {
     const conflict = keybindingStore.findConflict(key, context, excludeCmd);
     return conflict ? t("settings_shortcuts_conflictsWith", { label: conflict.label }) : "";
+  }
+
+  // ── Codex status ──
+  let codexStatus = $state<CodexAuthResult | null>(null);
+  let codexStatusLoading = $state(false);
+
+  async function loadCodexStatus() {
+    codexStatusLoading = true;
+    try {
+      codexStatus = await api.checkCodexAuth();
+    } catch {
+      codexStatus = null;
+    } finally {
+      codexStatusLoading = false;
+    }
   }
 
   // ── CLI Config state ──
@@ -1119,6 +1135,8 @@
     } catch (e) {
       dbgWarn("settings", "error", e);
     }
+    // Load Codex status
+    loadCodexStatus();
     // Load auth overview
     api
       .getAuthOverview()
@@ -2575,6 +2593,85 @@
                   </p>
                 </div>
               {/if}
+            </div>
+          {/if}
+        </Card>
+
+        <!-- Codex Status -->
+        <Card class="p-6 space-y-4">
+          <div class="flex items-center justify-between">
+            <h2 class="text-sm font-semibold text-muted-foreground uppercase tracking-wider">
+              {t("settings_codex_title")}
+            </h2>
+            <button
+              class="text-xs text-muted-foreground hover:text-foreground transition-colors"
+              onclick={loadCodexStatus}
+            >
+              {t("settings_codex_refresh")}
+            </button>
+          </div>
+
+          {#if codexStatusLoading}
+            <div class="flex items-center gap-2">
+              <div class="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent"></div>
+              <span class="text-sm text-muted-foreground">{t("settings_codex_checking")}</span>
+            </div>
+          {:else if !codexStatus}
+            <p class="text-sm text-muted-foreground">{t("settings_codex_checkFailed")}</p>
+          {:else if !codexStatus.installed}
+            <div class="flex items-center gap-3">
+              <div class="flex h-8 w-8 items-center justify-center rounded-full bg-red-500/10">
+                <svg class="h-4 w-4 text-red-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <circle cx="12" cy="12" r="10" /><line x1="15" y1="9" x2="9" y2="15" /><line x1="9" y1="9" x2="15" y2="15" />
+                </svg>
+              </div>
+              <div>
+                <p class="text-sm font-medium">{t("settings_codex_notInstalled")}</p>
+                <p class="text-xs text-muted-foreground">{t("settings_codex_installHint", { command: "npm i -g @openai/codex" })}</p>
+              </div>
+            </div>
+          {:else}
+            <div class="space-y-3">
+              <!-- Version -->
+              <div class="flex items-center gap-3">
+                <div class="flex h-8 w-8 items-center justify-center rounded-full bg-emerald-500/10">
+                  <svg class="h-4 w-4 text-emerald-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M20 6 9 17l-5-5" />
+                  </svg>
+                </div>
+                <div>
+                  <p class="text-sm font-medium">{t("settings_codex_installed")}</p>
+                  {#if codexStatus.version}
+                    <p class="text-xs text-muted-foreground">v{codexStatus.version}</p>
+                  {/if}
+                </div>
+              </div>
+              <!-- Auth status -->
+              <div class="flex items-center gap-3">
+                {#if codexStatus.logged_in}
+                  <div class="flex h-8 w-8 items-center justify-center rounded-full bg-emerald-500/10">
+                    <svg class="h-4 w-4 text-emerald-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                      <rect x="3" y="11" width="18" height="11" rx="2" ry="2" /><path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                    </svg>
+                  </div>
+                  <div>
+                    <p class="text-sm font-medium">{t("settings_codex_loggedIn")}</p>
+                    <p class="text-xs text-muted-foreground">
+                      {codexStatus.auth_method === "chatgpt" ? t("settings_codex_authChatGPT") : codexStatus.auth_method === "api_key" ? t("settings_codex_authApiKey") : t("settings_codex_authGeneric")}
+                    </p>
+                  </div>
+                {:else}
+                  <div class="flex h-8 w-8 items-center justify-center rounded-full bg-amber-500/10">
+                    <svg class="h-4 w-4 text-amber-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                      <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" /><line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" />
+                    </svg>
+                  </div>
+                  <div>
+                    <p class="text-sm font-medium">{t("settings_codex_notLoggedIn")}</p>
+                    <p class="text-xs text-muted-foreground">{t("settings_codex_loginHint", { command: "codex login" })}</p>
+                  </div>
+                {/if}
+              </div>
             </div>
           {/if}
         </Card>

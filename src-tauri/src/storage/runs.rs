@@ -60,24 +60,32 @@ pub fn create_run(
 
     let settings = super::settings::get_user_settings();
 
-    // Use explicit platform_id if provided, otherwise fall back to global active
-    let resolved_pid = platform_id.or_else(|| settings.active_platform_id.clone());
+    // Codex uses its own auth (ChatGPT / API key) — skip platform_id fallback
+    let skip_platform_fallback = agent == "codex";
+    let (resolved_pid, resolved_base_url) = if skip_platform_fallback {
+        (platform_id, None)
+    } else {
+        // Use explicit platform_id if provided, otherwise fall back to global active
+        let pid = platform_id.or_else(|| settings.active_platform_id.clone());
 
-    // Resolve base_url: credential → known provider defaults → global
-    let resolved_base_url = resolved_pid
-        .as_ref()
-        .and_then(|pid| {
-            // Try credential's base_url first
-            settings
-                .platform_credentials
-                .iter()
-                .find(|c| c.platform_id == *pid)
-                .and_then(|c| c.base_url.clone())
-                .filter(|s| !s.is_empty())
-                // Fallback to known provider defaults (for keyless platforms without credential)
-                .or_else(|| super::settings::get_provider_info(pid).and_then(|i| i.base_url))
-        })
-        .or_else(|| settings.anthropic_base_url.clone());
+        // Resolve base_url: credential → known provider defaults → global
+        let base_url = pid
+            .as_ref()
+            .and_then(|pid| {
+                // Try credential's base_url first
+                settings
+                    .platform_credentials
+                    .iter()
+                    .find(|c| c.platform_id == *pid)
+                    .and_then(|c| c.base_url.clone())
+                    .filter(|s| !s.is_empty())
+                    // Fallback to known provider defaults (for keyless platforms without credential)
+                    .or_else(|| super::settings::get_provider_info(pid).and_then(|i| i.base_url))
+            })
+            .or_else(|| settings.anthropic_base_url.clone());
+
+        (pid, base_url)
+    };
 
     // Snapshot no_session_persistence from agent settings at creation time
     let agent_settings = super::settings::get_agent_settings(agent);

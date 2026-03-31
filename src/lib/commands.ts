@@ -76,16 +76,15 @@ export const commands: CommandDef[] = [
     action: "navigate",
     payload: "/chat?agent=claude",
   },
-  // Codex disabled
-  // {
-  //   id: "new-codex",
-  //   name: "New Codex Chat",
-  //   description: "Start a new Codex conversation",
-  //   category: "chat",
-  //   agent: "both",
-  //   action: "navigate",
-  //   payload: "/chat?agent=codex",
-  // },
+  {
+    id: "new-codex",
+    name: "New Codex Chat",
+    description: "Start a new Codex conversation",
+    category: "chat",
+    agent: "both",
+    action: "navigate",
+    payload: "/chat?agent=codex",
+  },
   {
     id: "stop-run",
     name: "Stop Run",

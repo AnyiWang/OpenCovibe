@@ -30,6 +30,7 @@
     TimelineEntry,
   } from "$lib/types";
   import { PLATFORM_PRESETS, findCredential } from "$lib/utils/platform-presets";
+  import { getAgentCaps, isKnownAgent } from "$lib/utils/agent-caps";
   import { IS_WEBKIT } from "$lib/utils/platform";
   import {
     detectBatchGroups,
@@ -135,6 +136,10 @@
   let preloadGen = 0;
   /** Local proxy running statuses for AuthSourceBadge. */
   let localProxyStatuses = $state<Record<string, { running: boolean; needsAuth: boolean }>>({});
+
+  // ── Codex auth warning ──
+  let codexWarning = $state<string | null>(null);
+  let agentChangeSeq = 0;
 
   // ── Preview state ──
   let previewInstanceId = $state("");
@@ -569,7 +574,7 @@
   // Effort guard: auto-clear effort when model doesn't support it;
   // also auto-populate default effort ("high") when empty and model supports it.
   $effect(() => {
-    if (store.agent !== "claude") return;
+    if (!store.caps.supportsEffort) return;
 
     const pid = store.platformId;
     // Third-party platform: don't touch effort
@@ -887,6 +892,22 @@
   let runId = $derived($page.url.searchParams.get("run") ?? "");
   let hasResumeParam = $derived($page.url.searchParams.has("resume"));
   let folderParam = $derived($page.url.searchParams.get("folder"));
+  let agentParam = $derived($page.url.searchParams.get("agent"));
+
+  // Consume ?agent= param: switch agent for new sessions, then clean URL
+  $effect(() => {
+    const a = agentParam;
+    if (!a) return;
+    untrack(() => {
+      const clean = new URL($page.url);
+      clean.searchParams.delete("agent");
+      replaceState(clean, {});
+      // ?agent= only applies to new sessions — ignore when loading an existing run
+      if (!runId && isKnownAgent(a)) {
+        handleAgentChange(a, true); // force=true to run full side effects
+      }
+    });
+  });
 
   // Consume ?folder= param: switch to new chat in that folder, then clean URL
   $effect(() => {
@@ -941,7 +962,7 @@
       }
       // Initialize model: for third-party platforms, use credential > preset default model
       // Only for new sessions — if runId is set, loadRun will handle model restoration.
-      if (!store.model && !runId && store.phase !== "loading") {
+      if (!store.model && !runId && store.phase !== "loading" && store.useStreamSession) {
         const initCred = findCredential(settings.platform_credentials ?? [], store.platformId);
         const initPreset = PLATFORM_PRESETS.find((p) => p.id === store.platformId);
         const initModels = initCred?.models?.length ? initCred.models : initPreset?.models;
@@ -963,37 +984,34 @@
     } catch (e) {
       dbgWarn("chat", "failed to load settings:", e);
     }
-    try {
-      agentSettings = await api.getAgentSettings("claude");
-      // Read effort from CLI config (~/.claude/settings.json) — the authoritative source.
-      // NOT from agentSettings.effort (that would cause --effort flag at spawn, which
-      // locks effort in memory and prevents live switching via settings.json).
+    // When a valid ?agent= param exists, handleAgentChange(force) will handle
+    // agentSettings + effort loading. Skip here to avoid concurrent overwrites.
+    const hasValidAgentParam = agentParam && isKnownAgent(agentParam);
+    if (!hasValidAgentParam) {
       try {
-        const cliCfg = await api.getCliConfig();
-        const cliEffort = cliCfg.effortLevel;
-        currentEffort = typeof cliEffort === "string" && cliEffort ? cliEffort : "";
-      } catch {
-        currentEffort = "";
-      }
-      // One-time migration: clear stale agentSettings.effort to prevent --effort at spawn
-      if (agentSettings?.effort) {
-        api.updateAgentSettings("claude", { effort: "" }).catch(() => {});
-      }
-    } catch (e) {
-      dbgWarn("chat", "failed to load agent settings:", e);
-    }
-    // Initialize permission mode from saved settings (before session_init arrives)
-    // Agent plan_mode=true overrides user permission_mode (legacy compat)
-    if (!store.permissionModeSetByUser) {
-      if (agentSettings?.plan_mode) {
-        store.permissionMode = "plan";
-        store.permissionModeSetByUser = true;
-      } else if (settings?.permission_mode) {
-        const cliName = APP_TO_CLI_MODE[settings.permission_mode] ?? settings.permission_mode;
-        store.permissionMode = cliName;
-        store.permissionModeSetByUser = true;
+        agentSettings = await api.getAgentSettings(store.agent);
+        // Read effort from CLI config (~/.claude/settings.json) — the authoritative source.
+        // NOT from agentSettings.effort (that would cause --effort flag at spawn, which
+        // locks effort in memory and prevents live switching via settings.json).
+        try {
+          const cliCfg = await api.getCliConfig();
+          const cliEffort = cliCfg.effortLevel;
+          currentEffort = typeof cliEffort === "string" && cliEffort ? cliEffort : "";
+        } catch {
+          currentEffort = "";
+        }
+        // One-time migration: clear stale agentSettings.effort to prevent --effort at spawn
+        if (agentSettings?.effort) {
+          api.updateAgentSettings(store.agent, { effort: "" }).catch(() => {});
+        }
+      } catch (e) {
+        dbgWarn("chat", "failed to load agent settings:", e);
       }
     }
+    // Initialize permission mode from saved settings (before session_init arrives).
+    // Uses syncPermissionModeFromSettings helper — does NOT set permissionModeSetByUser.
+    // That flag is only set by handlePermissionModeChange() (user manual action).
+    syncPermissionModeFromSettings(agentSettings, settings);
     // Find most recent run with session_id for "Continue last session"
     try {
       const runs = await api.listRuns();
@@ -1045,7 +1063,7 @@
         lastKnownGoodAnthropicModel = cliModel;
       }
       // Only for genuinely new chats: no run loaded/loading, no URL run param
-      if (cliModel && !store.run && !runId && store.phase !== "loading" && !isThirdParty) {
+      if (cliModel && !store.run && !runId && store.phase !== "loading" && !isThirdParty && store.useStreamSession) {
         dbg("chat", "set model from CLI after loadCliInfo", { cliModel, prev: store.model });
         store.model = cliModel;
       }
@@ -1153,6 +1171,7 @@
         if (
           store.run?.execution_path === "pipe_exec" &&
           store.run &&
+          getAgentCaps(store.run.agent).transport === "pipe-exec" &&
           event.run_id === store.run.id &&
           xtermRef
         ) {
@@ -1543,7 +1562,7 @@
   // For Anthropic, prefer CC's current active model, fall back to our saved default_model
   // (only if confirmed clean via three-state contamination check).
   $effect(() => {
-    if (!store.model) {
+    if (!store.model && store.useStreamSession) {
       // Don't overwrite model during loadRun async gap — loadRun will set it
       if (store.phase === "loading") return;
 
@@ -1827,6 +1846,90 @@
     dbg("chat", "init hint dismissed");
   }
 
+  // ── Agent switching ──
+
+  /**
+   * Sync permission mode from agent/user settings.
+   * Only syncs when the user hasn't manually changed the mode this session.
+   * Does NOT set permissionModeSetByUser — that flag is only set by
+   * handlePermissionModeChange() (user manual action).
+   */
+  function syncPermissionModeFromSettings(
+    as: AgentSettings | null,
+    us: UserSettings | null,
+  ) {
+    if (store.permissionModeSetByUser) return;
+    if (as?.plan_mode) {
+      store.permissionMode = "plan";
+    } else if (us?.permission_mode) {
+      const cliName = APP_TO_CLI_MODE[us.permission_mode] ?? us.permission_mode;
+      store.permissionMode = cliName;
+    }
+  }
+
+  async function handleAgentChange(newAgent: string, force = false) {
+    if (!force && newAgent === store.agent) return;
+    const seq = ++agentChangeSeq;
+    store.agent = newAgent;
+
+    // Model: clear and let the $effect(:1546) safely restore for Claude.
+    // For Codex, the $effect is gated by useStreamSession → stays empty → spawn.rs skips --model.
+    store.model = "";
+
+    // Async: agentSettings
+    try {
+      const as = await api.getAgentSettings(newAgent);
+      if (seq !== agentChangeSeq) return; // stale
+      agentSettings = as;
+    } catch {
+      if (seq !== agentChangeSeq) return;
+      agentSettings = null;
+    }
+
+    // Async: effort
+    if (store.caps.supportsEffort) {
+      try {
+        const cfg = await api.getCliConfig();
+        if (seq !== agentChangeSeq) return;
+        currentEffort = typeof cfg.effortLevel === "string" ? cfg.effortLevel : "";
+      } catch {
+        if (seq !== agentChangeSeq) return;
+        currentEffort = "";
+      }
+    } else {
+      currentEffort = "";
+    }
+
+    if (seq !== agentChangeSeq) return;
+    // One-time migration: clear stale agentSettings.effort
+    if (agentSettings?.effort) {
+      api.updateAgentSettings(newAgent, { effort: "" }).catch(() => {});
+    }
+
+    // Re-sync permissionMode — reset flag (new agent needs fresh sync), then sync
+    store.permissionModeSetByUser = false;
+    syncPermissionModeFromSettings(agentSettings, settings);
+
+    // Auth detection banner (Codex only)
+    if (newAgent === "codex") {
+      codexWarning = null;
+      api.checkCodexAuth().then((status) => {
+        if (seq !== agentChangeSeq) return;
+        if (!status.installed) {
+          codexWarning = t("codex_notInstalled");
+        } else if (!status.logged_in) {
+          codexWarning = t("codex_notLoggedIn");
+        } else {
+          codexWarning = null;
+        }
+      }).catch(() => {});
+    } else {
+      codexWarning = null;
+    }
+
+    dbg("chat", "agent changed", { agent: newAgent, seq });
+  }
+
   // ── Permission mode name translation ──
   // Store/dropdown use CLI names; UserSettings uses app names; adapter.rs maps app→CLI.
   const CLI_TO_APP_MODE: Record<string, string> = {
@@ -1943,7 +2046,7 @@
 
     // Sync legacy plan_mode (fire-and-forget)
     if (seq === permissionModeChangeSeq) {
-      api.updateAgentSettings("claude", { plan_mode: newMode === "plan" }).catch((e) => {
+      api.updateAgentSettings(store.agent, { plan_mode: newMode === "plan" }).catch((e) => {
         dbgWarn("chat", "plan_mode sync failed:", e);
       });
     }
@@ -3492,7 +3595,7 @@
       mcpServers={store.mcpServers}
       onMcpToggle={() => (mcpPanelOpen = !mcpPanelOpen)}
       cliVersion={store.cliVersion}
-      permissionMode={store.permissionMode}
+      permissionMode={store.caps.supportsPermissionMode ? store.permissionMode : undefined}
       {platformModels}
       fastModeState={store.fastModeState}
       verbose={verboseEnabled}
@@ -3632,6 +3735,9 @@
                 <div class="text-center animate-slide-up">
                   <img src="/logo.png?v=2" alt="OC" class="mx-auto mb-4 h-12 w-12 rounded-2xl" />
                   <h2 class="text-lg font-semibold text-primary mb-1">{t("layout_appName")}</h2>
+                  {#if codexWarning}
+                    <p class="text-amber-500 text-sm mb-3 px-2">{codexWarning}</p>
+                  {/if}
                   {#if !store.run}
                     {@const welcomeCwd =
                       store.effectiveCwd ||
@@ -4240,6 +4346,9 @@
           <div class="text-center max-w-md animate-slide-up">
             <img src="/logo.png?v=2" alt="OC" class="mx-auto mb-4 h-12 w-12 rounded-2xl" />
             <h2 class="text-lg font-semibold text-primary mb-2">{t("layout_appName")}</h2>
+            {#if codexWarning}
+              <p class="text-amber-500 text-sm mb-3 px-2">{codexWarning}</p>
+            {/if}
             <p class="text-sm text-muted-foreground mb-4">
               {store.run ? t("chat_typeToStartSession") : t("chat_startSessionHint")}
             </p>
@@ -4518,9 +4627,9 @@
         cliCommands={store.sessionInitReceived && store.sessionCommands.length > 0
           ? store.sessionCommands
           : mergeProjectCommands(getCliCommands(), projectCommands)}
-        models={effectiveModels}
+        models={store.useStreamSession ? effectiveModels : []}
         currentModel={store.model}
-        permissionMode={store.permissionMode}
+        permissionMode={store.caps.supportsPermissionMode ? store.permissionMode : "default"}
         cwd={store.effectiveCwd ||
           folderCwdOverride ||
           localStorage.getItem("ocv:project-cwd") ||
@@ -4530,7 +4639,7 @@
         platformCredentials={settings?.platform_credentials ?? []}
         onSend={sendMessage}
         onBtwSend={handleBtwSend}
-        onAgentChange={undefined}
+        onAgentChange={handleAgentChange}
         onInterrupt={() => store.interrupt()}
         onModelSwitch={handleModelChange}
         onPermissionModeChange={store.features.permissionModeSwitch
@@ -4546,7 +4655,7 @@
         apiKeySource={store.apiKeySource}
         onAuthModeChange={handleAuthModeChange}
         {localProxyStatuses}
-        showAuthBadge={!welcomeVisible}
+        showAuthBadge={!welcomeVisible && store.useStreamSession}
         onShortcutHelp={() => (shortcutHelpOpen = !shortcutHelpOpen)}
         availableSkills={store.availableSkills}
         {skillItems}

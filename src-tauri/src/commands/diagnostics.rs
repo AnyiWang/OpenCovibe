@@ -2,8 +2,9 @@ use crate::agent::claude_stream::augmented_path;
 use crate::agent::ssh::{expand_local_tilde, shell_escape};
 use crate::models::{
     ApiTestResult, AuthDiagnostics, ClaudeMdInfo, CliCheckResult, CliDiagnostics, CliDistTags,
-    ConfigDiagnostics, ConfigIssue, DiagnosticsReport, LocalProxyStatus, ProjectDiagnostics,
-    ProjectInitStatus, RemoteTestResult, ServicesDiagnostics, SshKeyInfo, SystemDiagnostics,
+    CodexAuthResult, ConfigDiagnostics, ConfigIssue, DiagnosticsReport, LocalProxyStatus,
+    ProjectDiagnostics, ProjectInitStatus, RemoteTestResult, ServicesDiagnostics, SshKeyInfo,
+    SystemDiagnostics,
 };
 use crate::process_ext::HideConsole;
 use std::path::Path;
@@ -56,6 +57,103 @@ pub async fn check_agent_cli(agent: String) -> Result<CliCheckResult, String> {
         found,
         path,
         version,
+    })
+}
+
+#[tauri::command]
+pub async fn check_codex_auth() -> Result<CodexAuthResult, String> {
+    log::debug!("[diagnostics] check_codex_auth: starting");
+
+    // Reuse check_agent_cli to detect installation
+    let cli_check = check_agent_cli("codex".to_string()).await?;
+    if !cli_check.found {
+        log::debug!("[diagnostics] check_codex_auth: codex not installed");
+        return Ok(CodexAuthResult {
+            installed: false,
+            version: None,
+            logged_in: false,
+            auth_method: None,
+            status_text: None,
+        });
+    }
+
+    let aug_path = augmented_path();
+    log::debug!(
+        "[diagnostics] check_codex_auth: binary found at {:?}, version={:?}",
+        cli_check.path,
+        cli_check.version
+    );
+
+    // Run `codex login status` to check auth
+    let output = Command::new("codex")
+        .args(["login", "status"])
+        .env("PATH", &aug_path)
+        .hide_console()
+        .output();
+
+    let output = match output {
+        Ok(o) => o,
+        Err(e) => {
+            log::debug!(
+                "[diagnostics] check_codex_auth: failed to execute 'codex login status': {}",
+                e
+            );
+            return Ok(CodexAuthResult {
+                installed: true,
+                version: cli_check.version,
+                logged_in: false,
+                auth_method: None,
+                status_text: Some(format!("exec error: {}", e)),
+            });
+        }
+    };
+
+    let exit_code = output.status.code();
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let logged_in = output.status.success();
+
+    log::debug!(
+        "[diagnostics] check_codex_auth: exit_code={:?}, logged_in={}, stdout={:?}, stderr={:?}",
+        exit_code,
+        logged_in,
+        stdout,
+        stderr
+    );
+
+    let auth_method = if logged_in {
+        let method = if stdout.contains("ChatGPT") {
+            "chatgpt"
+        } else if stdout.contains("API key") {
+            "api_key"
+        } else {
+            "unknown"
+        };
+        log::debug!(
+            "[diagnostics] check_codex_auth: parsed auth_method={:?}",
+            method
+        );
+        Some(method.to_string())
+    } else {
+        log::debug!(
+            "[diagnostics] check_codex_auth: not logged in (exit_code={:?})",
+            exit_code
+        );
+        None
+    };
+
+    log::debug!(
+        "[diagnostics] check_codex_auth result: installed=true, logged_in={}, auth_method={:?}",
+        logged_in,
+        auth_method
+    );
+
+    Ok(CodexAuthResult {
+        installed: true,
+        version: cli_check.version,
+        logged_in,
+        auth_method,
+        status_text: Some(stdout),
     })
 }
 

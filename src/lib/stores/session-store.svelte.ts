@@ -613,6 +613,10 @@ export class SessionStore {
     return this.run ? this.run.auth_mode === "api" : this.authMode === "api";
   }
 
+  get caps(): AgentCapabilities {
+    return getAgentCaps(this.agent);
+  }
+
   get useStreamSession(): boolean {
     // Run-level: check execution_path if run exists (resolved, non-undefined)
     if (this.run) return this.run.execution_path === "session_actor";
@@ -1677,16 +1681,34 @@ export class SessionStore {
           auto: "auto",
           dont_ask: "dontAsk",
         };
-        if (freshSettings.permission_mode) {
-          const freshPerm =
-            APP_TO_CLI[freshSettings.permission_mode] ?? freshSettings.permission_mode;
-          if (freshPerm !== this.permissionMode) {
-            dbg("store", "startSession: refreshing permissionMode", {
-              old: this.permissionMode,
-              new: freshPerm,
-            });
-            this.permissionMode = freshPerm;
-            this.permissionModeSetByUser = true;
+        // Refresh permissionMode: agentSettings.plan_mode takes priority (consistent
+        // with backend adapter.rs:102). Don't set permissionModeSetByUser — that flag
+        // is only for user manual changes; session_init is the authority.
+        if (!this.permissionModeSetByUser) {
+          // Try to read current agent's plan_mode setting
+          let agentPlanMode = false;
+          try {
+            const as = await api.getAgentSettings(this.agent);
+            agentPlanMode = !!as?.plan_mode;
+          } catch { /* non-fatal */ }
+
+          if (agentPlanMode) {
+            if (this.permissionMode !== "plan") {
+              dbg("store", "startSession: agentSettings.plan_mode → plan", {
+                old: this.permissionMode,
+              });
+              this.permissionMode = "plan";
+            }
+          } else if (freshSettings.permission_mode) {
+            const freshPerm =
+              APP_TO_CLI[freshSettings.permission_mode] ?? freshSettings.permission_mode;
+            if (freshPerm !== this.permissionMode) {
+              dbg("store", "startSession: refreshing permissionMode", {
+                old: this.permissionMode,
+                new: freshPerm,
+              });
+              this.permissionMode = freshPerm;
+            }
           }
         }
       } catch {
