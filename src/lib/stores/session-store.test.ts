@@ -4991,7 +4991,7 @@ describe("SessionStore reducer", () => {
 
     it("codex run loads without polluting Claude state", () => {
       // Simulate a codex run being loaded
-      store.run = makeRun("codex-run-1", { agent: "codex" });
+      store.run = makeRun("codex-run-1", { agent: "codex", execution_path: "pipe_exec" });
       store.agent = "codex";
       store.phase = "running";
 

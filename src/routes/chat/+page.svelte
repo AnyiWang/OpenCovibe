@@ -1170,8 +1170,6 @@
       onRunEvent(event) {
         if (
           store.run?.execution_path === "pipe_exec" &&
-          store.run &&
-          getAgentCaps(store.run.agent).transport === "pipe-exec" &&
           event.run_id === store.run.id &&
           xtermRef
         ) {
@@ -2139,25 +2137,28 @@
     dbg("chat", "platform change", { from: store.platformId, to: platformId });
     store.platformId = platformId;
 
-    // Auto-switch model to provider's default when switching to a third-party platform
+    // Auto-switch model to provider's default when switching to a third-party platform.
+    // Only for stream-session agents — Codex manages its own model via CLI.
     // Priority: credential.models (user-configured) > preset.models (static defaults)
-    const cred = findCredential(settings?.platform_credentials ?? [], platformId);
-    const preset = PLATFORM_PRESETS.find((p) => p.id === platformId);
-    const models = cred?.models?.length ? cred.models : preset?.models;
-    if (models?.length) {
-      const defaultModel = models[0];
-      dbg("chat", "auto-switch model for platform", { platformId, model: defaultModel });
-      store.model = defaultModel;
-    } else if (platformId === "anthropic") {
-      // Switching back to Anthropic: always overwrite — don't keep third-party model;
-      // don't fallback to settings.default_model which might be contaminated.
-      const cliModel = getCliCurrentModel();
-      store.model = cliModel || "";
-      dbg("chat", "restore model on switch to anthropic", { cliModel, using: store.model });
-    } else {
-      // Custom/unknown platform without preset models: clear model
-      // (let CLI use whatever default it has, or the user can set manually)
-      store.model = "";
+    if (store.useStreamSession) {
+      const cred = findCredential(settings?.platform_credentials ?? [], platformId);
+      const preset = PLATFORM_PRESETS.find((p) => p.id === platformId);
+      const models = cred?.models?.length ? cred.models : preset?.models;
+      if (models?.length) {
+        const defaultModel = models[0];
+        dbg("chat", "auto-switch model for platform", { platformId, model: defaultModel });
+        store.model = defaultModel;
+      } else if (platformId === "anthropic") {
+        // Switching back to Anthropic: always overwrite — don't keep third-party model;
+        // don't fallback to settings.default_model which might be contaminated.
+        const cliModel = getCliCurrentModel();
+        store.model = cliModel || "";
+        dbg("chat", "restore model on switch to anthropic", { cliModel, using: store.model });
+      } else {
+        // Custom/unknown platform without preset models: clear model
+        // (let CLI use whatever default it has, or the user can set manually)
+        store.model = "";
+      }
     }
 
     // Only persist default_model when switching to Anthropic with a validated CLI model.

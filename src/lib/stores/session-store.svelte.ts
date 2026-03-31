@@ -33,6 +33,7 @@ import { getEventMiddleware } from "./event-middleware";
 import { updateInstalledVersion, getCliCommands } from "./cli-info.svelte";
 import * as snapshotCache from "$lib/utils/snapshot-cache";
 import { getTransport } from "$lib/transport";
+import { getAgentCaps, type AgentCapabilities } from "$lib/utils/agent-caps";
 import { getAgentFeatures, type AgentFeatures } from "$lib/utils/agent-features";
 
 // ── CLI permission mode normalization ──
