@@ -312,7 +312,14 @@ pub async fn run_agent(
 
     // Emit RunState via bus
     if let Some(ref em) = emitter {
+        // For resumable Codex runs (has conversation_ref), normal exit → "idle"
+        // instead of "completed", so the UI shows the same state as Claude between turns.
+        let has_conversation_ref = is_codex
+            && storage::runs::get_run(&run_id)
+                .map(|r| r.conversation_ref.is_some())
+                .unwrap_or(false);
         let state = match exit_code {
+            0 if has_conversation_ref => "idle",
             0 => "completed",
             -1 => "stopped",
             _ => "failed",

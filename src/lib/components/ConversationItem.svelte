@@ -38,6 +38,11 @@
   );
   const runCount = $derived(conversation.runs.length);
   const needsAttention = $derived(hasAttention(run.id));
+  // Codex completed + resumable → display as "idle"
+  const displayStatus = $derived(
+    run.status === "completed" && run.conversation_ref?.kind === "codex_thread"
+      ? "idle" : run.status
+  ) as string;
 
   // ── Inline rename (self-contained, mirrors RunListItem) ──
 
@@ -199,7 +204,7 @@
           >
         </button>
       {/if}
-      <StatusBadge status={run.status} attention={needsAttention} class="shrink-0" />
+      <StatusBadge status={displayStatus} attention={needsAttention} class="shrink-0" />
     </div>
   </div>
   <div class="mt-0.5 flex items-center gap-2 text-xs text-muted-foreground">
@@ -220,7 +225,7 @@
           /><path d="M2 12h20" /></svg
         >
       {/if}
-      {#if run.platform_id && run.platform_id !== "anthropic"}
+      {#if run.agent !== "codex" && run.platform_id && run.platform_id !== "anthropic"}
         <span class="shrink-0">&middot;</span>
         <span class="truncate">{platformLabel(run.platform_id)}</span>
       {/if}

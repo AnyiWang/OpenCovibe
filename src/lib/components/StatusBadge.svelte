@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { RunStatus } from "$lib/types";
 
-  type DisplayStatus = RunStatus | "waiting";
+  type DisplayStatus = RunStatus | "waiting" | "idle";
 
   let {
     status,
@@ -21,6 +21,7 @@
     pending: "bg-amber-500/20 text-amber-600 dark:text-amber-400",
     running: "bg-blue-500/20 text-blue-600 dark:text-blue-400",
     waiting: "bg-amber-500/20 text-amber-600 dark:text-amber-400",
+    idle: "bg-blue-500/20 text-blue-600 dark:text-blue-400",
     completed: "bg-emerald-500/20 text-emerald-600 dark:text-emerald-400",
     failed: "bg-red-500/20 text-red-600 dark:text-red-400",
     stopped: "bg-gray-500/20 text-gray-600 dark:text-gray-400",
@@ -30,6 +31,7 @@
     pending: "bg-amber-500",
     running: "bg-blue-500 animate-pulse",
     waiting: "bg-amber-500 animate-pulse",
+    idle: "bg-blue-500",
     completed: "bg-emerald-500",
     failed: "bg-red-500",
     stopped: "bg-gray-500",

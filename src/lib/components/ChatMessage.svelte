@@ -11,12 +11,17 @@
     attachments,
     thinkingText,
     onRewind,
+    agent = "claude",
   }: {
     message: ChatMessage;
     attachments?: Attachment[];
     thinkingText?: string;
     onRewind?: () => void;
+    agent?: string;
   } = $props();
+
+  const assistantLabel = $derived(agent === "codex" ? "Codex" : t("chat_roleClaude"));
+  const isCodex = $derived(agent === "codex");
 
   function isImage(att: Attachment): boolean {
     return (IMAGE_TYPES as readonly string[]).includes(att.type);
@@ -85,7 +90,7 @@
         <span class="text-sm font-semibold text-foreground">{t("chat_roleYou")}</span>
       {:else}
         <div
-          class="flex h-5 w-5 items-center justify-center rounded-sm bg-orange-500/10 text-orange-500"
+          class="flex h-5 w-5 items-center justify-center rounded-sm {isCodex ? 'bg-emerald-500/10 text-emerald-500' : 'bg-orange-500/10 text-orange-500'}"
         >
           <svg
             class="h-3 w-3"
@@ -96,12 +101,16 @@
             stroke-linecap="round"
             stroke-linejoin="round"
           >
-            <path
-              d="M12 3l1.912 5.813a2 2 0 0 0 1.275 1.275L21 12l-5.813 1.912a2 2 0 0 0-1.275 1.275L12 21l-1.912-5.813a2 2 0 0 0-1.275-1.275L3 12l5.813-1.912a2 2 0 0 0 1.275-1.275L12 3z"
-            />
+            {#if isCodex}
+              <polyline points="4 17 10 11 4 5" /><line x1="12" x2="20" y1="19" y2="19" />
+            {:else}
+              <path
+                d="M12 3l1.912 5.813a2 2 0 0 0 1.275 1.275L21 12l-5.813 1.912a2 2 0 0 0-1.275 1.275L12 21l-1.912-5.813a2 2 0 0 0-1.275-1.275L3 12l5.813-1.912a2 2 0 0 0 1.275-1.275L12 3z"
+              />
+            {/if}
           </svg>
         </div>
-        <span class="text-sm font-semibold text-foreground">{t("chat_roleClaude")}</span>
+        <span class="text-sm font-semibold text-foreground">{assistantLabel}</span>
       {/if}
       {#if onRewind}
         <button

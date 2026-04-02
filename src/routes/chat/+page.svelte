@@ -571,6 +571,8 @@
 
   let effectiveModels = $derived(platformModels.length > 0 ? platformModels : getCliModels());
   let currentEffort = $state("");
+  let isCodexAgent = $derived(store.agent === "codex");
+  let assistantDisplayName = $derived(isCodexAgent ? "Codex" : t("chat_claude"));
 
   // Effort guard: auto-clear effort when model doesn't support it;
   // also auto-populate default effort ("high") when empty and model supports it.
@@ -3971,6 +3973,7 @@
                           timestamp: entry.ts,
                         }}
                         thinkingText={entry.thinkingText}
+                        agent={store.agent}
                       />
                     {:else if entry.kind === "tool"}
                       {#if claudeTurnStarts.has(i)}
@@ -4198,7 +4201,7 @@
                   <div class="chat-content-width py-4">
                     <div class="mb-1.5 flex items-center gap-2">
                       <div
-                        class="flex h-5 w-5 items-center justify-center rounded-sm bg-orange-500/10 text-orange-500"
+                        class="flex h-5 w-5 items-center justify-center rounded-sm {isCodexAgent ? 'bg-emerald-500/10 text-emerald-500' : 'bg-orange-500/10 text-orange-500'}"
                       >
                         <svg
                           class="h-3 w-3"
@@ -4209,12 +4212,16 @@
                           stroke-linecap="round"
                           stroke-linejoin="round"
                         >
-                          <path
-                            d="M12 3l1.912 5.813a2 2 0 0 0 1.275 1.275L21 12l-5.813 1.912a2 2 0 0 0-1.275 1.275L12 21l-1.912-5.813a2 2 0 0 0-1.275-1.275L3 12l5.813-1.912a2 2 0 0 0 1.275-1.275L12 3z"
-                          />
+                          {#if isCodexAgent}
+                            <polyline points="4 17 10 11 4 5" /><line x1="12" x2="20" y1="19" y2="19" />
+                          {:else}
+                            <path
+                              d="M12 3l1.912 5.813a2 2 0 0 0 1.275 1.275L21 12l-5.813 1.912a2 2 0 0 0-1.275 1.275L12 21l-1.912-5.813a2 2 0 0 0-1.275-1.275L3 12l5.813-1.912a2 2 0 0 0 1.275-1.275L12 3z"
+                            />
+                          {/if}
                         </svg>
                       </div>
-                      <span class="text-sm font-semibold text-foreground">{t("chat_claude")}</span>
+                      <span class="text-sm font-semibold text-foreground">{assistantDisplayName}</span>
                     </div>
                     <div class="pl-7 prose-chat">
                       <MarkdownContent text={store.streamingText} streaming={true} />
@@ -4243,7 +4250,7 @@
                   <div class="chat-content-width py-4">
                     <div class="mb-1.5 flex items-center gap-2">
                       <div
-                        class="flex h-5 w-5 items-center justify-center rounded-sm bg-orange-500/10 text-orange-500"
+                        class="flex h-5 w-5 items-center justify-center rounded-sm {isCodexAgent ? 'bg-emerald-500/10 text-emerald-500' : 'bg-orange-500/10 text-orange-500'}"
                       >
                         <svg
                           class="h-3 w-3"
@@ -4254,12 +4261,16 @@
                           stroke-linecap="round"
                           stroke-linejoin="round"
                         >
-                          <path
-                            d="M12 3l1.912 5.813a2 2 0 0 0 1.275 1.275L21 12l-5.813 1.912a2 2 0 0 0-1.275 1.275L12 21l-1.912-5.813a2 2 0 0 0-1.275-1.275L3 12l5.813-1.912a2 2 0 0 0 1.275-1.275L12 3z"
-                          />
+                          {#if isCodexAgent}
+                            <polyline points="4 17 10 11 4 5" /><line x1="12" x2="20" y1="19" y2="19" />
+                          {:else}
+                            <path
+                              d="M12 3l1.912 5.813a2 2 0 0 0 1.275 1.275L21 12l-5.813 1.912a2 2 0 0 0-1.275 1.275L12 21l-1.912-5.813a2 2 0 0 0-1.275-1.275L3 12l5.813-1.912a2 2 0 0 0 1.275-1.275L12 3z"
+                            />
+                          {/if}
                         </svg>
                       </div>
-                      <span class="text-sm font-semibold text-foreground">{t("chat_claude")}</span>
+                      <span class="text-sm font-semibold text-foreground">{assistantDisplayName}</span>
                       {#if thinkingElapsed > 0}
                         <span class="ml-auto text-[10px] tabular-nums text-muted-foreground"
                           >{formatElapsed(thinkingElapsed)}</span

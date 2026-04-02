@@ -37,8 +37,17 @@ pub fn build_agent_command(
             }
             args.push("--json".to_string());
             args.push("--skip-git-repo-check".to_string());
+            // Only pass --model if it's a Codex-compatible model.
+            // The adapter fallback chain (agent.model → user.default_model) may
+            // resolve to a Claude model name (e.g. "opus", "claude-*") which Codex
+            // rejects. Skip those — let Codex use its own default.
             if let Some(ref m) = settings.model {
-                if !m.is_empty() {
+                let is_claude_model = m.is_empty()
+                    || m.contains("claude")
+                    || m.contains("opus")
+                    || m.contains("sonnet")
+                    || m.contains("haiku");
+                if !is_claude_model {
                     args.push("--model".to_string());
                     args.push(m.to_string());
                 }
