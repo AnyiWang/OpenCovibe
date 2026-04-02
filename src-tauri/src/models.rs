@@ -95,6 +95,14 @@ impl std::fmt::Display for RunEventType {
     }
 }
 
+/// Attachment metadata (name/type/size — no content blob).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AttachmentMeta {
+    pub name: String,
+    pub mime_type: String,
+    pub size: u64,
+}
+
 /// App-internal execution path — which backend subsystem handles this run.
 /// NOT a protocol description; a single agent may support multiple paths.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -512,6 +520,10 @@ pub struct RunMeta {
     /// Unified resume identity. None = not resumable. Written by runtime events (session_init / thread.started).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conversation_ref: Option<ConversationRef>,
+    /// Codex process invocation counter. Incremented each run_agent() call for the same run.
+    /// Used to scope item IDs across resume processes. None = not a Codex run or legacy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codex_process_seq: Option<u32>,
 }
 
 impl RunMeta {
@@ -1057,8 +1069,15 @@ pub enum BusEvent {
     UserMessage {
         run_id: String,
         text: String,
+        /// CLI-assigned UUID (Claude actor path).
         #[serde(skip_serializing_if = "Option::is_none")]
         uuid: Option<String>,
+        /// Frontend-generated UUID for optimistic dedup (Codex pipe path).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        client_uuid: Option<String>,
+        /// Attachment metadata (names/types/sizes — no content).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        attachments: Vec<AttachmentMeta>,
     },
     RunState {
         run_id: String,

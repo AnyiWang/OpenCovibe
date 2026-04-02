@@ -1,0 +1,45 @@
+[
+  {
+    "type": "user_message",
+    "run_id": "codex-run-1",
+    "text": "List files in the current directory",
+    "client_uuid": "client-uuid-1"
+  },
+  {
+    "type": "tool_start",
+    "run_id": "codex-run-1",
+    "tool_use_id": "codex-1-1-cmd_0",
+    "tool_name": "Bash",
+    "input": { "command": "ls -la" }
+  },
+  {
+    "type": "tool_end",
+    "run_id": "codex-run-1",
+    "tool_use_id": "codex-1-1-cmd_0",
+    "tool_name": "Bash",
+    "output": { "content": "total 16\ndrwxr-xr-x  4 user  staff  128 Apr  1 12:00 .\ndrwxr-xr-x  3 user  staff   96 Apr  1 12:00 ..\n-rw-r--r--  1 user  staff  100 Apr  1 12:00 README.md\n-rw-r--r--  1 user  staff   50 Apr  1 12:00 main.rs" },
+    "status": "success",
+    "duration_ms": 120
+  },
+  {
+    "type": "message_complete",
+    "run_id": "codex-run-1",
+    "message_id": "codex-1-1-msg_0",
+    "text": "Here are the files in the current directory:\n- README.md (100 bytes)\n- main.rs (50 bytes)"
+  },
+  {
+    "type": "usage_update",
+    "run_id": "codex-run-1",
+    "input_tokens": 500,
+    "output_tokens": 200,
+    "cache_read_tokens": 100,
+    "total_cost_usd": 0,
+    "turn_index": 1
+  },
+  {
+    "type": "run_state",
+    "run_id": "codex-run-1",
+    "state": "completed",
+    "exit_code": 0
+  }
+]

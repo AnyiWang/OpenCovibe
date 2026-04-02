@@ -1,7 +1,8 @@
 use crate::agent::pipe_parser::{CodexStdoutParser, PipeStdoutParser};
-use crate::models::{ChatDelta, ChatDone, RunEventType};
+use crate::models::{BusEvent, ChatDelta, ChatDone, RunEventType};
 use crate::process_ext::HideConsole;
 use crate::storage;
+use crate::web_server::broadcaster::BroadcastEmitter;
 use std::collections::HashMap;
 use std::process::Stdio;
 use std::sync::Arc;
@@ -24,14 +25,16 @@ pub async fn run_agent(
     args: Vec<String>,
     cwd: String,
     agent: String,
+    emitter: Option<Arc<BroadcastEmitter>>,
 ) -> Result<(), String> {
     log::debug!(
-        "[stream] run_agent: run_id={}, cmd={}, args={:?}, cwd={}, agent={}",
+        "[stream] run_agent: run_id={}, cmd={}, args={:?}, cwd={}, agent={}, has_emitter={}",
         run_id,
         command,
         args,
         cwd,
-        agent
+        agent,
+        emitter.is_some()
     );
 
     let emit_run_event = |rt: RunEventType, payload: serde_json::Value| {
@@ -42,6 +45,15 @@ pub async fn run_agent(
                 e
             );
         }
+    };
+
+    // Pre-compute process_seq BEFORE spawning the child process.
+    // If this fails, we return Err without having spawned anything — no leak.
+    let is_codex = agent == "codex";
+    let process_seq: u32 = if is_codex && emitter.is_some() {
+        storage::runs::next_codex_process_seq(&run_id)?
+    } else {
+        0
     };
 
     // Log start
@@ -93,15 +105,14 @@ pub async fn run_agent(
     let run_id_out = run_id.clone();
     let run_id_err = run_id.clone();
     let app_out = app.clone();
-    let agent_clone = agent.clone();
+    let emitter_out = emitter.clone();
 
     // Stdout reader
     let stdout_handle = tokio::spawn(async move {
         let mut assistant_text = String::new();
-        let is_codex = agent_clone == "codex";
 
         if is_codex {
-            let mut parser = CodexStdoutParser;
+            let mut parser = CodexStdoutParser::new(process_seq);
             let reader = BufReader::new(stdout);
             let mut lines = reader.lines();
             while let Ok(Some(line)) = lines.next_line().await {
@@ -146,7 +157,12 @@ pub async fn run_agent(
                     // Use PipeStdoutParser trait for structured event → BusEvent
                     let events = parser.parse_line(&run_id_out, &payload);
                     for ev in &events {
-                        if let crate::models::BusEvent::MessageDelta { text, .. } = ev {
+                        // Emit via BroadcastEmitter if available (Phase 2 structured path)
+                        if let Some(ref em) = emitter_out {
+                            em.persist_and_emit(&run_id_out, ev);
+                        }
+                        // Also emit chat-delta for backward compatibility (terminal view)
+                        if let BusEvent::MessageComplete { text, .. } = ev {
                             assistant_text.push_str(text);
                             let _ = app_out.emit("chat-delta", ChatDelta { text: text.clone() });
                         }
@@ -193,6 +209,7 @@ pub async fn run_agent(
 
     // Stderr reader
     let app_err = app.clone();
+    let emitter_err = emitter.clone();
     let stderr_handle = tokio::spawn(async move {
         let mut stderr_text = String::new();
         let reader = BufReader::new(stderr);
@@ -215,6 +232,16 @@ pub async fn run_agent(
                     "text": line
                 }),
             );
+            // Emit stderr as CommandOutput via bus
+            if let Some(ref em) = emitter_err {
+                em.persist_and_emit(
+                    &run_id_err,
+                    &BusEvent::CommandOutput {
+                        run_id: run_id_err.clone(),
+                        content: format!("[stderr] {}", line),
+                    },
+                );
+            }
         }
         stderr_text
     });
@@ -281,6 +308,28 @@ pub async fn run_agent(
         Some(format!("Exit code {}", exit_code)),
     ) {
         log::warn!("[stream] failed to update status to Failed: {}", e);
+    }
+
+    // Emit RunState via bus
+    if let Some(ref em) = emitter {
+        let state = match exit_code {
+            0 => "completed",
+            -1 => "stopped",
+            _ => "failed",
+        };
+        em.persist_and_emit(
+            &run_id,
+            &BusEvent::RunState {
+                run_id: run_id.clone(),
+                state: state.to_string(),
+                exit_code: Some(exit_code),
+                error: if exit_code != 0 && exit_code != -1 {
+                    Some(format!("Exit code {}", exit_code))
+                } else {
+                    None
+                },
+            },
+        );
     }
 
     emit_run_event(

@@ -138,6 +138,49 @@ function timelineAttachments(atts: Attachment[]): Attachment[] | undefined {
   );
 }
 
+/** Replay RunEvent[] into an xterm terminal.
+ *  Handles: user (prompt), system (status), stdout (agent output),
+ *  stderr (error stream), assistant (final reply). */
+function replayTerminalEvents(
+  events: import("$lib/types").RunEvent[],
+  xtermRef: { writeText(s: string): void },
+  isRunning: boolean,
+): void {
+  let hasHistory = false;
+  for (const event of events) {
+    const text = String(
+      (event.payload as Record<string, unknown>).text ??
+        (event.payload as Record<string, unknown>).message ??
+        "",
+    );
+    if (!text) continue;
+    switch (event.type) {
+      case "user":
+        xtermRef.writeText(`\x1b[1;36m> ${text}\x1b[0m\r\n`);
+        hasHistory = true;
+        break;
+      case "system":
+        xtermRef.writeText(`\x1b[90m${text}\x1b[0m\r\n`);
+        break;
+      case "stdout":
+        xtermRef.writeText(text);
+        hasHistory = true;
+        break;
+      case "stderr":
+        xtermRef.writeText(`\x1b[31m${text}\x1b[0m\r\n`);
+        hasHistory = true;
+        break;
+      case "assistant":
+        xtermRef.writeText(`${text}\r\n`);
+        hasHistory = true;
+        break;
+    }
+  }
+  if (hasHistory && !isRunning) {
+    xtermRef.writeText(`\r\n\x1b[90m--- Session ended ---\x1b[0m\r\n`);
+  }
+}
+
 /** Map frontend Attachment[] to backend AttachmentData format for IPC. */
 function mapAttachments(
   atts: Attachment[],
@@ -320,6 +363,10 @@ export class SessionStore {
   private _toolHeIndex = new Map<string, number>();
   /** _lastProcessedSeq at last snapshot write — throttles idle snapshot rewrites. */
   private _lastSnapshotSeq = 0;
+
+  /** Runtime state: whether the current run uses chat timeline (bus-events) rendering.
+   *  Only meaningful when `this.run` is set. Set by loadRun/startSession/resumeSession. */
+  _useChatTimelineForRun = $state(false);
 
   // Generation counter: prevents stale async loadRun from overwriting state
   private _loadGen = 0;
@@ -625,6 +672,18 @@ export class SessionStore {
     return this.agent === "claude";
   }
 
+  /** Whether to use chat timeline rendering (bus-events) vs terminal.
+   *  Without a run: derives from agent caps. With a run: from runtime state.
+   *  useStreamSession always implies timeline (session_actor = bus events). */
+  get useChatTimeline(): boolean {
+    if (!this.run) {
+      // No run: infer from agent capabilities
+      return this.useStreamSession || this.caps.supportsBusEvents;
+    }
+    // session_actor always uses timeline; for pipe_exec, check runtime flag
+    return this.useStreamSession || this._useChatTimelineForRun;
+  }
+
   /** Per-agent UI feature flags. */
   get features(): AgentFeatures {
     return getAgentFeatures(this.agent);
@@ -676,7 +735,7 @@ export class SessionStore {
   }
 
   /** Push an optimistic user message to the timeline (deduped by content in _reduce). */
-  private _pushOptimisticUser(content: string, attachments?: Attachment[]): void {
+  private _pushOptimisticUser(content: string, attachments?: Attachment[]): string {
     const id = uuid();
     this._pushTimeline(null, {
       kind: "user",
@@ -688,6 +747,7 @@ export class SessionStore {
         ? { attachments: timelineAttachments(attachments) }
         : {}),
     });
+    return id;
   }
 
   /** Append a hook event entry and update tool index if applicable.
@@ -1042,7 +1102,7 @@ export class SessionStore {
       seenToolIds: new Set(this._seenToolIds),
       runStatus: null,
       sessionId: null,
-      isStream: this.useStreamSession,
+      isStream: this.useChatTimeline,
       turnUsages: [...this.turnUsages],
       toolTlIndex: batchTlIndex,
       toolHeIndex: batchHeIndex,
@@ -1186,6 +1246,7 @@ export class SessionStore {
 
   /** Clear all content/display state fields. Does not touch phase, run, or agent. */
   private _clearContentState(): void {
+    this._useChatTimelineForRun = false;
     this.timeline = [];
     this.streamingText = "";
     this.thinkingText = "";
@@ -1507,6 +1568,13 @@ export class SessionStore {
       // overwrite the phase we just set from run.status. Same pattern as resumeSession.
       const isTerminal = TERMINAL_PHASES.includes(this.phase);
 
+      // Pre-set _useChatTimelineForRun: session_actor always; pipe_exec only if
+      // active Phase 2 (has conversation_ref). Overridden by bus-events branch below.
+      this._useChatTimelineForRun =
+        this.run!.execution_path === "session_actor" ||
+        (this.run!.execution_path === "pipe_exec" && !isTerminal
+          && !!this.run!.conversation_ref);
+
       if (this.useStreamSession) {
         let reducerMs = 0;
         let snapshotHit = false;
@@ -1597,6 +1665,42 @@ export class SessionStore {
           reducer: Math.round(reducerMs),
           entries: this.timeline.length,
         });
+      } else if (this.caps.supportsBusEvents) {
+        // Codex bus-events path: try bus-events, fall back to terminal
+        const busEvents = await api.getBusEvents(id);
+        if (gen !== this._loadGen) {
+          dbg("store", "stale after getBusEvents (codex), gen=", gen);
+          return;
+        }
+        let reducerMs = 0;
+        if (busEvents.length > 0) {
+          this._useChatTimelineForRun = true;
+          // Always replayOnly for loadRun — these are persisted historical events.
+          // Live events arrive via WS subscription (set up below).
+          reducerMs = this.applyEventBatch(busEvents, { replayOnly: true });
+        } else if (!isTerminal && this.run?.conversation_ref?.kind === "codex_thread") {
+          // Active Phase 2 run with no bus-events yet (just started) → timeline, wait for real-time
+          this._useChatTimelineForRun = true;
+        } else {
+          // Terminal run with no bus-events OR active Phase 1 run (no conversation_ref) → terminal
+          this._useChatTimelineForRun = false;
+          // Replay terminal history (same as legacy branch below)
+          if (xtermRef) {
+            const termEvents = await api.getRunEvents(id);
+            if (gen !== this._loadGen) return;
+            replayTerminalEvents(termEvents, xtermRef, this.isRunning);
+          }
+        }
+        // Non-terminal Phase 2 runs must subscribe regardless of history
+        if (!isTerminal && this._useChatTimelineForRun) {
+          this._wsSubscribeAfterLoad(id, busEvents);
+        }
+        this._isLoadingReplay = false;
+        dbg("store", "loadRun (codex bus)", {
+          events: busEvents.length,
+          reducer: Math.round(reducerMs),
+          timeline: this._useChatTimelineForRun,
+        });
       } else {
         this._isLoadingReplay = false;
         // CLI mode: replay history in terminal
@@ -1605,23 +1709,8 @@ export class SessionStore {
           dbg("store", "stale after getRunEvents, gen=", gen);
           return;
         }
-        let hasHistory = false;
-        for (const event of events) {
-          const text = String(
-            (event.payload as Record<string, unknown>).text ??
-              (event.payload as Record<string, unknown>).message ??
-              "",
-          );
-          if (!text || !xtermRef) continue;
-          if (event.type === "user") {
-            xtermRef.writeText(`\x1b[1;36m> ${text}\x1b[0m\r\n`);
-            hasHistory = true;
-          } else if (event.type === "system") {
-            xtermRef.writeText(`\x1b[90m${text}\x1b[0m\r\n`);
-          }
-        }
-        if (hasHistory && !this.isRunning) {
-          xtermRef.writeText(`\r\n\x1b[90m--- Session ended ---\x1b[0m\r\n`);
+        if (xtermRef) {
+          replayTerminalEvents(events, xtermRef, this.isRunning);
         }
       }
 
@@ -1730,6 +1819,7 @@ export class SessionStore {
       this.run = run;
 
       if (this.useStreamSession) {
+        this._useChatTimelineForRun = true;
         // Optimistic user message — the backend emits UserMessage during
         // api.startSession(), but the middleware subscription isn't set up
         // until after goto() triggers the URL $effect.  Content-based dedup
@@ -1758,8 +1848,23 @@ export class SessionStore {
         } else {
           this._startResponseTimeout(run.id);
         }
+      } else if (this.caps.supportsBusEvents) {
+        // Codex bus-events pipe mode (Phase 2)
+        this._useChatTimelineForRun = true;
+        const clientUuid = this._pushOptimisticUser(prompt, attachments);
+        const mw = getEventMiddleware();
+        mw.subscribeCurrent(run.id, this);
+        this._wsSubscribeNewSession(run.id);
+        this._setPhase("running");
+        await api.sendChatMessage(
+          run.id,
+          prompt,
+          attachments.length > 0 ? attachments : undefined,
+          this.model || undefined,
+          clientUuid,
+        );
       } else {
-        // Codex pipe mode
+        // Legacy pipe mode (no bus-events)
         this._setPhase("running");
         await api.sendChatMessage(run.id, prompt, attachments.length > 0 ? attachments : undefined);
       }
@@ -1791,6 +1896,27 @@ export class SessionStore {
         } else {
           this._startResponseTimeout(this.run.id);
         }
+      } else if (
+        !this.useStreamSession &&
+        this.caps.supportsBusEvents &&
+        this.run?.conversation_ref?.kind === "codex_thread"
+      ) {
+        // Codex bus-events resume path: stopped run with codex_thread → auto resume
+        if (!this._useChatTimelineForRun) {
+          this._useChatTimelineForRun = true;
+          const mw = getEventMiddleware();
+          mw.subscribeCurrent(this.run!.id, this);
+          this._wsSubscribeNewSession(this.run!.id);
+        }
+        const clientUuid = this._pushOptimisticUser(text, attachments);
+        this._setPhase("running");
+        await api.sendChatMessage(
+          this.run!.id,
+          text,
+          attachments.length > 0 ? attachments : undefined,
+          undefined,
+          clientUuid,
+        );
       } else {
         this._setPhase("running");
         await api.sendChatMessage(
@@ -1954,6 +2080,7 @@ export class SessionStore {
       this.agent = run.agent;
       this.platformId = run.platform_id ?? null;
       this._clearContentState();
+      this._useChatTimelineForRun = true; // resumeSession is always Claude stream path
 
       // ★ Phase 3: apply snapshot or events + force invalidate
       let reducerMs = 0;
@@ -2082,6 +2209,7 @@ export class SessionStore {
     // Without this, the source session's timeline stays in state and
     // message_delta events accumulate as duplicate streamingText.
     this._clearContentState();
+    this._useChatTimelineForRun = true;
 
     // Replay copied parent events for immediate display
     const allForkEvents = await api.getBusEvents(newRunId);
@@ -2257,6 +2385,8 @@ export class SessionStore {
   /** Handle chat-done event (pipe mode). */
   handleChatDone(_done: { ok: boolean; code: number; error?: string }): void {
     if (!this.run) return;
+    // When useChatTimeline is true, RunState bus event handles phase transition
+    if (this.useChatTimeline) return;
 
     if (!this.useStreamSession) {
       this._setPhase("completed");
@@ -2272,6 +2402,8 @@ export class SessionStore {
   /** Handle chat-delta event (pipe-exec mode). */
   handleChatDelta(text: string, xtermRef?: { writeText(s: string): void }): void {
     if (!this.run) return;
+    // When useChatTimeline is true, bus events handle text rendering
+    if (this.useChatTimeline) return;
     if (!this.useStreamSession && xtermRef) {
       xtermRef.writeText(text);
     }
@@ -2281,7 +2413,7 @@ export class SessionStore {
 
   /** Whether to skip tools (HookEvent[]) mirror writes. Stream mode tools are in timeline only. */
   private _isStreamMode(ctx: ReduceCtx | null): boolean {
-    return ctx ? ctx.isStream : this.useStreamSession;
+    return ctx ? ctx.isStream : this.useChatTimeline;
   }
 
   /**
@@ -2603,14 +2735,19 @@ export class SessionStore {
         // (replayOnly=true), every event from events.jsonl is authoritative —
         // the user may legitimately send the same text twice in different turns.
         if (!replayOnly) {
-          // Find the most recent user entry with matching text that hasn't been UUID-confirmed yet.
-          // Using backward search (findLast) avoids matching old replayed entries from before
-          // Phase 1 (which also lack cliUuid). For rapid-fire identical messages, UUID assignment
-          // order is reversed (LIFO), but this is functionally correct — each entry still gets a
-          // unique UUID for checkpoint identification.
-          const match = tl.findLast(
-            (e) => e.kind === "user" && e.content === ev.text && !e.cliUuid,
-          );
+          let match: TimelineEntry | undefined;
+          // Priority 1: exact match by client_uuid (Codex pipe path)
+          if (ev.client_uuid) {
+            match = tl.findLast(
+              (e) => e.kind === "user" && e.id === ev.client_uuid,
+            );
+          }
+          // Priority 2: content-based match (Claude path / legacy compat)
+          if (!match) {
+            match = tl.findLast(
+              (e) => e.kind === "user" && e.content === ev.text && !e.cliUuid,
+            );
+          }
           if (match && match.kind === "user") {
             // Merge cliUuid + anchorId from the confirmed backend event into the optimistic entry
             if (ev.uuid) {
@@ -2627,6 +2764,16 @@ export class SessionStore {
           }
         }
         const newId = uuid();
+        // Convert bus-event attachments (name/mime_type/size) to timeline Attachment shape
+        const busAttachments: Attachment[] | undefined =
+          ev.attachments && ev.attachments.length > 0
+            ? ev.attachments.map((a: { name: string; mime_type: string; size: number }) => ({
+                name: a.name,
+                type: a.mime_type,
+                size: a.size,
+                contentBase64: "",
+              }))
+            : undefined;
         const entry: TimelineEntry = {
           kind: "user",
           id: newId,
@@ -2634,6 +2781,7 @@ export class SessionStore {
           content: ev.text,
           ts: eventTs(ev),
           ...(ev.uuid ? { cliUuid: ev.uuid } : {}),
+          ...(busAttachments ? { attachments: busAttachments } : {}),
         };
         this._pushTimeline(ctx, entry);
 

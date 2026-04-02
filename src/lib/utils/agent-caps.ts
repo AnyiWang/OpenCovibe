@@ -1,47 +1,36 @@
+/**
+ * Per-agent protocol output capabilities.
+ * Only describes what the CLI *emits* — not transport (ExecutionPath),
+ * UI feature gates (AgentFeatures), or resume logic (canResumeStructurally).
+ */
 export interface AgentCapabilities {
-  transport: "stream-session" | "pipe-exec";
-  supportsResume: boolean;
-  supportsStructuredTools: boolean;
-  supportsPermissions: boolean;
-  supportsSlashCommands: boolean;
-  supportsSessionInit: boolean;
-  supportsSnapshots: boolean;
-  supportsEffort: boolean;
-  supportsPlanMode: boolean;
-  supportsPermissionMode: boolean;
-  supportsAddDir: boolean;
+  supportsBusEvents: boolean;    // CLI produces structured bus-events
+  supportsSessionInit: boolean;  // CLI sends session_init
+  supportsPermissions: boolean;  // CLI supports can_use_tool
+  supportsSnapshots: boolean;    // CLI supports snapshot restore
 }
 
 const CLAUDE_CAPS: AgentCapabilities = {
-  transport: "stream-session",
-  supportsResume: true,
-  supportsStructuredTools: true,
-  supportsPermissions: true,
-  supportsSlashCommands: true,
+  supportsBusEvents: true,
   supportsSessionInit: true,
+  supportsPermissions: true,
   supportsSnapshots: true,
-  supportsEffort: true,
-  supportsPlanMode: true,
-  supportsPermissionMode: true,
-  supportsAddDir: true,
 };
 
 const CODEX_CAPS: AgentCapabilities = {
-  transport: "pipe-exec",
-  supportsResume: false,
-  supportsStructuredTools: false,
-  supportsPermissions: false,
-  supportsSlashCommands: false,
+  supportsBusEvents: true,
   supportsSessionInit: false,
+  supportsPermissions: false,
   supportsSnapshots: false,
-  supportsEffort: false,
-  supportsPlanMode: false,
-  supportsPermissionMode: false,
-  supportsAddDir: false,
 };
 
 // Minimal capability set — unknown agents should not be silently promoted to Claude
-const MINIMAL_CAPS: AgentCapabilities = { ...CODEX_CAPS };
+const MINIMAL_CAPS: AgentCapabilities = {
+  supportsBusEvents: false,
+  supportsSessionInit: false,
+  supportsPermissions: false,
+  supportsSnapshots: false,
+};
 
 const CAPS_MAP: Record<string, AgentCapabilities> = {
   claude: CLAUDE_CAPS,
@@ -50,8 +39,4 @@ const CAPS_MAP: Record<string, AgentCapabilities> = {
 
 export function getAgentCaps(agent: string): AgentCapabilities {
   return CAPS_MAP[agent] ?? MINIMAL_CAPS;
-}
-
-export function isKnownAgent(agent: string): boolean {
-  return Object.hasOwn(CAPS_MAP, agent);
 }

@@ -6,10 +6,11 @@ pub fn build_agent_command(
     prompt: &str,
     settings: &AdapterSettings,
     print: bool,
+    resume_thread_id: Option<&str>,
 ) -> Result<(String, Vec<String>), String> {
     log::debug!(
-        "[spawn] build_agent_command: agent={}, print={}, model={:?}, perm={:?}, allowed={}, disallowed={}",
-        agent, print, settings.model, settings.permission_mode, settings.allowed_tools.len(), settings.disallowed_tools.len()
+        "[spawn] build_agent_command: agent={}, print={}, model={:?}, perm={:?}, allowed={}, disallowed={}, resume={:?}",
+        agent, print, settings.model, settings.permission_mode, settings.allowed_tools.len(), settings.disallowed_tools.len(), resume_thread_id
     );
     match agent {
         "claude" => {
@@ -28,11 +29,14 @@ pub fn build_agent_command(
             Ok(("claude".to_string(), args))
         }
         "codex" => {
-            let mut args: Vec<String> = vec![
-                "exec".to_string(),
-                "--json".to_string(),
-                "--skip-git-repo-check".to_string(),
-            ];
+            let mut args: Vec<String> = vec!["exec".to_string()];
+            // Resume: `codex exec resume <thread_id> --json "prompt"`
+            if let Some(tid) = resume_thread_id {
+                args.push("resume".to_string());
+                args.push(tid.to_string());
+            }
+            args.push("--json".to_string());
+            args.push("--skip-git-repo-check".to_string());
             if let Some(ref m) = settings.model {
                 if !m.is_empty() {
                     args.push("--model".to_string());

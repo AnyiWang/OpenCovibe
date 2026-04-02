@@ -893,7 +893,14 @@ export type BusEvent =
       /** Structured tool result metadata from CLI verbose mode */
       tool_use_result?: Record<string, unknown>;
     }
-  | { type: "user_message"; run_id: string; text: string; uuid?: string }
+  | {
+      type: "user_message";
+      run_id: string;
+      text: string;
+      uuid?: string;
+      client_uuid?: string;
+      attachments?: Array<{ name: string; mime_type: string; size: number }>;
+    }
   | { type: "run_state"; run_id: string; state: string; exit_code?: number; error?: string }
   | {
       type: "usage_update";

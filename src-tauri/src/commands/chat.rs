@@ -1,8 +1,13 @@
 use crate::agent::spawn::build_agent_command;
 use crate::agent::stream::{run_agent, ProcessMap};
-use crate::models::{max_attachment_size, Attachment, RunEventType, RunStatus};
+use crate::models::{
+    max_attachment_size, Attachment, AttachmentMeta, BusEvent, ConversationRef, RunEventType,
+    RunStatus,
+};
 use crate::storage;
+use crate::web_server::broadcaster::BroadcastEmitter;
 use std::fs;
+use std::sync::Arc;
 use tauri::Emitter;
 
 fn safe_filename(name: &str) -> String {
@@ -60,16 +65,19 @@ fn extension_for_mime(mime: &str) -> &str {
 pub async fn send_chat_message(
     app: tauri::AppHandle,
     process_map: tauri::State<'_, ProcessMap>,
+    emitter: tauri::State<'_, Arc<BroadcastEmitter>>,
     run_id: String,
     message: String,
     attachments: Option<Vec<Attachment>>,
     model: Option<String>,
+    client_uuid: Option<String>,
 ) -> Result<(), String> {
     log::debug!(
-        "[chat] send_chat_message: run_id={}, msg_len={}, attachments={}",
+        "[chat] send_chat_message: run_id={}, msg_len={}, attachments={}, client_uuid={:?}",
         run_id,
         message.len(),
-        attachments.as_ref().map_or(0, |a| a.len())
+        attachments.as_ref().map_or(0, |a| a.len()),
+        client_uuid
     );
     let run = storage::runs::get_run(&run_id).ok_or_else(|| format!("Run {} not found", run_id))?;
 
@@ -82,6 +90,14 @@ pub async fn send_chat_message(
         ));
     }
 
+    // Resume validation: reject if conversation_ref exists but session persistence is disabled
+    if run.conversation_ref.is_some() {
+        let agent_settings = storage::settings::get_agent_settings(&run.agent);
+        if agent_settings.no_session_persistence.unwrap_or(false) {
+            return Err("Cannot resume: session persistence is disabled".to_string());
+        }
+    }
+
     let message = message.trim().to_string();
     if message.is_empty() {
         return Err("message is required".to_string());
@@ -90,6 +106,7 @@ pub async fn send_chat_message(
     // Handle attachments
     let attachments = attachments.unwrap_or_default();
     let mut attachment_paths: Vec<(String, String, String, u64)> = vec![]; // (path, name, type, size)
+    let mut attachment_metas: Vec<AttachmentMeta> = vec![];
 
     if !attachments.is_empty() {
         let upload_dir = std::env::temp_dir()
@@ -136,6 +153,11 @@ pub async fn send_chat_message(
                 att.mime_type.clone(),
                 att.size,
             ));
+            attachment_metas.push(AttachmentMeta {
+                name: att.name.clone(),
+                mime_type: att.mime_type.clone(),
+                size: att.size,
+            });
         }
     }
 
@@ -156,7 +178,7 @@ pub async fn send_chat_message(
     };
     let full_prompt = format!("{}{}", message, attachment_text);
 
-    // Add user event
+    // Add user event (legacy events.jsonl)
     let att_json: Vec<serde_json::Value> = attachment_paths
         .iter()
         .map(|(path, name, mime, size)| {
@@ -176,7 +198,19 @@ pub async fn send_chat_message(
         log::warn!("[chat] failed to log user event: {}", e);
     }
 
-    // Pipe mode (Codex)
+    // Emit UserMessage bus event
+    emitter.persist_and_emit(
+        &run_id,
+        &BusEvent::UserMessage {
+            run_id: run_id.clone(),
+            text: message.clone(),
+            uuid: None,
+            client_uuid: client_uuid.clone(),
+            attachments: attachment_metas,
+        },
+    );
+
+    // Pipe mode (Codex / Claude --print)
     log::debug!(
         "[chat] spawning pipe mode: run_id={}, agent={}",
         run_id,
@@ -193,16 +227,24 @@ pub async fn send_chat_message(
     let adapter_settings =
         crate::agent::adapter::build_adapter_settings(&agent_settings, &user_settings, model);
 
+    // Resolve resume thread_id from conversation_ref
+    let resume_tid = run.conversation_ref.as_ref().and_then(|r| match r {
+        ConversationRef::CodexThread(tid) => Some(tid.as_str()),
+        _ => None,
+    });
+
     // Build command
     let (command, args) = build_agent_command(
         &run.agent,
         &full_prompt,
         &adapter_settings,
         true, // print mode
+        resume_tid,
     )?;
 
     // Spawn agent in background
     let pm = process_map.inner().clone();
+    let em = emitter.inner().clone();
     let app_clone = app.clone();
     let run_id_clone = run_id.clone();
     let agent_clone = run.agent.clone();
@@ -217,6 +259,7 @@ pub async fn send_chat_message(
             args,
             cwd,
             agent_clone,
+            Some(em.clone()),
         )
         .await
         {
@@ -228,6 +271,16 @@ pub async fn send_chat_message(
             ) {
                 log::warn!("[chat] failed to update status to Failed: {}", e2);
             }
+            // Emit RunState so timeline mode (which ignores chat-done) transitions phase
+            em.persist_and_emit(
+                &run_id_clone,
+                &BusEvent::RunState {
+                    run_id: run_id_clone.clone(),
+                    state: "failed".to_string(),
+                    exit_code: Some(1),
+                    error: Some(e.clone()),
+                },
+            );
             let _ = app_clone.emit(
                 "chat-done",
                 crate::models::ChatDone {

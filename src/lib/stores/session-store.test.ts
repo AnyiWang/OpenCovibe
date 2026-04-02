@@ -56,6 +56,7 @@ import protocolEvents from "./__fixtures__/protocol-events.json";
 import teamSessionEvents from "./__fixtures__/team-session.json";
 import ralphLoopEvents from "./__fixtures__/ralph-loop.json";
 import malformedEvents from "./__fixtures__/malformed-events.json";
+import codexSimpleEvents from "./__fixtures__/codex-simple.json";
 
 // Import store and mocked modules after mocks
 import { SessionStore } from "./session-store.svelte";
@@ -4946,22 +4947,21 @@ describe("SessionStore reducer", () => {
   // ── Codex agent state isolation ──
 
   describe("Codex agent state isolation", () => {
-    it("codex agent sets caps with pipe-exec transport", () => {
+    it("codex agent sets protocol caps (bus-events only)", () => {
       store.agent = "codex";
-      expect(store.caps.transport).toBe("pipe-exec");
+      expect(store.caps.supportsBusEvents).toBe(true);
+      expect(store.caps.supportsSessionInit).toBe(false);
+      expect(store.caps.supportsPermissions).toBe(false);
       expect(store.useStreamSession).toBe(false);
-      expect(store.caps.supportsResume).toBe(false);
-      expect(store.caps.supportsEffort).toBe(false);
-      expect(store.caps.supportsPermissionMode).toBe(false);
     });
 
-    it("claude agent sets caps with stream-session transport", () => {
+    it("claude agent sets full protocol caps", () => {
       store.agent = "claude";
-      expect(store.caps.transport).toBe("stream-session");
+      expect(store.caps.supportsBusEvents).toBe(true);
+      expect(store.caps.supportsSessionInit).toBe(true);
+      expect(store.caps.supportsPermissions).toBe(true);
+      expect(store.caps.supportsSnapshots).toBe(true);
       expect(store.useStreamSession).toBe(true);
-      expect(store.caps.supportsResume).toBe(true);
-      expect(store.caps.supportsEffort).toBe(true);
-      expect(store.caps.supportsPermissionMode).toBe(true);
     });
 
     it("switching agent from claude to codex changes caps", () => {
@@ -4970,23 +4970,21 @@ describe("SessionStore reducer", () => {
 
       store.agent = "codex";
       expect(store.useStreamSession).toBe(false);
-      expect(store.caps.transport).toBe("pipe-exec");
+      expect(store.caps.supportsSessionInit).toBe(false);
     });
 
     it("switching agent from codex to claude restores full caps", () => {
       store.agent = "codex";
-      expect(store.caps.supportsResume).toBe(false);
+      expect(store.caps.supportsSessionInit).toBe(false);
 
       store.agent = "claude";
-      expect(store.caps.supportsResume).toBe(true);
-      expect(store.caps.transport).toBe("stream-session");
+      expect(store.caps.supportsSessionInit).toBe(true);
     });
 
-    it("unknown agent gets minimal (codex-equivalent) caps", () => {
+    it("unknown agent gets minimal caps", () => {
       store.agent = "some-unknown";
-      expect(store.caps.transport).toBe("pipe-exec");
+      expect(store.caps.supportsBusEvents).toBe(false);
       expect(store.useStreamSession).toBe(false);
-      expect(store.caps.supportsResume).toBe(false);
     });
 
     it("codex run loads without polluting Claude state", () => {
@@ -5018,6 +5016,214 @@ describe("SessionStore reducer", () => {
       // Resetting for agent switch
       store.permissionModeSetByUser = false;
       expect(store.permissionModeSetByUser).toBe(false);
+    });
+  });
+
+  // ── Codex bus-events replay ──
+
+  describe("Codex bus-events replay", () => {
+    beforeEach(() => {
+      store.agent = "codex";
+      store.run = makeRun("codex-run-1", {
+        agent: "codex",
+        execution_path: "pipe_exec",
+        conversation_ref: { kind: "codex_thread", id: "thread-abc" },
+      });
+      store._useChatTimelineForRun = true;
+      store.phase = "running";
+      store.applyEventBatch(codexSimpleEvents as BusEvent[]);
+    });
+
+    it("builds correct timeline from codex bus events", () => {
+      // user_message + tool (bash) + message_complete = 3 entries
+      expect(store.timeline).toHaveLength(3);
+      expect(store.timeline[0].kind).toBe("user");
+      expect(store.timeline[1].kind).toBe("tool");
+      expect(store.timeline[2].kind).toBe("assistant");
+    });
+
+    it("user message has correct content", () => {
+      const user = store.timeline[0];
+      expect(user.kind).toBe("user");
+      if (user.kind === "user") {
+        expect(user.content).toBe("List files in the current directory");
+      }
+    });
+
+    it("tool entry has Bash tool with success status", () => {
+      const tool = store.timeline[1];
+      expect(tool.kind).toBe("tool");
+      if (tool.kind === "tool") {
+        expect(tool.tool.tool_name).toBe("Bash");
+        expect(tool.tool.status).toBe("success");
+        expect(tool.tool.duration_ms).toBe(120);
+      }
+    });
+
+    it("assistant message has correct text", () => {
+      const assistant = store.timeline[2];
+      expect(assistant.kind).toBe("assistant");
+      if (assistant.kind === "assistant") {
+        expect(assistant.content).toContain("README.md");
+      }
+    });
+
+    it("tracks usage from turn.completed", () => {
+      expect(store.usage.inputTokens).toBe(500);
+      expect(store.usage.outputTokens).toBe(200);
+      expect(store.usage.cacheReadTokens).toBe(100);
+    });
+
+    it("useChatTimeline returns true for codex with bus events", () => {
+      expect(store.useChatTimeline).toBe(true);
+      expect(store.useStreamSession).toBe(false); // pipe_exec
+    });
+
+    it("tools mirror is empty in bus-events mode (data in timeline)", () => {
+      expect(store.tools).toHaveLength(0);
+    });
+
+    it("failed tool renders as error status (not success)", () => {
+      const freshStore = new SessionStore();
+      freshStore.agent = "codex";
+      freshStore.run = makeRun("codex-err-1", {
+        agent: "codex",
+        execution_path: "pipe_exec",
+      });
+      freshStore._useChatTimelineForRun = true;
+      freshStore.phase = "running";
+      freshStore.applyEventBatch([
+        {
+          type: "tool_start",
+          run_id: "codex-err-1",
+          tool_use_id: "codex-1-1-cmd_fail",
+          tool_name: "Bash",
+          input: { command: "false" },
+        },
+        {
+          type: "tool_end",
+          run_id: "codex-err-1",
+          tool_use_id: "codex-1-1-cmd_fail",
+          tool_name: "Bash",
+          output: { content: "" },
+          status: "error", // backend maps Codex "failed" → "error"
+          duration_ms: 10,
+        },
+      ] as BusEvent[]);
+      const tool = freshStore.timeline.find(
+        (e) => e.kind === "tool" && e.id === "codex-1-1-cmd_fail",
+      ) as Extract<TimelineEntry, { kind: "tool" }>;
+      expect(tool).toBeDefined();
+      expect(tool.tool.status).toBe("error");
+    });
+
+    it("user_message with attachments restores on replay", () => {
+      const freshStore = new SessionStore();
+      freshStore.agent = "codex";
+      freshStore.run = makeRun("codex-att-1", {
+        agent: "codex",
+        execution_path: "pipe_exec",
+      });
+      freshStore._useChatTimelineForRun = true;
+      freshStore.phase = "running";
+      freshStore.applyEventBatch([
+        {
+          type: "user_message",
+          run_id: "codex-att-1",
+          text: "Check this image",
+          attachments: [
+            { name: "screenshot.png", mime_type: "image/png", size: 12345 },
+          ],
+        },
+      ] as BusEvent[], { replayOnly: true });
+      const user = freshStore.timeline[0];
+      expect(user.kind).toBe("user");
+      if (user.kind === "user") {
+        expect(user.attachments).toHaveLength(1);
+        expect(user.attachments![0].name).toBe("screenshot.png");
+        expect(user.attachments![0].type).toBe("image/png");
+        expect(user.attachments![0].size).toBe(12345);
+        expect(user.attachments![0].contentBase64).toBe("");
+      }
+    });
+
+    it("client_uuid dedup merges optimistic entry", () => {
+      // Simulate the flow: optimistic user push → bus event arrives with client_uuid
+      const freshStore = new SessionStore();
+      freshStore.agent = "codex";
+      freshStore.run = makeRun("codex-run-2", {
+        agent: "codex",
+        execution_path: "pipe_exec",
+      });
+      freshStore._useChatTimelineForRun = true;
+      freshStore.phase = "running";
+
+      // Push optimistic with known id
+      // @ts-expect-error — accessing private method for test
+      const clientId = freshStore._pushOptimisticUser("hello codex");
+
+      // Now apply the backend UserMessage with matching client_uuid
+      freshStore.applyEvent({
+        type: "user_message",
+        run_id: "codex-run-2",
+        text: "hello codex",
+        client_uuid: clientId,
+      } as BusEvent);
+
+      // Should NOT duplicate — only 1 user entry
+      const userEntries = freshStore.timeline.filter((e) => e.kind === "user");
+      expect(userEntries).toHaveLength(1);
+      expect(userEntries[0].content).toBe("hello codex");
+    });
+
+    it("old Phase 1 run (no conversation_ref) falls back to terminal", () => {
+      const s = new SessionStore();
+      s.agent = "codex";
+      s.run = makeRun("codex-old-1", {
+        agent: "codex",
+        execution_path: "pipe_exec",
+        status: "running",
+        // No conversation_ref — Phase 1 run
+      });
+      s.phase = "running";
+      // Simulate what loadRun does: no bus-events, active, no conversation_ref
+      s._useChatTimelineForRun = false; // should NOT be true
+      expect(s.useChatTimeline).toBe(false);
+    });
+
+    it("Phase 2 run with conversation_ref uses timeline", () => {
+      const s = new SessionStore();
+      s.agent = "codex";
+      s.run = makeRun("codex-new-1", {
+        agent: "codex",
+        execution_path: "pipe_exec",
+        status: "running",
+        conversation_ref: { kind: "codex_thread", id: "thread-xyz" },
+      });
+      s._useChatTimelineForRun = true;
+      s.phase = "running";
+      expect(s.useChatTimeline).toBe(true);
+    });
+
+    it("replay duplicate user messages are NOT deduped (replayOnly=true)", () => {
+      const s = new SessionStore();
+      s.agent = "codex";
+      s.run = makeRun("codex-dup-1", {
+        agent: "codex",
+        execution_path: "pipe_exec",
+        conversation_ref: { kind: "codex_thread", id: "thread-dup" },
+      });
+      s._useChatTimelineForRun = true;
+      s.phase = "running";
+      // Two identical user messages in history — both must survive replay
+      s.applyEventBatch([
+        { type: "user_message", run_id: "codex-dup-1", text: "same prompt" },
+        { type: "message_complete", run_id: "codex-dup-1", message_id: "m1", text: "reply 1" },
+        { type: "user_message", run_id: "codex-dup-1", text: "same prompt" },
+        { type: "message_complete", run_id: "codex-dup-1", message_id: "m2", text: "reply 2" },
+      ] as BusEvent[], { replayOnly: true });
+      const users = s.timeline.filter((e) => e.kind === "user");
+      expect(users).toHaveLength(2);
     });
   });
 });

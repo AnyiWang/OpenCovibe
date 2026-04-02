@@ -464,6 +464,8 @@ impl TranscriptImporter {
                             .get("uuid")
                             .and_then(|v| v.as_str())
                             .map(|s| s.to_string()),
+                        client_uuid: None,
+                        attachments: vec![],
                     });
                 }
             } else {
@@ -1293,6 +1295,7 @@ pub fn import_session(
         conversation_ref: Some(crate::models::ConversationRef::ClaudeSession(
             session_id.to_string(),
         )),
+        codex_process_seq: None,
     };
 
     let run_dir = super::run_dir(&run_id);
@@ -2011,6 +2014,8 @@ mod tests {
             run_id: "r".into(),
             text: "hi".into(),
             uuid: None,
+            client_uuid: None,
+            attachments: vec![],
         };
         assert!(is_replayable(&replayable));
 
@@ -2053,6 +2058,8 @@ mod tests {
             run_id: "r".into(),
             text: "hi".into(),
             uuid: Some("test-uuid-123".into()),
+            client_uuid: None,
+            attachments: vec![],
         };
         let json = serde_json::to_value(&ev).unwrap();
         assert_eq!(json["uuid"], "test-uuid-123");

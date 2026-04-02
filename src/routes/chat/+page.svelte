@@ -30,7 +30,8 @@
     TimelineEntry,
   } from "$lib/types";
   import { PLATFORM_PRESETS, findCredential } from "$lib/utils/platform-presets";
-  import { getAgentCaps, isKnownAgent } from "$lib/utils/agent-caps";
+  import { getAgentCaps } from "$lib/utils/agent-caps";
+  import { isKnownAgent } from "$lib/utils/agent-features";
   import { IS_WEBKIT } from "$lib/utils/platform";
   import {
     detectBatchGroups,
@@ -574,7 +575,7 @@
   // Effort guard: auto-clear effort when model doesn't support it;
   // also auto-populate default effort ("high") when empty and model supports it.
   $effect(() => {
-    if (!store.caps.supportsEffort) return;
+    if (!store.features.effortSelector) return;
 
     const pid = store.platformId;
     // Third-party platform: don't touch effort
@@ -1885,7 +1886,7 @@
     }
 
     // Async: effort
-    if (store.caps.supportsEffort) {
+    if (store.features.effortSelector) {
       try {
         const cfg = await api.getCliConfig();
         if (seq !== agentChangeSeq) return;
@@ -3596,7 +3597,7 @@
       mcpServers={store.mcpServers}
       onMcpToggle={() => (mcpPanelOpen = !mcpPanelOpen)}
       cliVersion={store.cliVersion}
-      permissionMode={store.caps.supportsPermissionMode ? store.permissionMode : undefined}
+      permissionMode={store.features.permissionModeSwitch ? store.permissionMode : undefined}
       {platformModels}
       fastModeState={store.fastModeState}
       verbose={verboseEnabled}
@@ -3721,8 +3722,8 @@
 
     <!-- Main area -->
     <div class="flex-1 overflow-hidden relative">
-      {#if store.useStreamSession}
-        <!-- API mode: chat messages -->
+      {#if store.useChatTimeline}
+        <!-- API / Codex bus-events mode: chat messages -->
         <div
           class="h-full overflow-y-auto"
           style="overflow-anchor:auto"
@@ -4630,7 +4631,7 @@
           : mergeProjectCommands(getCliCommands(), projectCommands)}
         models={store.useStreamSession ? effectiveModels : []}
         currentModel={store.model}
-        permissionMode={store.caps.supportsPermissionMode ? store.permissionMode : "default"}
+        permissionMode={store.features.permissionModeSwitch ? store.permissionMode : "default"}
         cwd={store.effectiveCwd ||
           folderCwdOverride ||
           localStorage.getItem("ocv:project-cwd") ||

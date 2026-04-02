@@ -120,6 +120,7 @@ pub fn create_run(
         no_session_persistence,
         execution_path: None,   // Caller sets after create_run
         conversation_ref: None, // Written by runtime events (session_init / thread.started)
+        codex_process_seq: if agent == "codex" { Some(0) } else { None },
     };
 
     save_meta(&meta)?;
@@ -183,6 +184,20 @@ pub fn get_run(id: &str) -> Option<RunMeta> {
         return None;
     }
     Some(meta)
+}
+
+/// Increment and return the next codex_process_seq for a run.
+/// First call returns 1 (create_run sets initial value to Some(0)).
+pub fn next_codex_process_seq(run_id: &str) -> Result<u32, String> {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    let result = AtomicU32::new(0);
+    with_meta(run_id, |meta| {
+        let next = meta.codex_process_seq.unwrap_or(0) + 1;
+        meta.codex_process_seq = Some(next);
+        result.store(next, Ordering::Relaxed);
+        Ok(())
+    })?;
+    Ok(result.load(Ordering::Relaxed))
 }
 
 pub fn update_session_id(id: &str, session_id: &str) -> Result<(), String> {

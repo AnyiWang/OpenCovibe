@@ -677,6 +677,8 @@ impl SessionActor {
             run_id: self.run_id.clone(),
             text: ticket.text.clone(),
             uuid: Some(user_uuid),
+            client_uuid: None,
+            attachments: vec![],
         });
         self.emit_state("running", None, None, false);
 
@@ -838,6 +840,8 @@ impl SessionActor {
             run_id: self.run_id.clone(),
             text: prompt,
             uuid: Some(user_uuid),
+            client_uuid: None,
+            attachments: vec![],
         });
         self.emit_state("running", None, None, false);
 
