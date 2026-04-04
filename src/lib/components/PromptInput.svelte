@@ -1108,11 +1108,13 @@
       const virtual = parseVirtualAction(typed);
       if (virtual) {
         dbg("slash", `virtual:${virtual.name}`, { args: virtual.args });
-        if (virtual.name === "model" && virtual.args && onModelSwitch) {
-          inputText = "";
-          if (textareaEl) textareaEl.style.height = "auto";
-          onModelSwitch(virtual.args);
-          return; // pastedBlocks preserved
+        if (virtual.name === "model" && virtual.args) {
+          if (onModelSwitch) {
+            inputText = "";
+            if (textareaEl) textareaEl.style.height = "auto";
+            onModelSwitch(virtual.args);
+          }
+          return; // Always consume /model command, even without handler
         }
         // Navigation virtual commands (e.g. /config → /settings?tab=cli-config)
         const vDef = VIRTUAL_COMMANDS.find((v) => v.name === virtual.name);

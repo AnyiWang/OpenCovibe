@@ -17,6 +17,7 @@
     getResumeWarning,
     loadCliVersionInfo,
     getCliVersionInfo_cached,
+    getCodexVersion,
   } from "$lib/stores";
   import type {
     Attachment,
@@ -92,6 +93,12 @@
   import { isElementSelection } from "$lib/types";
 
   // ── Helpers ──
+
+  /** Sanitize Codex run.model: if it looks like a Claude model name, return empty. */
+  function codexDisplayModel(model?: string): string {
+    if (!model) return "";
+    return /claude|opus|sonnet|haiku/i.test(model) ? "" : model;
+  }
 
   // ── Layout context ──
   const toggleLayoutSidebar = getContext<() => void>("toggleSidebar");
@@ -483,6 +490,9 @@
     return { input, output, cacheRead, cacheWrite };
   });
 
+  // ── Agent-aware display helpers ──
+  let effectiveAgent = $derived(store.run?.agent ?? store.agent);
+
   // ── Session info for InfoPanel ──
   let currentSessionInfo: SessionInfoData | null = $derived.by(() => {
     if (!store.run) return null;
@@ -497,9 +507,11 @@
       endedAt: store.run.ended_at ?? null,
       lastTurnDurationMs: store.durationMs,
       tokensEstimated: !store.usage.modelUsage || Object.keys(store.usage.modelUsage).length === 0,
-      model: store.run.model ?? store.model,
+      model: effectiveAgent === "codex"
+        ? codexDisplayModel(store.run.model)
+        : (store.run.model ?? store.model),
       agent: store.run.agent ?? store.agent,
-      cliVersion: store.cliVersion,
+      cliVersion: effectiveAgent === "codex" ? (getCodexVersion() ?? "") : store.cliVersion,
       permissionMode: store.permissionMode,
       fastModeState: store.fastModeState,
       cost: store.usage.cost,
@@ -3579,7 +3591,7 @@
       running={store.sessionAlive}
       run={store.run}
       agent={store.run?.agent ?? store.agent}
-      model={store.model}
+      model={effectiveAgent === "codex" ? codexDisplayModel(store.run?.model) : store.model}
       cost={store.usage.cost}
       inputTokens={cumulativeTokens.input}
       outputTokens={cumulativeTokens.output}
@@ -3588,7 +3600,7 @@
       parentRunId={store.run?.parent_run_id}
       onEndSession={handleStop}
       onFork={forkOverlay ? undefined : () => handleResume("fork")}
-      onModelChange={handleModelChange}
+      onModelChange={effectiveAgent === "codex" ? undefined : handleModelChange}
       effort={store.features.effortSelector ? currentEffort : undefined}
       onEffortChange={store.features.effortSelector ? handleEffortChange : undefined}
       onNavigateParent={store.run?.parent_run_id
@@ -3598,7 +3610,7 @@
       onToggleSidebar={toggleLayoutSidebar}
       mcpServers={store.mcpServers}
       onMcpToggle={() => (mcpPanelOpen = !mcpPanelOpen)}
-      cliVersion={store.cliVersion}
+      cliVersion={effectiveAgent === "codex" ? (getCodexVersion() ?? "") : store.cliVersion}
       permissionMode={store.features.permissionModeSwitch ? store.permissionMode : undefined}
       {platformModels}
       fastModeState={store.fastModeState}
@@ -4654,7 +4666,7 @@
         onBtwSend={handleBtwSend}
         onAgentChange={handleAgentChange}
         onInterrupt={() => store.interrupt()}
-        onModelSwitch={handleModelChange}
+        onModelSwitch={effectiveAgent === "codex" ? undefined : handleModelChange}
         onPermissionModeChange={store.features.permissionModeSwitch
           ? handlePermissionModeChange
           : undefined}

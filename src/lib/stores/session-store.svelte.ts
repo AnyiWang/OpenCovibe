@@ -1728,7 +1728,8 @@ export class SessionStore {
       }
 
       // Restore per-run model from meta.json (overrides session_init if user hot-switched)
-      if (this.run?.model) {
+      // Skip for Codex — its run.model may be polluted with Claude model names
+      if (this.run?.model && this.agent !== "codex") {
         dbg("store", "restore run model from meta:", this.run.model);
         this.model = this.run.model;
       }
@@ -1807,11 +1808,13 @@ export class SessionStore {
 
       // Explicitly pass execution_path — source of truth for run mode
       const executionPath = this.useStreamSession ? "session_actor" : "pipe_exec";
+      // Only pass model for stream-session (Claude); pipe-exec (Codex) doesn't use it
+      const runModel = this.useStreamSession ? (this.model || undefined) : undefined;
       const run = await api.startRun(
         prompt,
         cwd,
         this.agent,
-        this.model || undefined,
+        runModel,
         this.remoteHostName || undefined,
         this.platformId || undefined,
         executionPath,
@@ -1856,11 +1859,12 @@ export class SessionStore {
         mw.subscribeCurrent(run.id, this);
         this._wsSubscribeNewSession(run.id);
         this._setPhase("running");
+        // Don't pass model for Codex — it doesn't use Claude model names
         await api.sendChatMessage(
           run.id,
           prompt,
           attachments.length > 0 ? attachments : undefined,
-          this.model || undefined,
+          undefined,
           clientUuid,
         );
       } else {
@@ -2114,7 +2118,8 @@ export class SessionStore {
       });
 
       // Restore per-run model from meta.json (overrides session_init if user hot-switched)
-      if (run.model) {
+      // Skip for Codex — its run.model may be polluted with Claude model names
+      if (run.model && this.agent !== "codex") {
         dbg("store", "resume: restore run model from meta:", run.model);
         this.model = run.model;
       }

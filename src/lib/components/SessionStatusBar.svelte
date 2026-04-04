@@ -806,11 +806,15 @@
         {/if}
 
         {#if cliVersion}
-          <button
-            class="text-foreground/30 hover:text-foreground/60 transition-colors hidden sm:inline"
-            title={t("statusbar_cliVersionTitle", { version: cliVersion ?? "" })}
-            onclick={() => goto("/release-notes")}>CLI v{cliVersion}</button
-          >
+          {#if agent === "codex"}
+            <span class="text-foreground/30 hidden sm:inline">Codex v{cliVersion}</span>
+          {:else}
+            <button
+              class="text-foreground/30 hover:text-foreground/60 transition-colors hidden sm:inline"
+              title={t("statusbar_cliVersionTitle", { version: cliVersion ?? "" })}
+              onclick={() => goto("/release-notes")}>CLI v{cliVersion}</button
+            >
+          {/if}
         {/if}
       </div>
     </div>

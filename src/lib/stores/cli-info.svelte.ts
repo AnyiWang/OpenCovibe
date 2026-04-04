@@ -52,6 +52,12 @@ export interface CliVersionInfo {
 let _versionInfo: CliVersionInfo | null = $state(null);
 let _versionLoading = $state(false);
 
+// ── Codex Version (global cache) ──
+let _codexVersion: string | null = $state(null);
+export function getCodexVersion(): string | null {
+  return _codexVersion;
+}
+
 export function getCliVersionInfo_cached(): CliVersionInfo | null {
   return _versionInfo;
 }
@@ -73,11 +79,15 @@ export async function loadCliVersionInfo(): Promise<void> {
   _versionLoading = true;
   try {
     dbg("cli-info", "loadCliVersionInfo");
-    const [cliCheck, distTags, cliConfig] = await Promise.all([
+    const [cliCheck, codexCheck, distTags, cliConfig] = await Promise.all([
       api.checkAgentCli("claude").catch(() => null),
+      api.checkAgentCli("codex").catch(() => null),
       api.getCliDistTags().catch(() => ({ latest: undefined, stable: undefined })),
       api.getCliConfig().catch(() => ({})),
     ]);
+
+    // Cache Codex version before Claude early return
+    _codexVersion = codexCheck?.version ?? null;
 
     if (!cliCheck?.found) {
       _versionInfo = null;
