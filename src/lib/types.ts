@@ -95,6 +95,12 @@ export interface ImportResult {
   skippedSubtypes: Record<string, number>;
 }
 
+export interface DiscoverResult {
+  sessions: CliSessionSummary[];
+  total: number;
+  truncated: boolean;
+}
+
 export interface SyncResult {
   newEvents: number;
   newWatermark: ImportWatermark;

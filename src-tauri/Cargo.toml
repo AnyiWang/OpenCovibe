@@ -45,6 +45,7 @@ include_dir = "0.7"
 rand = "0.8"
 if-addrs = "0.15.0"
 urlencoding = "2"
+rayon = "1"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

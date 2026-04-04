@@ -4,7 +4,7 @@
   import { dbg, dbgWarn } from "$lib/utils/debug";
   import { fmtRelative } from "$lib/i18n/format";
   import { cwdDisplayLabel } from "$lib/utils/format";
-  import type { CliSessionSummary, ImportResult, SyncResult } from "$lib/types";
+  import type { CliSessionSummary, DiscoverResult, ImportResult, SyncResult } from "$lib/types";
 
   function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
     return getTransport().invoke<T>(cmd, args);
@@ -21,6 +21,8 @@
   } = $props();
 
   let sessions: CliSessionSummary[] = $state([]);
+  let totalSessions = $state(0);
+  let truncated = $state(false);
   let loading = $state(true);
   let searchQuery = $state("");
   let importingId = $state<string | null>(null);
@@ -81,8 +83,15 @@
     error = null;
     dbg("cli-browser", "discovering sessions", { cwd });
     try {
-      sessions = await invoke<CliSessionSummary[]>("discover_cli_sessions", { cwd });
-      dbg("cli-browser", "discovered", { count: sessions.length });
+      const result = await invoke<DiscoverResult>("discover_cli_sessions", { cwd });
+      sessions = result.sessions;
+      totalSessions = result.total;
+      truncated = result.truncated;
+      dbg("cli-browser", "discovered", {
+        count: sessions.length,
+        total: totalSessions,
+        truncated,
+      });
     } catch (e) {
       const msg = String(e);
       dbgWarn("cli-browser", "discover failed", msg);
@@ -213,9 +222,15 @@
           <h2 class="text-base font-semibold text-foreground">{t("cliSync_title")}</h2>
           <p class="mt-0.5 text-xs text-muted-foreground">
             {#if isShowAll}
-              {t("cliSync_allProjects")} &middot; {t("cliSync_found", {
-                count: String(sessions.length),
-              })}
+              {t("cliSync_allProjects")} &middot;
+              {#if truncated}
+                {t("cliSync_foundTruncated", {
+                  shown: String(sessions.length),
+                  total: String(totalSessions),
+                })}
+              {:else}
+                {t("cliSync_found", { count: String(sessions.length) })}
+              {/if}
             {:else}
               {cwd} &middot; {t("cliSync_found", { count: String(sessions.length) })}
             {/if}

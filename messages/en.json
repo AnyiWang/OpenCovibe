@@ -1183,6 +1183,7 @@
 
   "cliSync_title": "Import CLI Sessions",
   "cliSync_found": "{count} sessions",
+  "cliSync_foundTruncated": "showing most recent {shown} sessions ({total}+ found)",
   "cliSync_import": "Import",
   "cliSync_importAll": "Import All New",
   "cliSync_sync": "Sync",

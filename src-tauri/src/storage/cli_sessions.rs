@@ -47,6 +47,15 @@ pub struct ImportResult {
     pub skipped_subtypes: HashMap<String, u64>,
 }
 
+/// Discovery result with truncation metadata.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscoverResult {
+    pub sessions: Vec<CliSessionSummary>,
+    pub total: usize,
+    pub truncated: bool,
+}
+
 /// Incremental sync result.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -691,16 +700,71 @@ fn load_known_usage_turns(run_id: &str) -> HashSet<u64> {
     turns
 }
 
+// ── Imported-index cache ─────────────────────────────────────────────
+
+use once_cell::sync::Lazy;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+
+type ImportedIndex = HashMap<(String, String), String>;
+type CacheEntry = (ImportedIndex, Instant);
+
+static IMPORTED_CACHE: Lazy<Mutex<Option<CacheEntry>>> = Lazy::new(|| Mutex::new(None));
+
+fn build_imported_index_cached(max_age: Duration) -> ImportedIndex {
+    // Short lock: check cache hit
+    {
+        let cache = IMPORTED_CACHE.lock().unwrap();
+        if let Some((ref index, ref ts)) = *cache {
+            if ts.elapsed() < max_age {
+                log::debug!(
+                    "[cli_sessions] imported-index cache hit ({} entries, age {:?})",
+                    index.len(),
+                    ts.elapsed()
+                );
+                return index.clone();
+            }
+        }
+    } // Release lock
+
+    // Rebuild outside lock (slow I/O)
+    log::debug!("[cli_sessions] imported-index cache miss, rebuilding");
+    let index = build_imported_index();
+
+    // Short lock: write back
+    {
+        let mut cache = IMPORTED_CACHE.lock().unwrap();
+        *cache = Some((index.clone(), Instant::now()));
+    }
+    log::debug!(
+        "[cli_sessions] imported-index rebuilt ({} entries)",
+        index.len()
+    );
+    index
+}
+
+/// Invalidate the imported-index cache. Call after successful import.
+pub fn invalidate_imported_cache() {
+    log::debug!("[cli_sessions] imported-index cache invalidated");
+    *IMPORTED_CACHE.lock().unwrap() = None;
+}
+
 // ── Discovery ────────────────────────────────────────────────────────
 
+const MAX_DISCOVER_CANDIDATES: usize = 500;
+
 /// Discover CLI sessions for a given working directory.
-pub fn discover_sessions(target_cwd: &str) -> Result<Vec<CliSessionSummary>, String> {
+pub fn discover_sessions(target_cwd: &str) -> Result<DiscoverResult, String> {
     let start = std::time::Instant::now();
     let projects_dir = claude_projects_dir().ok_or("cannot determine home dir")?;
 
     if !projects_dir.exists() {
         log::debug!("[cli_sessions] discover: ~/.claude/projects/ does not exist");
-        return Ok(vec![]);
+        return Ok(DiscoverResult {
+            sessions: vec![],
+            total: 0,
+            truncated: false,
+        });
     }
 
     // Collect all JSONL files with metadata
@@ -730,40 +794,70 @@ pub fn discover_sessions(target_cwd: &str) -> Result<Vec<CliSessionSummary>, Str
 
     // Sort by mtime descending
     candidates.sort_by(|a, b| b.2.cmp(&a.2));
+    let total_candidates = candidates.len();
+
+    // Truncate to upper limit (prevent extreme cases)
+    let truncated = candidates.len() > MAX_DISCOVER_CANDIDATES;
+    if truncated {
+        log::debug!(
+            "[cli_sessions] discover: truncating {} candidates to {}",
+            total_candidates,
+            MAX_DISCOVER_CANDIDATES
+        );
+        candidates.truncate(MAX_DISCOVER_CANDIDATES);
+    }
 
     log::debug!(
-        "[cli_sessions] discover: {} candidate files for cwd={}",
+        "[cli_sessions] discover: {} candidate files for cwd={} (total={})",
         candidates.len(),
-        target_cwd
+        target_cwd,
+        total_candidates
     );
 
-    // Cross-reference existing imports
-    let imported_sessions = build_imported_index();
+    // Cross-reference existing imports (cached, 30s TTL)
+    let imported_sessions = build_imported_index_cached(Duration::from_secs(30));
 
-    // Extract summaries
-    let mut results: Vec<CliSessionSummary> = Vec::new();
-    for (path, size, _mtime) in &candidates {
-        match extract_summary(path, *size, target_cwd, &imported_sessions) {
-            Ok(Some(summary)) => results.push(summary),
-            Ok(None) => {
-                log::trace!("[cli_sessions] discover: skipped {:?} (cwd mismatch)", path);
+    // Extract summaries in parallel
+    use rayon::prelude::*;
+    let mut results: Vec<CliSessionSummary> = candidates
+        .par_iter()
+        .filter_map(|(path, size, _mtime)| {
+            match extract_summary(path, *size, target_cwd, &imported_sessions) {
+                Ok(Some(summary)) => Some(summary),
+                Ok(None) => {
+                    log::trace!("[cli_sessions] discover: skipped {:?} (cwd mismatch)", path);
+                    None
+                }
+                Err(e) => {
+                    log::trace!("[cli_sessions] discover: error reading {:?}: {}", path, e);
+                    None
+                }
             }
-            Err(e) => {
-                log::trace!("[cli_sessions] discover: error reading {:?}: {}", path, e);
-            }
-        }
-    }
+        })
+        .collect();
 
     // Sort by last_activity_at descending
     results.sort_by(|a, b| b.last_activity_at.cmp(&a.last_activity_at));
 
     log::debug!(
-        "[cli_sessions] discover: {} sessions found in {:?}",
+        "[cli_sessions] discover: {} sessions found in {:?} (total_candidates={})",
         results.len(),
-        start.elapsed()
+        start.elapsed(),
+        total_candidates
     );
 
-    Ok(results)
+    Ok(DiscoverResult {
+        // When not truncated, total = exact valid session count.
+        // When truncated, total = total candidate files (upper bound estimate,
+        // actual valid count may be lower due to cwd mismatch / read errors).
+        total: if truncated {
+            total_candidates
+        } else {
+            results.len()
+        },
+        truncated,
+        sessions: results,
+    })
 }
 
 fn collect_jsonl_files(dir: &Path, out: &mut Vec<(PathBuf, u64, std::time::SystemTime)>) {
@@ -1281,6 +1375,9 @@ pub fn import_session(
         importer.events_skipped,
         importer.usage_incomplete
     );
+
+    // Invalidate imported-index cache so next discover reflects this import
+    invalidate_imported_cache();
 
     Ok(ImportResult {
         run_id,
@@ -1978,5 +2075,57 @@ mod tests {
             BusEvent::UserMessage { uuid, .. } => assert!(uuid.is_none()),
             _ => panic!("expected UserMessage"),
         }
+    }
+
+    // ── Cache tests ──
+
+    #[test]
+    fn test_imported_cache_invalidate() {
+        // Isolate: ensure clean state
+        invalidate_imported_cache();
+
+        // First call: cache miss → rebuild
+        let idx1 = build_imported_index_cached(Duration::from_secs(60));
+        // Second call within TTL: cache hit (same result)
+        let idx2 = build_imported_index_cached(Duration::from_secs(60));
+        assert_eq!(idx1.len(), idx2.len());
+
+        // Invalidate → next call rebuilds
+        invalidate_imported_cache();
+        let idx3 = build_imported_index_cached(Duration::from_secs(60));
+        // Should still be same content (no actual imports changed), but was rebuilt
+        assert_eq!(idx1.len(), idx3.len());
+
+        // Cleanup
+        invalidate_imported_cache();
+    }
+
+    #[test]
+    fn test_imported_cache_expired() {
+        invalidate_imported_cache();
+
+        // Build with 0ms TTL → always expires
+        let _idx = build_imported_index_cached(Duration::from_millis(0));
+        // Wait a tiny bit
+        std::thread::sleep(Duration::from_millis(1));
+        // Next call should be a miss (expired)
+        let _idx2 = build_imported_index_cached(Duration::from_millis(0));
+        // No panic = success (we can't easily distinguish hit vs miss without mocking,
+        // but the code path is exercised)
+
+        invalidate_imported_cache();
+    }
+
+    #[test]
+    fn test_discover_result_serialization() {
+        let result = DiscoverResult {
+            sessions: vec![],
+            total: 42,
+            truncated: true,
+        };
+        let json = serde_json::to_value(&result).unwrap();
+        assert_eq!(json["total"], 42);
+        assert_eq!(json["truncated"], true);
+        assert!(json["sessions"].as_array().unwrap().is_empty());
     }
 }

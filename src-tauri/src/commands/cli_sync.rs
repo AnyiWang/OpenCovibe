@@ -1,12 +1,12 @@
 //! IPC commands for CLI session discovery, import, and sync.
 
-use crate::storage::cli_sessions::{self, CliSessionSummary, ImportResult, SyncResult};
+use crate::storage::cli_sessions::{self, DiscoverResult, ImportResult, SyncResult};
 use crate::storage::events::EventWriter;
 use std::sync::Arc;
 use tauri::State;
 
 #[tauri::command]
-pub async fn discover_cli_sessions(cwd: String) -> Result<Vec<CliSessionSummary>, String> {
+pub async fn discover_cli_sessions(cwd: String) -> Result<DiscoverResult, String> {
     let start = std::time::Instant::now();
     log::debug!("[cli_sync] discover_cli_sessions: cwd={}", cwd);
 

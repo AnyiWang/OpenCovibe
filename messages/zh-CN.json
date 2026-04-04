@@ -1183,6 +1183,7 @@
 
   "cliSync_title": "导入 CLI 会话",
   "cliSync_found": "{count} 个会话",
+  "cliSync_foundTruncated": "显示最近 {shown} 个会话（发现 {total}+ 个）",
   "cliSync_import": "导入",
   "cliSync_importAll": "导入全部",
   "cliSync_sync": "同步",
