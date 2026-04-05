@@ -3213,6 +3213,40 @@ export class SessionStore {
 
       case "raw": {
         const rawText = typeof ev.data === "string" ? ev.data : JSON.stringify(ev.data);
+        if (ev.source === "claude_system_api_retry" && ev.data && typeof ev.data === "object") {
+          const payload = ev.data as Record<string, unknown>;
+          const attempt = typeof payload.attempt === "number" ? payload.attempt : undefined;
+          const maxRetries =
+            typeof payload.max_retries === "number" ? payload.max_retries : undefined;
+          const errorStatus =
+            typeof payload.error_status === "number" ? payload.error_status : undefined;
+          const errorCode = typeof payload.error === "string" ? payload.error : "api_retry";
+          const retryDelayMs =
+            typeof payload.retry_delay_ms === "number" ? payload.retry_delay_ms : undefined;
+
+          // Surface the first and final retry attempts so auth failures are visible
+          // immediately, without flooding the timeline on every backoff step.
+          const isFirstAttempt = attempt === 1;
+          const isFinalAttempt = !!(attempt && maxRetries && attempt >= maxRetries);
+          if (isFirstAttempt || isFinalAttempt) {
+            const statusPart = errorStatus ? `HTTP ${errorStatus}` : "HTTP unknown";
+            const attemptPart =
+              attempt && maxRetries ? `attempt ${attempt}/${maxRetries}` : "retrying";
+            const delayPart = retryDelayMs ? `next retry in ~${Math.round(retryDelayMs)}ms` : "";
+            const msg = [statusPart, errorCode, attemptPart, delayPart]
+              .filter((s) => s.length > 0)
+              .join(" · ");
+            const retryId = uuid();
+            this._pushTimeline(ctx, {
+              kind: "assistant",
+              id: retryId,
+              anchorId: retryId,
+              content: `\`[api_retry]\` ${msg}`,
+              ts: eventTs(ev),
+            });
+          }
+          break;
+        }
         if (rawText && (ev.source === "claude_stdout_text" || ev.source === "claude_stderr")) {
           const rawId = uuid();
           const entry: TimelineEntry = {
