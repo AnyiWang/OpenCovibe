@@ -13,6 +13,7 @@
     getCliCommands,
     getCliModels,
     canResumeNow,
+    TERMINAL_PHASES,
     getResumeWarning,
     loadCliVersionInfo,
     getCliVersionInfo_cached,
@@ -4500,7 +4501,7 @@
       </div>
     {/if}
 
-    {#if store.sessionAlive || !store.run || store.phase === "empty" || store.phase === "ready"}
+    {#if store.sessionAlive || !store.run || store.phase === "empty" || store.phase === "ready" || TERMINAL_PHASES.includes(store.phase)}
       <PromptInput
         bind:this={promptRef}
         agent={store.agent}
