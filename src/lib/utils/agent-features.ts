@@ -19,7 +19,7 @@ const CODEX_FEATURES: AgentFeatures = {
   effortSelector: false,
   planModeToggle: false,
   permissionModeSwitch: false,
-  slashCommandMenu: false,
+  slashCommandMenu: true,
   addDirAction: false,
 };
 

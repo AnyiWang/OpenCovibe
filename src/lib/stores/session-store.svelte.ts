@@ -31,6 +31,7 @@ import {
 } from "./types";
 import { getEventMiddleware } from "./event-middleware";
 import { updateInstalledVersion, getCliCommands } from "./cli-info.svelte";
+import { getKnownVirtualNames } from "$lib/utils/slash-commands";
 import * as snapshotCache from "$lib/utils/snapshot-cache";
 import { getTransport } from "$lib/transport";
 import { getAgentCaps, type AgentCapabilities } from "$lib/utils/agent-caps";
@@ -470,7 +471,13 @@ export class SessionStore {
     const m = text.match(/^\/([a-z][\w-]*)(?:\s|$)/i);
     if (!m) return false;
     const name = m[1].toLowerCase();
-    // Check available skills (preloaded from filesystem, available before session_init)
+    // Use effective agent (run-level overrides store-level) — same as UI's effectiveAgent
+    const agent = this.run?.agent ?? this.agent;
+    // Codex: only non-excluded virtual commands (no skills, CLI, or project commands)
+    if (agent === "codex") {
+      return getKnownVirtualNames("codex").has(name);
+    }
+    // Claude: skills + session/CLI commands
     if (this.availableSkills.some((s) => s.toLowerCase() === name)) return true;
     // Check session commands (available after session_init) or static CLI info
     const cmds = this.sessionCommands.length > 0 ? this.sessionCommands : getCliCommands();

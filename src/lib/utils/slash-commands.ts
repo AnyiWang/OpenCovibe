@@ -71,6 +71,7 @@ export const VIRTUAL_COMMANDS: CliCommand[] = [
     _virtual: true,
     _enum: true,
     argumentHint: "",
+    _excludeAgents: ["codex"], // Codex model via config, no hot-switch
   },
   {
     name: "config",
@@ -100,6 +101,7 @@ export const VIRTUAL_COMMANDS: CliCommand[] = [
     _virtual: true,
     _action: "toggle-plan",
     argumentHint: "[instructions]",
+    _excludeAgents: ["codex"], // handler persists permissionMode + syncs plan_mode
   },
   {
     name: "rename",
@@ -158,6 +160,7 @@ export const VIRTUAL_COMMANDS: CliCommand[] = [
     aliases: [],
     _virtual: true,
     _action: "add-dir",
+    _excludeAgents: ["codex"], // needs session_init addDir
   },
   {
     name: "fast",
@@ -166,6 +169,7 @@ export const VIRTUAL_COMMANDS: CliCommand[] = [
     _virtual: true,
     _enum: true,
     _action: "toggle-fast",
+    _excludeAgents: ["codex"], // Claude-specific
   },
   {
     name: "rewind",
@@ -173,6 +177,7 @@ export const VIRTUAL_COMMANDS: CliCommand[] = [
     aliases: ["undo"],
     _virtual: true,
     _action: "rewind",
+    _excludeAgents: ["codex"], // needs snapshots
   },
   {
     name: "clear",
@@ -180,6 +185,7 @@ export const VIRTUAL_COMMANDS: CliCommand[] = [
     aliases: [],
     _virtual: true,
     _action: "clear-context",
+    _excludeAgents: ["codex"], // handler checks useStreamSession
   },
   {
     name: "permissions",
@@ -187,6 +193,7 @@ export const VIRTUAL_COMMANDS: CliCommand[] = [
     aliases: [],
     _virtual: true,
     _action: "open-permissions",
+    _excludeAgents: ["codex"], // Claude permission mode
   },
   {
     name: "plugin",
@@ -202,6 +209,7 @@ export const VIRTUAL_COMMANDS: CliCommand[] = [
     _virtual: true,
     _action: "side-question",
     argumentHint: "<question>",
+    _excludeAgents: ["codex"], // needs bidirectional stream
   },
   {
     name: "stickers",
@@ -241,6 +249,24 @@ export const VIRTUAL_COMMANDS: CliCommand[] = [
     _action: "cancel-ralph-loop",
   },
 ];
+
+// ── Agent exclusion helpers ──
+
+function isExcludedForAgent(cmd: CliCommand, agent: string): boolean {
+  const excluded = cmd["_excludeAgents"];
+  return Array.isArray(excluded) && excluded.includes(agent);
+}
+
+/** Known virtual command names+aliases for an agent (for isKnownSlashCommand). */
+export function getKnownVirtualNames(agent: string): Set<string> {
+  const result = new Set<string>();
+  for (const v of VIRTUAL_COMMANDS) {
+    if (isExcludedForAgent(v, agent)) continue;
+    result.add(v.name.toLowerCase());
+    for (const a of v.aliases ?? []) result.add(a.toLowerCase());
+  }
+  return result;
+}
 
 /**
  * Parse /loop command arguments.
@@ -306,10 +332,11 @@ export function mergeProjectCommands(
  * (CLI fields take priority for name/desc/aliases). Append remaining virtuals.
  * Commands with empty descriptions get a fallback from KNOWN_COMMAND_DESCRIPTIONS.
  */
-export function mergeWithVirtual(cliCommands: CliCommand[]): CliCommand[] {
+export function mergeWithVirtual(cliCommands: CliCommand[], agent: string = "claude"): CliCommand[] {
+  const applicableVirtuals = VIRTUAL_COMMANDS.filter((v) => !isExcludedForAgent(v, agent));
   const cliMap = new Map(cliCommands.map((c) => [c.name, c]));
   const result = cliCommands.map((c) => {
-    const virtual = VIRTUAL_COMMANDS.find((v) => v.name === c.name);
+    const virtual = applicableVirtuals.find((v) => v.name === c.name);
     let merged = virtual
       ? { ...virtual, ...c, _virtual: true, _enum: virtual["_enum"] ?? false }
       : c;
@@ -326,7 +353,7 @@ export function mergeWithVirtual(cliCommands: CliCommand[]): CliCommand[] {
     return merged;
   });
   // Append virtuals not present in CLI
-  for (const v of VIRTUAL_COMMANDS) {
+  for (const v of applicableVirtuals) {
     if (!cliMap.has(v.name)) result.push(v);
   }
   return result;
@@ -340,12 +367,16 @@ export function isVirtualCommand(cmd: CliCommand): boolean {
  * Parse a virtual command invocation from send text.
  * Returns `{ name, args }` if the text matches a virtual command, else null.
  */
-export function parseVirtualAction(text: string): { name: string; args: string } | null {
+export function parseVirtualAction(
+  text: string,
+  agent: string = "claude",
+): { name: string; args: string } | null {
   const match = text.match(/^\/(\S+)(?:\s+(.*))?$/);
   if (!match) return null;
   const name = match[1];
   const virtual = VIRTUAL_COMMANDS.find((v) => v.name === name || (v.aliases ?? []).includes(name));
   if (!virtual) return null;
+  if (isExcludedForAgent(virtual, agent)) return null; // agent gate
   return { name: virtual.name, args: (match[2] ?? "").trim() };
 }
 
@@ -430,7 +461,7 @@ export function isSubViewInputValid(inputText: string, activeCmdName: string): b
 // ── Quick action pills (L3) ──
 
 /** Ordered list of command names shown as quick-action pills above the action bar. */
-export const QUICK_ACTION_NAMES: readonly string[] = [
+const CLAUDE_QUICK_ACTIONS: readonly string[] = [
   "compact",
   "copy",
   "model",
@@ -439,10 +470,16 @@ export const QUICK_ACTION_NAMES: readonly string[] = [
   "clear",
 ] as const;
 
-/** Return the subset of allCommands that appear in QUICK_ACTION_NAMES, preserving pill order. */
-export function getQuickActions(allCommands: CliCommand[]): CliCommand[] {
+const CODEX_QUICK_ACTIONS: readonly string[] = ["copy", "diff", "status", "stats"] as const;
+
+/** @deprecated Use getQuickActions(allCommands, agent) instead. */
+export const QUICK_ACTION_NAMES: readonly string[] = CLAUDE_QUICK_ACTIONS;
+
+/** Return the subset of allCommands that appear in quick-action list, preserving pill order. */
+export function getQuickActions(allCommands: CliCommand[], agent: string = "claude"): CliCommand[] {
+  const names = agent === "codex" ? CODEX_QUICK_ACTIONS : CLAUDE_QUICK_ACTIONS;
   const map = new Map(allCommands.map((c) => [c.name, c]));
-  return QUICK_ACTION_NAMES.filter((n) => map.has(n)).map((n) => map.get(n)!);
+  return names.filter((n) => map.has(n)).map((n) => map.get(n)!);
 }
 
 // ── Slash command categories (grouped menu) ──

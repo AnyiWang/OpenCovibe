@@ -32,7 +32,7 @@
   } from "$lib/types";
   import { PLATFORM_PRESETS, findCredential } from "$lib/utils/platform-presets";
   import { getAgentCaps } from "$lib/utils/agent-caps";
-  import { isKnownAgent } from "$lib/utils/agent-features";
+  import { isKnownAgent, getAgentFeatures } from "$lib/utils/agent-features";
   import { IS_WEBKIT } from "$lib/utils/platform";
   import {
     detectBatchGroups,
@@ -81,6 +81,7 @@
     buildHelpText,
     CONTEXT_CLEARED_MARKER,
     parseRalphArgs,
+    VIRTUAL_COMMANDS,
   } from "$lib/utils/slash-commands";
   import { executeAddDir } from "$lib/utils/add-dir";
   import { buildDoctorReport } from "$lib/utils/doctor";
@@ -2361,6 +2362,15 @@
 
   async function handleVirtualCommand(action: string, args: string) {
     dbg("chat", "virtualCommand", { action, args });
+    // Guard: block excluded virtual commands for the current agent
+    const vDef = VIRTUAL_COMMANDS.find((v) => v["_action"] === action);
+    if (vDef) {
+      const excluded = vDef["_excludeAgents"];
+      if (Array.isArray(excluded) && excluded.includes(effectiveAgent)) {
+        dbg("chat", "virtualCommand blocked for agent", { action, agent: effectiveAgent });
+        return;
+      }
+    }
     if (action === "copy-last") {
       const lastAssistant = [...store.timeline].reverse().find((e) => e.kind === "assistant");
       if (lastAssistant && lastAssistant.kind === "assistant" && lastAssistant.content) {
@@ -2407,12 +2417,13 @@
       }
       // On failure, handlePermissionModeChange already sets store.error
     } else if (action === "show-help") {
-      const allCmds = mergeWithVirtual(
-        store.sessionInitReceived && store.sessionCommands.length > 0
-          ? store.sessionCommands
-          : mergeProjectCommands(getCliCommands(), projectCommands),
-      );
-      const skillSet = new Set(store.availableSkills);
+      const baseCmds = store.sessionInitReceived && store.sessionCommands.length > 0
+        ? store.sessionCommands
+        : effectiveAgent === "codex"
+          ? []
+          : mergeProjectCommands(getCliCommands(), projectCommands);
+      const allCmds = mergeWithVirtual(baseCmds, effectiveAgent);
+      const skillSet = effectiveAgent === "codex" ? undefined : new Set(store.availableSkills);
       appendCommandOutput(buildHelpText(allCmds, skillSet));
     } else if (action === "run-doctor") {
       try {
@@ -4639,7 +4650,7 @@
     {#if store.sessionAlive || !store.run || store.phase === "empty" || store.phase === "ready" || TERMINAL_PHASES.includes(store.phase)}
       <PromptInput
         bind:this={promptRef}
-        agent={store.agent}
+        agent={effectiveAgent}
         running={store.isActivelyRunning}
         disabled={inputBlockedByPermission}
         pendingPermission={store.hasInlinePermission}
@@ -4648,10 +4659,13 @@
         canResume={!store.sessionAlive &&
           canResumeNow(store.run, store.phase, agentSettings?.no_session_persistence ?? false)}
         useStreamSession={store.useStreamSession}
+        slashCommandMenu={getAgentFeatures(effectiveAgent).slashCommandMenu}
         isRemote={store.isRemote}
         cliCommands={store.sessionInitReceived && store.sessionCommands.length > 0
           ? store.sessionCommands
-          : mergeProjectCommands(getCliCommands(), projectCommands)}
+          : effectiveAgent === "codex"
+            ? []
+            : mergeProjectCommands(getCliCommands(), projectCommands)}
         models={store.useStreamSession ? effectiveModels : []}
         currentModel={store.model}
         permissionMode={store.features.permissionModeSwitch ? store.permissionMode : "default"}
