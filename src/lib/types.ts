@@ -338,6 +338,7 @@ export interface RunUsageSummary {
   durationMs: number;
   numTurns: number;
   modelUsage?: Record<string, ModelUsageSummary>;
+  costEstimated?: boolean;
 }
 
 export interface ModelAggregate {

@@ -765,6 +765,8 @@ pub struct RunUsageSummary {
     pub num_turns: u64,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub model_usage: HashMap<String, ModelUsageSummary>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub cost_estimated: bool,
 }
 
 /// Per-model token and cost summary.

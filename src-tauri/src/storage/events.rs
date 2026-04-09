@@ -359,29 +359,42 @@ pub fn copy_bus_events(from_run_id: &str, to_run_id: &str) -> Result<(), String>
     Ok(())
 }
 
-/// Extract usage summary from a run's events.jsonl by scanning for usage_update events.
-/// Uses "simpler v1" approach: peak-detection for cost (handles session restarts),
-/// last usage_update for tokens and model_usage, sum for duration_ms.
+/// Extract aggregated usage from bus-events for a single run.
+///
+/// Three modes:
+/// - CLI imports (source=cli_import): per-turn cost+tokens, sum all
+/// - Codex (agent=codex): per-turn tokens, sum all; cost estimated in stats.rs
+/// - Claude native sessions: cumulative cost (peak-detect), cumulative tokens (take-last)
 pub fn extract_run_usage(run_id: &str) -> Option<RawRunUsage> {
     let path = events_path(run_id);
     if !path.exists() {
         return None;
     }
 
-    // Detect per-turn cost mode: CLI imports have per-turn total_cost_usd
-    let is_per_turn_cost = {
+    // Run-scoped detection: parse meta.json once for source + agent
+    let (is_per_turn_cost, is_codex) = {
         let meta_path = super::run_dir(run_id).join("meta.json");
-        meta_path
+        let meta_val = meta_path
             .exists()
             .then(|| {
                 fs::read_to_string(&meta_path)
                     .ok()
                     .and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok())
-                    .and_then(|v| v.get("source").and_then(|s| s.as_str()).map(String::from))
             })
-            .flatten()
-            == Some("cli_import".to_string())
+            .flatten();
+        let source = meta_val
+            .as_ref()
+            .and_then(|v| v.get("source").and_then(|s| s.as_str()).map(String::from));
+        let agent = meta_val
+            .as_ref()
+            .and_then(|v| v.get("agent").and_then(|s| s.as_str()).map(String::from));
+        (
+            source == Some("cli_import".to_string()),
+            agent == Some("codex".to_string()),
+        )
     };
+    // Codex turn.completed.usage is per-turn (same as CLI imports)
+    let sum_usage = is_per_turn_cost || is_codex;
 
     let content = fs::read_to_string(&path).ok()?;
 
@@ -429,11 +442,11 @@ pub fn extract_run_usage(run_id: &str) -> Option<RawRunUsage> {
             .and_then(|v| v.as_f64())
             .unwrap_or(0.0);
 
-        if is_per_turn_cost {
-            // CLI imports: total_cost_usd is per-turn, sum directly
+        if sum_usage {
+            // CLI imports + Codex: per-turn cost, sum directly
             total_cost += cost;
         } else {
-            // Native sessions: total_cost_usd is cumulative, use peak detection
+            // Native Claude session: cumulative cost, peak-detect
             if cost < prev_cost * 0.9 && prev_cost > 0.0 {
                 total_cost += peak_cost;
                 peak_cost = 0.0;
@@ -444,8 +457,8 @@ pub fn extract_run_usage(run_id: &str) -> Option<RawRunUsage> {
             prev_cost = cost;
         }
 
-        // Tokens: for per-turn cost, sum them; for cumulative, take last
-        if is_per_turn_cost {
+        // Tokens: for per-turn (CLI imports + Codex), sum; for cumulative, take last
+        if sum_usage {
             last_input += event
                 .get("input_tokens")
                 .and_then(|v| v.as_u64())
@@ -480,10 +493,18 @@ pub fn extract_run_usage(run_id: &str) -> Option<RawRunUsage> {
                 .and_then(|v| v.as_u64())
                 .unwrap_or(last_cache_write);
         }
-        last_num_turns = event
-            .get("num_turns")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(last_num_turns);
+
+        // num_turns: Claude sends num_turns, Codex sends turn_index (1-based)
+        let event_num_turns = event.get("num_turns").and_then(|v| v.as_u64());
+        let event_turn_index = event.get("turn_index").and_then(|v| v.as_u64());
+        if let Some(nt) = event_num_turns {
+            last_num_turns = nt;
+        } else if let Some(ti) = event_turn_index {
+            // Codex: turn_index is 1-based counter, use as num_turns
+            if ti > last_num_turns {
+                last_num_turns = ti;
+            }
+        }
 
         // Sum duration_ms across turns (per-turn value, not cumulative)
         if let Some(d) = event.get("duration_ms").and_then(|v| v.as_u64()) {
@@ -528,7 +549,7 @@ pub fn extract_run_usage(run_id: &str) -> Option<RawRunUsage> {
     }
 
     // Add final segment's peak cost (only for cumulative mode)
-    if !is_per_turn_cost {
+    if !sum_usage {
         total_cost += peak_cost;
     }
 

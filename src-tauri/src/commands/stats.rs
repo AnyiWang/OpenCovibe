@@ -76,28 +76,69 @@ pub fn get_usage_overview(days: Option<u32>) -> Result<UsageOverview, String> {
         // Extract usage from events.jsonl
         let usage = storage::events::extract_run_usage(&meta.id);
 
-        let cost = usage.as_ref().map(|u| u.total_cost_usd).unwrap_or(0.0);
+        let mut cost = usage.as_ref().map(|u| u.total_cost_usd).unwrap_or(0.0);
         // total_tokens = input + output (billable tokens only, not cache)
         let tokens = usage
             .as_ref()
             .map(|u| u.input_tokens + u.output_tokens)
             .unwrap_or(0);
-
-        total_cost += cost;
-        total_tokens += tokens;
+        let mut cost_estimated = false;
 
         // Build per-model aggregates
         if let Some(ref u) = usage {
-            for (model, mu) in &u.model_usage {
-                let agg = model_map.entry(model.clone()).or_default();
-                agg.runs += 1;
-                agg.input_tokens += mu.input_tokens;
-                agg.output_tokens += mu.output_tokens;
-                agg.cache_read_tokens += mu.cache_read_tokens;
-                agg.cache_write_tokens += mu.cache_write_tokens;
-                agg.cost_usd += mu.cost_usd;
+            if !u.model_usage.is_empty() {
+                // Claude: CLI provides per-model breakdown
+                for (model, mu) in &u.model_usage {
+                    let agg = model_map.entry(model.clone()).or_default();
+                    agg.runs += 1;
+                    agg.input_tokens += mu.input_tokens;
+                    agg.output_tokens += mu.output_tokens;
+                    agg.cache_read_tokens += mu.cache_read_tokens;
+                    agg.cache_write_tokens += mu.cache_write_tokens;
+                    agg.cost_usd += mu.cost_usd;
+                }
+            } else if meta.agent == "codex"
+                && (u.input_tokens > 0 || u.output_tokens > 0)
+                && meta.model.is_some()
+            {
+                // Codex with known model: estimate cost from tokens + pricing table.
+                // try_estimate_cost returns None for unknown models (e.g. gpt-oss-*)
+                // so we don't produce wrong estimates via the Sonnet fallback.
+                let model_name = meta.model.as_deref().unwrap();
+                let estimated = crate::pricing::try_estimate_cost(
+                    model_name,
+                    u.input_tokens,
+                    u.output_tokens,
+                    u.cache_read_tokens,
+                    u.cache_write_tokens,
+                );
+                if let Some(est) = estimated {
+                    if cost < 0.000001 && est > 0.0 {
+                        cost = est;
+                        cost_estimated = true;
+                    }
+                    // Synthesize single-model entry for by-model table
+                    let agg = model_map.entry(model_name.to_string()).or_default();
+                    agg.runs += 1;
+                    agg.input_tokens += u.input_tokens;
+                    agg.output_tokens += u.output_tokens;
+                    agg.cache_read_tokens += u.cache_read_tokens;
+                    agg.cache_write_tokens += u.cache_write_tokens;
+                    agg.cost_usd += est;
+                } else {
+                    // Unknown model: still show in by-model table but with $0 cost
+                    let agg = model_map.entry(model_name.to_string()).or_default();
+                    agg.runs += 1;
+                    agg.input_tokens += u.input_tokens;
+                    agg.output_tokens += u.output_tokens;
+                    agg.cache_read_tokens += u.cache_read_tokens;
+                    agg.cache_write_tokens += u.cache_write_tokens;
+                }
             }
         }
+
+        total_cost += cost;
+        total_tokens += tokens;
 
         // Build daily aggregates
         let date = started_date.format("%Y-%m-%d").to_string();
@@ -135,6 +176,7 @@ pub fn get_usage_overview(days: Option<u32>) -> Result<UsageOverview, String> {
                 .as_ref()
                 .map(|u| u.model_usage.clone())
                 .unwrap_or_default(),
+            cost_estimated,
         });
     }
 

@@ -242,6 +242,20 @@ pub async fn send_chat_message(
         resume_tid,
     )?;
 
+    // Record the model Codex will actually use (from built command args)
+    if run.agent == "codex" {
+        let codex_model = args
+            .iter()
+            .position(|a| a == "--model")
+            .and_then(|i| args.get(i + 1))
+            .cloned();
+        if let Some(ref m) = codex_model {
+            if let Err(e) = storage::runs::update_run_model(&run_id, m) {
+                log::warn!("[chat] failed to record codex model: {}", e);
+            }
+        }
+    }
+
     // Spawn agent in background
     let pm = process_map.inner().clone();
     let em = emitter.inner().clone();

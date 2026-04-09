@@ -615,13 +615,19 @@
                       class="py-2 font-mono text-xs text-muted-foreground truncate max-w-[120px]"
                       title={run.model ?? run.agent}
                     >
-                      {run.model ?? run.agent}
+                      {#if run.agent !== "claude"}
+                        <span class="text-[10px] text-emerald-500/70 mr-1 font-sans">{run.agent}</span>
+                      {/if}
+                      {run.model ?? "\u2014"}
                     </td>
                     <td class="py-2 text-right tabular-nums font-mono text-xs">
                       {formatTokenCount(run.inputTokens + run.outputTokens)}
                     </td>
-                    <td class="py-2 text-right tabular-nums font-mono text-xs">
-                      {formatCost(run.totalCostUsd)}
+                    <td
+                      class="py-2 text-right tabular-nums font-mono text-xs"
+                      title={run.costEstimated ? "Estimated from token count" : undefined}
+                    >
+                      {formatCost(run.totalCostUsd)}{#if run.costEstimated}<span class="text-[9px] text-muted-foreground/50 ml-0.5">~</span>{/if}
                     </td>
                     <td class="py-2 text-right tabular-nums">
                       {run.numTurns}
