@@ -98,11 +98,16 @@ impl CodexStdoutParser {
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
+                let mut input = serde_json::json!({ "query": query });
+                // Include action (tagged enum: search/open_page/find_in_page) if present
+                if let Some(action) = item.get("action") {
+                    input["action"] = action.clone();
+                }
                 vec![BusEvent::ToolStart {
                     run_id: run_id.to_string(),
                     tool_use_id,
                     tool_name: "WebSearch".to_string(),
-                    input: serde_json::json!({ "query": query }),
+                    input,
                     parent_tool_use_id: None,
                 }]
             }
@@ -267,7 +272,21 @@ impl CodexStdoutParser {
                     content: format!("[error] {}", msg),
                 }]
             }
-            // reasoning: skip (待定)
+            "reasoning" => {
+                let text = item
+                    .get("text")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                if text.is_empty() {
+                    return vec![];
+                }
+                vec![BusEvent::ThinkingDelta {
+                    run_id: run_id.to_string(),
+                    text,
+                    parent_tool_use_id: None,
+                }]
+            }
             _ => vec![],
         }
     }
@@ -450,12 +469,19 @@ mod tests {
         let mut p = parser();
         let raw = json!({
             "type": "item.started",
-            "item": {"id": "ws_0", "type": "web_search", "query": "rust async"}
+            "item": {"id": "ws_0", "type": "web_search", "query": "rust async", "action": {"type": "search", "query": "rust async"}}
         });
         let events = p.parse_line("run-1", &raw);
         assert_eq!(events.len(), 1);
         match &events[0] {
-            BusEvent::ToolStart { tool_name, .. } => assert_eq!(tool_name, "WebSearch"),
+            BusEvent::ToolStart {
+                tool_name, input, ..
+            } => {
+                assert_eq!(tool_name, "WebSearch");
+                assert_eq!(input["query"], "rust async");
+                assert!(input.get("action").is_some());
+                assert_eq!(input["action"]["type"], "search");
+            }
             other => panic!("expected ToolStart, got {:?}", other),
         }
     }
@@ -669,6 +695,53 @@ mod tests {
         let mut p = parser();
         let raw = json!({"type": "item.updated", "item": {"type": "todo_list"}});
         assert!(p.parse_line("run-1", &raw).is_empty());
+    }
+
+    // ── reasoning → ThinkingDelta ──
+
+    #[test]
+    fn reasoning_completed() {
+        let mut p = parser();
+        let raw = json!({
+            "type": "item.completed",
+            "item": {"id": "r_0", "type": "reasoning", "text": "Let me think about this..."}
+        });
+        let events = p.parse_line("run-1", &raw);
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            BusEvent::ThinkingDelta { text, .. } => {
+                assert_eq!(text, "Let me think about this...");
+            }
+            other => panic!("expected ThinkingDelta, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn reasoning_empty_text_returns_empty() {
+        let mut p = parser();
+        let raw = json!({
+            "type": "item.completed",
+            "item": {"id": "r_1", "type": "reasoning", "text": ""}
+        });
+        assert!(p.parse_line("run-1", &raw).is_empty());
+    }
+
+    #[test]
+    fn web_search_started_without_action() {
+        let mut p = parser();
+        let raw = json!({
+            "type": "item.started",
+            "item": {"id": "ws_1", "type": "web_search", "query": "hello"}
+        });
+        let events = p.parse_line("run-1", &raw);
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            BusEvent::ToolStart { input, .. } => {
+                assert_eq!(input["query"], "hello");
+                assert!(input.get("action").is_none());
+            }
+            other => panic!("expected ToolStart, got {:?}", other),
+        }
     }
 
     // ── ID scoping ──

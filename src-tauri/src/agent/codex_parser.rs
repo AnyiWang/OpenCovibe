@@ -25,7 +25,11 @@ pub fn extract_codex_delta(payload: &Value) -> Option<String> {
                 "command_execution" => {
                     // Show command + output in terminal
                     let cmd = item.get("command").and_then(|v| v.as_str()).unwrap_or("");
-                    let output = item.get("output").and_then(|v| v.as_str()).unwrap_or("");
+                    let output = item
+                        .get("aggregated_output")
+                        .or_else(|| item.get("output")) // fallback for older Codex versions
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
                     if !cmd.is_empty() {
                         return Some(format!("$ {}\n{}", cmd, output));
                     }
@@ -85,7 +89,21 @@ mod tests {
     }
 
     #[test]
-    fn test_command_execution() {
+    fn test_command_execution_aggregated_output() {
+        // Codex v0.98+ uses aggregated_output (not output)
+        let payload = json!({
+            "type": "item.completed",
+            "item": {"type": "command_execution", "command": "ls", "aggregated_output": "file.txt"}
+        });
+        assert_eq!(
+            extract_codex_delta(&payload),
+            Some("$ ls\nfile.txt".to_string())
+        );
+    }
+
+    #[test]
+    fn test_command_execution_legacy_output() {
+        // Older Codex versions used "output" field — fallback still works
         let payload = json!({
             "type": "item.completed",
             "item": {"type": "command_execution", "command": "ls", "output": "file.txt"}
@@ -100,7 +118,7 @@ mod tests {
     fn test_command_execution_empty_cmd() {
         let payload = json!({
             "type": "item.completed",
-            "item": {"type": "command_execution", "command": "", "output": ""}
+            "item": {"type": "command_execution", "command": "", "aggregated_output": ""}
         });
         assert_eq!(extract_codex_delta(&payload), None);
     }
