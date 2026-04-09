@@ -98,8 +98,14 @@ pub(crate) fn validate_file_path(
     let data_dir_c = canonicalize_for_prefix(&data_dir);
     let claude_dir_c = canonicalize_for_prefix(&claude_dir);
 
-    // Allow: ~/.opencovibe/*, ~/.claude/*
-    if canonical.starts_with(&data_dir_c) || canonical.starts_with(&claude_dir_c) {
+    let codex_dir = PathBuf::from(&home).join(".codex");
+    let codex_dir_c = canonicalize_for_prefix(&codex_dir);
+
+    // Allow: ~/.opencovibe/*, ~/.claude/*, ~/.codex/*
+    if canonical.starts_with(&data_dir_c)
+        || canonical.starts_with(&claude_dir_c)
+        || canonical.starts_with(&codex_dir_c)
+    {
         log::debug!("[files] path allowed (config dir): {}", canonical.display());
         return Ok(canonical);
     }
@@ -134,12 +140,25 @@ pub(crate) fn validate_file_path(
         }
     }
 
-    // Allow: caller-provided directory (e.g. frontend project cwd)
+    // Allow: caller-provided directory (e.g. frontend project cwd) and its git root
     if let Some(extra) = extra_allowed {
         if let Ok(extra_canonical) = std::fs::canonicalize(extra) {
             if canonical.starts_with(&extra_canonical) {
                 log::debug!("[files] path allowed (extra dir): {}", canonical.display());
                 return Ok(canonical);
+            }
+            // Also allow git repo root (for ancestor AGENTS.md files)
+            for ancestor in extra_canonical.ancestors().skip(1) {
+                if ancestor.join(".git").exists() {
+                    if canonical.starts_with(ancestor) {
+                        log::debug!(
+                            "[files] path allowed (git root of cwd): {}",
+                            canonical.display()
+                        );
+                        return Ok(canonical);
+                    }
+                    break;
+                }
             }
         }
     }
@@ -352,6 +371,19 @@ pub fn list_memory_files(
                     exists: p.exists(),
                 });
             }
+
+            // Codex global scope (~/.codex/)
+            let codex_global_names = ["AGENTS.override.md", "AGENTS.md"];
+            let codex_dir = std::path::Path::new(&home).join(".codex");
+            for name in &codex_global_names {
+                let p = codex_dir.join(name);
+                files.push(crate::models::MemoryFileCandidate {
+                    path: p.display().to_string(),
+                    label: name.to_string(),
+                    scope: "global".to_string(),
+                    exists: p.exists(),
+                });
+            }
         }
         _ => {
             log::warn!(
@@ -360,7 +392,7 @@ pub fn list_memory_files(
         }
     }
 
-    // Project scope
+    // Project scope — Claude
     if let Some(ref cwd) = cwd {
         let cwd_path = std::path::Path::new(cwd);
         for name in &project_names {
@@ -371,6 +403,51 @@ pub fn list_memory_files(
                 scope: "project".to_string(),
                 exists: p.exists(),
             });
+        }
+    }
+
+    // Project scope — Codex (hierarchical: repo root → cwd)
+    if let Some(ref cwd) = cwd {
+        let cwd_path = std::path::Path::new(cwd);
+        // Find project root by walking up to .git (matches Codex default project_root_markers)
+        let project_root = cwd_path.ancestors().find(|a| a.join(".git").exists());
+        // Collect dirs from root → cwd (inclusive)
+        let search_dirs: Vec<&std::path::Path> = if let Some(root) = project_root {
+            let mut dirs = vec![];
+            let mut cursor = cwd_path;
+            loop {
+                dirs.push(cursor);
+                if cursor == root {
+                    break;
+                }
+                match cursor.parent() {
+                    Some(p) => cursor = p,
+                    None => break,
+                }
+            }
+            dirs.reverse(); // root first
+            dirs
+        } else {
+            vec![cwd_path]
+        };
+        let codex_project_names = ["AGENTS.override.md", "AGENTS.md"];
+        let label_base = project_root.unwrap_or(cwd_path);
+        for dir in &search_dirs {
+            for name in &codex_project_names {
+                let p = dir.join(name);
+                // Label relative to project root, e.g. "packages/frontend/AGENTS.md"
+                // Root-level files show as just "AGENTS.md"
+                let label = p
+                    .strip_prefix(label_base)
+                    .map(|r| r.display().to_string())
+                    .unwrap_or_else(|_| name.to_string());
+                files.push(crate::models::MemoryFileCandidate {
+                    path: p.display().to_string(),
+                    label,
+                    scope: "project".to_string(),
+                    exists: p.exists(),
+                });
+            }
         }
     }
 
@@ -491,7 +568,8 @@ mod tests {
         let files = result.unwrap();
 
         let project_files: Vec<_> = files.iter().filter(|f| f.scope == "project").collect();
-        assert_eq!(project_files.len(), 4);
+        // 4 Claude + 2 Codex (no .git so only cwd layer)
+        assert_eq!(project_files.len(), 6);
         assert!(project_files[0].exists);
         assert_eq!(project_files[0].label, "CLAUDE.md");
         assert!(!project_files[1].exists);
@@ -567,6 +645,108 @@ mod tests {
         let result = canonicalize_for_prefix(tmp.path());
         let expected = std::fs::canonicalize(tmp.path()).unwrap();
         assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn validate_allows_codex_global_dir() {
+        // ~/.codex/AGENTS.md should be allowed by the whitelist
+        let home = crate::storage::home_dir().unwrap_or_default();
+        let codex_dir = PathBuf::from(&home).join(".codex");
+        std::fs::create_dir_all(&codex_dir).ok();
+        let agents_path = codex_dir.join("AGENTS.md");
+        std::fs::write(&agents_path, "# test").ok();
+
+        let result = validate_file_path(&agents_path.to_string_lossy(), None);
+        assert!(
+            result.is_ok(),
+            "expected Ok for ~/.codex/AGENTS.md, got: {:?}",
+            result
+        );
+
+        // Clean up test file (leave dir — user may have real files)
+        std::fs::remove_file(&agents_path).ok();
+    }
+
+    #[test]
+    fn validate_allows_ancestor_agents_md_via_git_root() {
+        // Create a fake repo: root/.git + root/packages/frontend/
+        let root = tempfile::tempdir().unwrap();
+        let git_dir = root.path().join(".git");
+        std::fs::create_dir_all(&git_dir).unwrap();
+        let sub = root.path().join("packages").join("frontend");
+        std::fs::create_dir_all(&sub).unwrap();
+
+        // Write AGENTS.md at repo root (ancestor of cwd)
+        let agents = root.path().join("AGENTS.md");
+        std::fs::write(&agents, "# root agents").unwrap();
+
+        // extra_allowed = sub (the cwd), but target is at repo root
+        let result = validate_file_path(&agents.to_string_lossy(), Some(&sub.to_string_lossy()));
+        assert!(
+            result.is_ok(),
+            "expected Ok for repo-root AGENTS.md with sub cwd, got: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn validate_denies_outside_git_root() {
+        // Paths outside the git root should still be rejected
+        let root = tempfile::tempdir().unwrap();
+        let repo = root.path().join("repo");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        let sub = repo.join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+
+        // A file outside the repo entirely
+        let outside = root.path().join("outside.md");
+        std::fs::write(&outside, "nope").unwrap();
+
+        let result = validate_file_path(&outside.to_string_lossy(), Some(&sub.to_string_lossy()));
+        assert!(result.is_err(), "expected Err for path outside git root");
+    }
+
+    #[test]
+    fn list_memory_files_hierarchical_codex_candidates_with_git() {
+        // Create repo: root/.git, root/packages/frontend/ as cwd
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join(".git")).unwrap();
+        let sub = root.path().join("packages").join("frontend");
+        std::fs::create_dir_all(&sub).unwrap();
+
+        // Write one AGENTS.md at root to verify exists flag
+        std::fs::write(root.path().join("AGENTS.md"), "# root").unwrap();
+
+        let result = list_memory_files(Some(sub.to_string_lossy().to_string()));
+        assert!(result.is_ok());
+        let files = result.unwrap();
+
+        // Filter to Codex project candidates (contain "AGENTS")
+        let codex: Vec<_> = files
+            .iter()
+            .filter(|f| f.scope == "project" && f.label.contains("AGENTS"))
+            .collect();
+
+        // 3 dirs (root, packages, packages/frontend) × 2 files = 6 candidates
+        assert_eq!(codex.len(), 6, "codex candidates: {:?}", codex);
+
+        // First pair is root level: override first, then base
+        assert_eq!(codex[0].label, "AGENTS.override.md");
+        assert!(!codex[0].exists);
+        assert_eq!(codex[1].label, "AGENTS.md");
+        assert!(codex[1].exists); // we wrote this one
+
+        // Second pair is packages/
+        assert_eq!(codex[2].label, "packages/AGENTS.override.md");
+        assert!(!codex[2].exists);
+        assert_eq!(codex[3].label, "packages/AGENTS.md");
+        assert!(!codex[3].exists);
+
+        // Third pair is packages/frontend/
+        assert_eq!(codex[4].label, "packages/frontend/AGENTS.override.md");
+        assert!(!codex[4].exists);
+        assert_eq!(codex[5].label, "packages/frontend/AGENTS.md");
+        assert!(!codex[5].exists);
     }
 
     #[cfg(unix)]
