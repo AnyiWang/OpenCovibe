@@ -512,6 +512,10 @@
                   <span>{projectDisplayName(run.cwd)}</span>
                   <span>·</span>
                   <span>{formatRelativeTime(run.startedAt)}</span>
+                  {#if run.agent !== "claude"}
+                    <span>·</span>
+                    <span class="text-emerald-500/70">{run.agent}</span>
+                  {/if}
                   {#if run.model}
                     <span>·</span>
                     <span>{run.model}</span>
