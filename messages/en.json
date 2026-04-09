@@ -878,6 +878,7 @@
   "toolActivity_noToolCalls": "No tool calls yet",
   "toolActivity_turn": "Turn {index}:",
   "toolActivity_systemResume": "System / Resume",
+  "toolActivity_scrollToTurn": "Scroll to this turn",
 
   "cmd_placeholder": "Type a command...",
   "cmd_esc": "ESC",

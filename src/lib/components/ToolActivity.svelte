@@ -29,6 +29,7 @@
     collapsed = false,
     onToggle,
     onScrollToTool,
+    onScrollToTurn,
     requestedTab = $bindable(null as "tools" | "context" | "files" | "info" | "tasks" | null),
     backgroundTasks = new Map(),
     activeBackgroundTasks = [],
@@ -42,6 +43,7 @@
     collapsed: boolean;
     onToggle: () => void;
     onScrollToTool?: (toolUseId: string) => void;
+    onScrollToTurn?: (anchorId: string) => void;
     requestedTab?: "tools" | "context" | "files" | "info" | "tasks" | null;
     backgroundTasks?: Map<string, TaskNotificationItem>;
     activeBackgroundTasks?: TaskNotificationItem[];
@@ -175,6 +177,7 @@
     turnIndex: number;
     userPreview: string;
     tools: ToolNode[];
+    anchorId?: string;
   }
 
   let turns = $derived.by(() => {
@@ -182,6 +185,7 @@
     const result: ToolTurn[] = [];
     let currentTools: ToolNode[] = [];
     let currentPreview = "";
+    let currentAnchorId: string | undefined;
     let turnIdx = 0;
     // Defensive dedup: CLI can emit events with missing parent_tool_use_id,
     // causing the same tool_use_id to appear in both main timeline and a subTimeline.
@@ -191,12 +195,18 @@
     for (const entry of timeline) {
       if (entry.kind === "separator") continue;
       if (entry.kind === "user") {
-        // Flush previous turn
-        if (currentTools.length > 0) {
-          result.push({ turnIndex: turnIdx, userPreview: currentPreview, tools: currentTools });
+        // Flush previous turn (guard: don't flush initial empty state)
+        if (currentTools.length > 0 || currentPreview || currentAnchorId) {
+          result.push({
+            turnIndex: turnIdx,
+            userPreview: currentPreview,
+            tools: currentTools,
+            anchorId: currentAnchorId,
+          });
         }
         turnIdx++;
         currentPreview = entry.content.slice(0, 40);
+        currentAnchorId = entry.anchorId;
         currentTools = [];
       } else if (entry.kind === "tool") {
         if (!seen.has(entry.tool.tool_use_id)) {
@@ -209,8 +219,13 @@
       }
     }
     // Flush last turn
-    if (currentTools.length > 0) {
-      result.push({ turnIndex: turnIdx, userPreview: currentPreview, tools: currentTools });
+    if (currentTools.length > 0 || currentPreview || currentAnchorId) {
+      result.push({
+        turnIndex: turnIdx,
+        userPreview: currentPreview,
+        tools: currentTools,
+        anchorId: currentAnchorId,
+      });
     }
     return result;
   });
@@ -697,26 +712,41 @@
           {#each turns as turn (turn.turnIndex)}
             {@const isCollapsed = collapsedTurns.has(turn.turnIndex)}
             {@const tu = usageByTurn.get(turn.turnIndex)}
-            <!-- Turn header -->
-            <button
-              class="w-full text-left px-2.5 py-1.5 hover:bg-accent/50 transition-colors border-b border-border/30"
-              onclick={() => toggleTurn(turn.turnIndex)}
+            {@const hasTools = turn.tools.length > 0}
+            <!-- Turn header: div with two sibling buttons (no nesting) -->
+            <div
+              class="flex items-center w-full px-2.5 py-1.5 hover:bg-accent/50 transition-colors border-b border-border/30"
             >
-              <div class="flex items-center gap-1.5">
-                <svg
-                  class="h-3 w-3 text-muted-foreground/50 shrink-0 transition-transform {isCollapsed
-                    ? ''
-                    : 'rotate-90'}"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                >
-                  <polyline points="9 18 15 12 9 6" />
-                </svg>
-                <span class="text-[11px] font-medium text-muted-foreground">
+              <button
+                class="flex-1 flex items-center gap-1.5 text-left min-w-0"
+                onclick={() => {
+                  if (hasTools) {
+                    toggleTurn(turn.turnIndex);
+                  } else if (turn.anchorId) {
+                    dbg("tool-activity", "scroll to turn (no tools)", {
+                      turnIndex: turn.turnIndex,
+                      anchorId: turn.anchorId,
+                    });
+                    onScrollToTurn?.(turn.anchorId);
+                  }
+                }}
+              >
+                {#if hasTools}
+                  <svg
+                    class="h-3 w-3 text-muted-foreground/50 shrink-0 transition-transform {isCollapsed
+                      ? ''
+                      : 'rotate-90'}"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  >
+                    <polyline points="9 18 15 12 9 6" />
+                  </svg>
+                {/if}
+                <span class="text-[11px] font-medium text-muted-foreground truncate">
                   {#if turn.userPreview}
                     {t("toolActivity_turn", { index: String(turn.turnIndex) })}
                     <span class="text-foreground/70">{truncate(turn.userPreview, 25)}</span>
@@ -724,22 +754,48 @@
                     <span class="text-muted-foreground/60">{t("toolActivity_systemResume")}</span>
                   {/if}
                 </span>
-                <span class="ml-auto flex items-center gap-1.5">
+                <span class="ml-auto flex items-center gap-1.5 shrink-0">
                   {#if tu}
                     <span class="text-[10px] text-muted-foreground"
                       >{formatTokenCount(tu.inputTokens + tu.outputTokens)}</span
                     >
                   {/if}
-                  <span
-                    class="text-[10px] px-1.5 py-0.5 rounded-full bg-muted text-muted-foreground font-medium"
-                    >{countToolNodes(turn.tools)}</span
-                  >
+                  {#if hasTools}
+                    <span
+                      class="text-[10px] px-1.5 py-0.5 rounded-full bg-muted text-muted-foreground font-medium"
+                      >{countToolNodes(turn.tools)}</span
+                    >
+                  {/if}
                 </span>
-              </div>
-            </button>
+              </button>
+              {#if turn.anchorId}
+                <button
+                  class="shrink-0 ml-1 p-0.5 rounded text-muted-foreground/40 hover:text-foreground hover:bg-muted transition-colors"
+                  onclick={() => {
+                    dbg("tool-activity", "scroll to turn", {
+                      turnIndex: turn.turnIndex,
+                      anchorId: turn.anchorId,
+                    });
+                    onScrollToTurn?.(turn.anchorId!);
+                  }}
+                  title={t("toolActivity_scrollToTurn")}
+                >
+                  <svg
+                    class="h-3 w-3"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    ><circle cx="12" cy="12" r="3" /><path d="M12 2v4m0 12v4M2 12h4m12 0h4" /></svg
+                  >
+                </button>
+              {/if}
+            </div>
 
-            <!-- Tools in this turn -->
-            {#if !isCollapsed}
+            <!-- Tools in this turn (only render if turn has tools) -->
+            {#if hasTools && !isCollapsed}
               <div class="py-0.5">
                 {#each turn.tools as node (node.tool.tool_use_id)}
                   {@render toolNodeView(node)}

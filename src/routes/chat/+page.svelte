@@ -2955,6 +2955,7 @@
   }
 
   async function scrollToMessage(ts: string) {
+    dbg("chat", "scrollToMessage", { ts });
     // Cancel progressive rendering so full timeline is available
     if (renderLimit !== Infinity) {
       cancelProgressive();
@@ -4577,6 +4578,7 @@
       collapsed={sidebarCollapsed}
       onToggle={toggleSidebar}
       onScrollToTool={scrollToTool}
+      onScrollToTurn={(anchorId) => scrollToMessage(anchorId)}
       bind:requestedTab={sidebarRequestedTab}
       backgroundTasks={store.taskNotifications}
       activeBackgroundTasks={store.activeBackgroundTasks}

@@ -878,6 +878,7 @@
   "toolActivity_noToolCalls": "暂无工具调用",
   "toolActivity_turn": "轮次 {index}：",
   "toolActivity_systemResume": "系统 / 恢复",
+  "toolActivity_scrollToTurn": "定位到此轮次",
 
   "cmd_placeholder": "输入命令...",
   "cmd_esc": "ESC",
