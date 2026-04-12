@@ -767,8 +767,24 @@
     }
     window.addEventListener("ocv:explorer-file-selected", onExplorerFileSelected);
 
+    // Listen for run status changes (idle↔running) from backend
+    let unlistenStatus: (() => void) | undefined;
+    transport
+      .listen("ocv:status-changed", (payload: unknown) => {
+        dbg("layout", "status-changed", payload);
+        loadRuns();
+      })
+      .then((fn) => {
+        if (destroyed) {
+          fn();
+          return;
+        }
+        unlistenStatus = fn;
+      });
+
     return () => {
       resizeCleanup?.(); // Clean up resize drag if component unmounts mid-drag
+      unlistenStatus?.();
       clearInterval(interval);
       clearInterval(teamPollInterval);
       if (debounceTimer) clearTimeout(debounceTimer);

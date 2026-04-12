@@ -297,9 +297,12 @@ pub fn list_runs() -> Vec<TaskRun> {
                     let events_path = entry.path().join("events.jsonl");
                     let (last_activity, msg_count, last_preview) = summarize_events(&events_path);
 
-                    // Skip runs with no events that aren't running/pending
+                    // Skip runs with no events that aren't active (running/pending/idle)
                     if msg_count == 0
-                        && !matches!(meta.status, RunStatus::Running | RunStatus::Pending)
+                        && !matches!(
+                            meta.status,
+                            RunStatus::Running | RunStatus::Pending | RunStatus::Idle
+                        )
                     {
                         // Still include if recent (within last hour)
                         if let Ok(started) = chrono::DateTime::parse_from_rfc3339(&meta.started_at)
@@ -454,7 +457,7 @@ pub fn reconcile_orphaned_runs() {
                 if let Ok(mut meta) = serde_json::from_str::<RunMeta>(&content) {
                     let mut dirty = false;
 
-                    if meta.status == RunStatus::Running {
+                    if matches!(meta.status, RunStatus::Running | RunStatus::Idle) {
                         meta.status = RunStatus::Stopped;
                         meta.ended_at = Some(now_iso());
                         meta.error_message = Some("Recovered after app restart".to_string());
@@ -499,7 +502,10 @@ pub fn soft_delete_runs(ids: &[String]) -> Result<u32, String> {
         if meta.deleted_at.is_some() {
             continue; // already deleted, skip
         }
-        if matches!(meta.status, RunStatus::Running | RunStatus::Pending) {
+        if matches!(
+            meta.status,
+            RunStatus::Running | RunStatus::Pending | RunStatus::Idle
+        ) {
             return Err(format!("Cannot delete: run {} is still active", id));
         }
         metas.push(meta);

@@ -679,6 +679,7 @@ impl SessionActor {
             uuid: Some(user_uuid),
         });
         self.emit_state("running", None, None, false);
+        self.persist_idle_running(RunStatus::Running);
 
         // Reply success to caller
         let _ = ticket.reply.send(Ok(()));
@@ -840,6 +841,7 @@ impl SessionActor {
             uuid: Some(user_uuid),
         });
         self.emit_state("running", None, None, false);
+        self.persist_idle_running(RunStatus::Running);
 
         let now = Instant::now();
         self.active_turn = Some(ActiveTurn {
@@ -1557,6 +1559,11 @@ impl SessionActor {
                         };
 
                     self.emit_state(&emit_state, *exit_code, emit_error.clone(), false);
+
+                    // Persist idle status to meta (uses normalized emit_state, not raw state)
+                    if emit_state == "idle" {
+                        self.persist_idle_running(RunStatus::Idle);
+                    }
 
                     // Persist result error on failed
                     if emit_state == "failed" {
@@ -2278,13 +2285,52 @@ impl SessionActor {
 
 // ── Helpers ──
 
+impl SessionActor {
+    /// Persist idle↔running status transition to meta + notify all windows.
+    /// Only allows Running→Idle and Idle→Running; other transitions are skipped.
+    fn persist_idle_running(&self, target: RunStatus) {
+        let meta = match storage::runs::get_run(&self.run_id) {
+            Some(m) => m,
+            None => return,
+        };
+        let allowed = matches!(
+            (&meta.status, &target),
+            (RunStatus::Running, RunStatus::Idle) | (RunStatus::Idle, RunStatus::Running)
+        );
+        if !allowed {
+            log::debug!(
+                "[actor] persist_idle_running skip: run={} from={:?} to={:?}",
+                self.run_id,
+                meta.status,
+                target
+            );
+            return;
+        }
+        let status_str = target.to_string();
+        if let Err(e) = storage::runs::update_status(&self.run_id, target, None, None) {
+            log::warn!(
+                "[actor] idle/running meta update failed: run={} target={} err={}",
+                self.run_id,
+                status_str,
+                e
+            );
+        } else {
+            self.emitter.emit_realtime(
+                "ocv:status-changed",
+                &serde_json::json!({"run_id": self.run_id.as_str(), "status": status_str}),
+                Some(&self.run_id),
+            );
+        }
+    }
+}
+
 fn map_state_to_run_status(state: &str) -> Option<RunStatus> {
     match state {
         "spawning" | "running" => Some(RunStatus::Running),
         "completed" => Some(RunStatus::Completed),
         "failed" => Some(RunStatus::Failed),
         "stopped" => Some(RunStatus::Stopped),
-        "idle" => None,
+        "idle" => Some(RunStatus::Idle),
         _ => None,
     }
 }

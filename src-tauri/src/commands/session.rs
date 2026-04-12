@@ -703,6 +703,21 @@ pub(crate) async fn start_session_impl(
             error: None,
         };
         emitter.persist_and_emit(&run_id, &idle_event);
+        // Persist idle status (allows Pending→Idle, not just Running→Idle)
+        let should_update = storage::runs::get_run(&run_id)
+            .map(|m| m.status != RunStatus::Idle)
+            .unwrap_or(false);
+        if should_update {
+            if let Err(e) = storage::runs::update_status(&run_id, RunStatus::Idle, None, None) {
+                log::warn!("[session] synthetic idle meta update failed: {}", e);
+            } else {
+                emitter.emit_realtime(
+                    "ocv:status-changed",
+                    &serde_json::json!({"run_id": run_id.as_str(), "status": "idle"}),
+                    Some(&run_id),
+                );
+            }
+        }
         log::debug!(
             "[session] resume/continue: emitted synthetic RunState(idle) for run_id={}",
             run_id

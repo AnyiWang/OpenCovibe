@@ -997,7 +997,12 @@
     // Find most recent run with session_id for "Continue last session"
     try {
       const runs = await api.listRuns();
-      lastContinuableRun = runs.find((r) => r.session_id && r.status !== "running") ?? null;
+      lastContinuableRun =
+        runs.find(
+          (r) =>
+            r.session_id &&
+            (r.status === "completed" || r.status === "stopped" || r.status === "failed"),
+        ) ?? null;
     } catch (e) {
       dbgWarn("chat", "failed to load runs for continue:", e);
     }
