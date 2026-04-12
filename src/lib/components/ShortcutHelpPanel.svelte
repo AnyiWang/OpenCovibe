@@ -35,8 +35,12 @@
     keybindingStore.resolved.filter((b) => b.context === "prompt" && b.source === "app"),
   );
   let cliBindings = $derived(keybindingStore.resolved.filter((b) => b.source === "cli"));
+  let codexCliBindings = $derived(
+    keybindingStore.resolved.filter((b) => b.source === "codex"),
+  );
 
   let cliExpanded = $state(false);
+  let codexCliExpanded = $state(false);
 </script>
 
 {#if open}
@@ -193,6 +197,42 @@
             {#if cliExpanded}
               <div class="mt-2 space-y-1">
                 {#each cliBindings as b (b.command)}
+                  <div class="flex items-center justify-between py-0.5">
+                    <span class="text-xs text-foreground/50">{b.label}</span>
+                    <kbd
+                      class="inline-flex items-center rounded border border-border bg-muted px-1.5 py-0.5 font-mono text-[11px] text-foreground/50"
+                      >{formatKeyDisplay(b.key)}</kbd
+                    >
+                  </div>
+                {/each}
+              </div>
+            {/if}
+          </section>
+        {/if}
+
+        <!-- Codex CLI Reference (collapsible) -->
+        {#if codexCliBindings.length > 0}
+          <section>
+            <button
+              class="flex w-full items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground hover:text-foreground transition-colors"
+              onclick={() => (codexCliExpanded = !codexCliExpanded)}
+            >
+              <svg
+                class="h-3 w-3 transition-transform {codexCliExpanded ? '' : '-rotate-90'}"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <path d="m6 9 6 6 6-6" />
+              </svg>
+              {t("shortcutHelp_codexCliRef")}
+            </button>
+            {#if codexCliExpanded}
+              <div class="mt-2 space-y-1">
+                {#each codexCliBindings as b (b.command)}
                   <div class="flex items-center justify-between py-0.5">
                     <span class="text-xs text-foreground/50">{b.label}</span>
                     <kbd

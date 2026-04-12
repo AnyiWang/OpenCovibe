@@ -182,7 +182,7 @@ export interface KeyBinding {
   key: string;
   context: "global" | "chat" | "prompt" | "cli";
   editable: boolean;
-  source: "app" | "cli";
+  source: "app" | "cli" | "codex";
   /** If true, this binding is also registered as an OS-level global shortcut. */
   osGlobal?: boolean;
 }
@@ -1202,6 +1202,11 @@ export interface CliConfigSettingDef {
   type: "boolean" | "enum" | "string";
   default: unknown;
   options?: { value: string; label: string }[];
+}
+
+export interface CodexConfigResult {
+  config: Record<string, unknown>;
+  warning?: string;
 }
 
 // ── Onboarding types ──

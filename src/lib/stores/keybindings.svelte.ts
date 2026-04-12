@@ -222,6 +222,107 @@ export const CLI_DEFAULTS: KeyBinding[] = [
   },
 ];
 
+// ── Default Codex CLI keybindings (read-only, source: codex-rs/tui/src/bottom_pane/footer.rs) ──
+
+export const CODEX_CLI_DEFAULTS: KeyBinding[] = [
+  {
+    command: "codex:shortcutHelp",
+    label: "Shortcut Help",
+    key: "?",
+    context: "cli",
+    editable: false,
+    source: "codex",
+  },
+  {
+    command: "codex:commandPicker",
+    label: "Command Picker",
+    key: "/",
+    context: "cli",
+    editable: false,
+    source: "codex",
+  },
+  {
+    command: "codex:shellCommand",
+    label: "Shell Command",
+    key: "!",
+    context: "cli",
+    editable: false,
+    source: "codex",
+  },
+  {
+    command: "codex:newLine",
+    label: "New Line (Ctrl+J fallback)",
+    key: "Shift+Enter",
+    context: "cli",
+    editable: false,
+    source: "codex",
+  },
+  {
+    command: "codex:queueMessage",
+    label: "Queue Message",
+    key: "Tab",
+    context: "cli",
+    editable: false,
+    source: "codex",
+  },
+  {
+    command: "codex:insertFilePath",
+    label: "Insert File Path",
+    key: "@",
+    context: "cli",
+    editable: false,
+    source: "codex",
+  },
+  {
+    command: "codex:pasteImage",
+    label: "Paste Image (Ctrl+Alt+V on WSL)",
+    key: "Ctrl+V",
+    context: "cli",
+    editable: false,
+    source: "codex",
+  },
+  {
+    command: "codex:externalEditor",
+    label: "External Editor",
+    key: "Ctrl+G",
+    context: "cli",
+    editable: false,
+    source: "codex",
+  },
+  {
+    command: "codex:editPrevious",
+    label: "Edit Previous Message",
+    key: "Escape",
+    context: "cli",
+    editable: false,
+    source: "codex",
+  },
+  {
+    command: "codex:quit",
+    label: "Quit (double-press)",
+    key: "Ctrl+C",
+    context: "cli",
+    editable: false,
+    source: "codex",
+  },
+  {
+    command: "codex:viewTranscript",
+    label: "View Transcript",
+    key: "Ctrl+T",
+    context: "cli",
+    editable: false,
+    source: "codex",
+  },
+  {
+    command: "codex:changeCollabMode",
+    label: "Change Collaboration Mode (when collaboration modes enabled)",
+    key: "Shift+Tab",
+    context: "cli",
+    editable: false,
+    source: "codex",
+  },
+];
+
 // ── Key normalization utilities ──
 
 /**
@@ -328,7 +429,7 @@ function isEditableTarget(target: EventTarget | null): boolean {
 // ── KeybindingStore ──
 
 export class KeybindingStore {
-  bindings = $state<KeyBinding[]>([...APP_DEFAULTS, ...CLI_DEFAULTS]);
+  bindings = $state<KeyBinding[]>([...APP_DEFAULTS, ...CLI_DEFAULTS, ...CODEX_CLI_DEFAULTS]);
   overrides = $state<KeyBindingOverride[]>([]);
   recording = $state(false);
 

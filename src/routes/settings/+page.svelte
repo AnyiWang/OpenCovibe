@@ -10,6 +10,7 @@
     RemoteTestResult,
     SshKeyInfo,
     CodexAuthResult,
+    CodexConfigResult,
   } from "$lib/types";
   import Card from "$lib/components/Card.svelte";
   import Button from "$lib/components/Button.svelte";
@@ -529,6 +530,7 @@
   // Keybinding store from layout context
   const keybindingStore = getContext<KeybindingStore>("keybindings");
   let cliSectionOpen = $state(false);
+  let codexCliSectionOpen = $state(false);
   let cliSource = $state<"defaults" | "file">("defaults");
 
   // Keybinding conflict warning for recording editor
@@ -542,6 +544,7 @@
     keybindingStore.resolved.filter((b) => b.source === "app" && !b.editable),
   );
   let cliBindings = $derived(keybindingStore.resolved.filter((b) => b.source === "cli"));
+  let codexCliBindings = $derived(keybindingStore.resolved.filter((b) => b.source === "codex"));
   let hasOverrides = $derived(keybindingStore.overrides.length > 0);
 
   function isOverridden(command: string): boolean {
@@ -763,6 +766,102 @@
   const appearanceSettings = CLI_CONFIG_SETTINGS.filter((s) => s.group === "appearance");
   const advancedSettings = CLI_CONFIG_SETTINGS.filter((s) => s.group === "advanced");
 
+  // ── Codex Config state ──
+  let codexConfig = $state<Record<string, unknown>>({});
+  let projectCodexConfig = $state<Record<string, unknown>>({});
+  let codexConfigLoaded = $state(false);
+  let codexConfigWarning = $state<string | undefined>(undefined);
+
+  // Codex Config setting definitions
+  const CODEX_CONFIG_SETTINGS: CliConfigSettingDef[] = [
+    {
+      key: "model",
+      label: t("settings_codexConfig_modelLabel"),
+      description: t("settings_codexConfig_modelDesc"),
+      group: "behavior",
+      type: "string",
+      default: undefined,
+    },
+    {
+      key: "model_reasoning_effort",
+      label: t("settings_codexConfig_reasoningEffortLabel"),
+      description: t("settings_codexConfig_reasoningEffortDesc"),
+      group: "behavior",
+      type: "enum",
+      default: "medium",
+      options: [
+        { value: "none", label: t("settings_codexConfig_optNone") },
+        { value: "minimal", label: t("settings_codexConfig_optMinimal") },
+        { value: "low", label: t("settings_codexConfig_optLow") },
+        { value: "medium", label: t("settings_codexConfig_optMedium") },
+        { value: "high", label: t("settings_codexConfig_optHigh") },
+        { value: "xhigh", label: t("settings_codexConfig_optXHigh") },
+      ],
+    },
+    {
+      key: "approval_policy",
+      label: t("settings_codexConfig_approvalPolicyLabel"),
+      description: t("settings_codexConfig_approvalPolicyDesc"),
+      group: "behavior",
+      type: "enum",
+      default: "on-request",
+      options: [
+        { value: "on-request", label: t("settings_codexConfig_optOnRequest") },
+        { value: "untrusted", label: t("settings_codexConfig_optUntrusted") },
+        { value: "on-failure", label: t("settings_codexConfig_optOnFailure") },
+        { value: "never", label: t("settings_codexConfig_optNever") },
+      ],
+    },
+    {
+      key: "sandbox_mode",
+      label: t("settings_codexConfig_sandboxLabel"),
+      description: t("settings_codexConfig_sandboxDesc"),
+      group: "behavior",
+      type: "enum",
+      default: "read-only",
+      options: [
+        { value: "read-only", label: t("settings_codexConfig_optReadOnly") },
+        { value: "workspace-write", label: t("settings_codexConfig_optWorkspaceWrite") },
+        { value: "danger-full-access", label: t("settings_codexConfig_optFullAccess") },
+      ],
+    },
+  ];
+
+  function getCodexConfigValue(key: string, def: CliConfigSettingDef): unknown {
+    return key in codexConfig ? codexConfig[key] : def.default;
+  }
+
+  function isCodexProjectOverride(key: string): boolean {
+    return key in projectCodexConfig;
+  }
+
+  /** Render display for unknown/unrecognized values */
+  function codexValueDisplay(key: string, def: CliConfigSettingDef): string | null {
+    const val = codexConfig[key];
+    if (val === undefined || val === null) return null;
+    // If it's a table/object → custom table value
+    if (typeof val === "object" && !Array.isArray(val)) {
+      return t("settings_codexConfig_customTable");
+    }
+    // If it's an enum type and value doesn't match known options
+    if (def.type === "enum" && def.options) {
+      const known = def.options.some((o) => o.value === val);
+      if (!known && typeof val === "string") {
+        return t("settings_codexConfig_unrecognized", { value: val });
+      }
+    }
+    return null;
+  }
+
+  async function saveCodexConfigPatch(key: string, value: unknown) {
+    dbg("settings", "saveCodexConfigPatch", { key, value });
+    try {
+      codexConfig = await api.updateCodexConfig({ [key]: value ?? null });
+    } catch (e) {
+      dbgWarn("settings", "saveCodexConfigPatch error", e);
+    }
+  }
+
   function getCliConfigValue(key: string, def: CliConfigSettingDef): unknown {
     return key in cliConfig ? cliConfig[key] : def.default;
   }
@@ -786,16 +885,30 @@
     cliConfigLoading = true;
     cliConfigError = "";
     try {
-      cliConfig = await api.getCliConfig();
-      // Load project config for override indicators
       const cwd = localStorage.getItem("ocv:project-cwd") || "";
-      if (cwd) {
-        projectCliConfig = await api.getProjectCliConfig(cwd);
-      }
+      // Load Claude + Codex configs in parallel
+      const [claudeConfig, codexResult, projectClaude, projectCodex] = await Promise.all([
+        api.getCliConfig(),
+        api.getCodexConfig(),
+        cwd ? api.getProjectCliConfig(cwd) : Promise.resolve({}),
+        cwd ? api.getProjectCodexConfig(cwd) : Promise.resolve({}),
+      ]);
+
+      cliConfig = claudeConfig;
+      projectCliConfig = projectClaude;
+
+      // Codex config with warning support
+      codexConfig = codexResult.config ?? {};
+      codexConfigWarning = codexResult.warning;
+      projectCodexConfig = projectCodex;
+      codexConfigLoaded = true;
+
       cliConfigLoaded = true;
       dbg("settings", "cliConfig loaded", {
         keys: Object.keys(cliConfig).length,
         projectKeys: Object.keys(projectCliConfig).length,
+        codexKeys: Object.keys(codexConfig).length,
+        codexWarning: codexConfigWarning,
       });
     } catch (e) {
       cliConfigError = String(e);
@@ -2939,6 +3052,104 @@
           <p class="text-[10px] text-muted-foreground px-1">
             {t("settings_cliConfig_footer")}
           </p>
+
+          <!-- ── Codex Config ── -->
+          <Card class="p-6 space-y-4">
+            <h2 class="text-sm font-semibold text-muted-foreground uppercase tracking-wider">
+              {t("settings_codexConfig_title")}
+            </h2>
+
+            {#if codexConfigWarning}
+              <div
+                class="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2"
+              >
+                <svg
+                  class="h-4 w-4 text-amber-400 shrink-0 mt-0.5"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  stroke-width="2"
+                >
+                  <path
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"
+                  />
+                </svg>
+                <div class="text-xs text-amber-300">
+                  <p>{t("settings_codexConfig_warning", { warning: codexConfigWarning })}</p>
+                  <p class="mt-0.5 text-amber-400/70">{t("settings_codexConfig_warningDisabled")}</p>
+                </div>
+              </div>
+            {/if}
+
+            {#each CODEX_CONFIG_SETTINGS as def (def.key)}
+              {@const unknownDisplay = codexValueDisplay(def.key, def)}
+              <div class="flex items-center justify-between gap-4 py-1">
+                <div class="flex-1 min-w-0">
+                  <div class="flex items-center gap-2">
+                    <p class="text-sm font-medium">{def.label}</p>
+                    {#if isCodexProjectOverride(def.key)}
+                      <span
+                        class="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium bg-amber-500/15 text-amber-400 border border-amber-500/20"
+                      >
+                        {t("settings_codexConfig_projectOverrideApprox")}
+                      </span>
+                    {/if}
+                  </div>
+                  <p class="text-xs text-muted-foreground mt-0.5">{def.description}</p>
+                </div>
+                {#if def.type === "enum" && def.options}
+                  <div class="flex items-center gap-1.5 shrink-0">
+                    {#each def.options as opt (opt.value)}
+                      <button
+                        class="rounded-md border px-3 py-1.5 text-xs transition-all duration-150
+                        {getCodexConfigValue(def.key, def) === opt.value
+                          ? 'bg-primary text-primary-foreground'
+                          : 'hover:bg-accent hover:border-ring/30'}
+                        {codexConfigWarning ? 'opacity-50 cursor-not-allowed' : ''}"
+                        disabled={!!codexConfigWarning}
+                        onclick={() => {
+                          saveCodexConfigPatch(def.key, opt.value);
+                          codexConfig = { ...codexConfig, [def.key]: opt.value };
+                        }}
+                      >
+                        {opt.label}
+                      </button>
+                    {/each}
+                    {#if unknownDisplay}
+                      <span class="text-[10px] text-amber-400 ml-1">{unknownDisplay}</span>
+                    {/if}
+                  </div>
+                {:else if def.type === "string"}
+                  <input
+                    class="w-40 shrink-0 rounded-md border bg-transparent px-3 py-1.5 text-sm placeholder:text-muted-foreground focus:border-ring focus:outline-none
+                    {codexConfigWarning ? 'opacity-50 cursor-not-allowed' : ''}"
+                    disabled={!!codexConfigWarning}
+                    value={getCodexConfigValue(def.key, def) ?? ""}
+                    placeholder={t("settings_codexConfig_modelPlaceholder")}
+                    onblur={(e) => {
+                      const val = (e.target as HTMLInputElement).value.trim();
+                      if (val) {
+                        saveCodexConfigPatch(def.key, val);
+                        codexConfig = { ...codexConfig, [def.key]: val };
+                      } else {
+                        saveCodexConfigPatch(def.key, null);
+                        const next = { ...codexConfig };
+                        delete next[def.key];
+                        codexConfig = next;
+                      }
+                    }}
+                  />
+                {/if}
+              </div>
+            {/each}
+          </Card>
+
+          <!-- Codex footer note -->
+          <p class="text-[10px] text-muted-foreground px-1">
+            {t("settings_codexConfig_footer")}
+          </p>
         </div>
       {/if}
 
@@ -3034,6 +3245,42 @@
                     : t("settings_shortcuts_cliDefaults"),
               })}
             </p>
+          {/if}
+        </Card>
+
+        <!-- Codex CLI shortcuts (collapsible, read-only) -->
+        <Card class="p-6 space-y-4">
+          <button
+            class="flex items-center gap-2 text-sm font-semibold text-muted-foreground uppercase tracking-wider hover:text-foreground transition-colors w-full"
+            onclick={() => (codexCliSectionOpen = !codexCliSectionOpen)}
+          >
+            <svg
+              class="h-3 w-3 transition-transform {codexCliSectionOpen ? 'rotate-90' : ''}"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"><path d="m9 18 6-6-6-6" /></svg
+            >
+            {t("settings_shortcuts_codexCliShortcuts")}
+            <span class="text-[10px] font-normal normal-case tracking-normal text-muted-foreground"
+              >{t("settings_shortcuts_readOnly")}</span
+            >
+          </button>
+          {#if codexCliSectionOpen}
+            <div class="divide-y divide-border/50">
+              {#each codexCliBindings as binding (binding.command)}
+                <div class="flex items-center gap-3 py-1.5">
+                  <span class="text-sm text-foreground/60 min-w-[140px]">{binding.label}</span>
+                  <span
+                    class="inline-flex items-center rounded-md border bg-muted/30 px-2.5 py-1 text-xs font-mono text-muted-foreground min-w-[60px] justify-center"
+                  >
+                    {formatKeyDisplay(binding.key)}
+                  </span>
+                </div>
+              {/each}
+            </div>
           {/if}
         </Card>
 

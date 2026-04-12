@@ -46,6 +46,8 @@ rand = "0.8"
 if-addrs = "0.15.0"
 urlencoding = "2"
 rayon = "1"
+toml = "0.8"
+toml_edit = "0.22"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

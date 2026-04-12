@@ -1001,6 +1001,25 @@ export async function updateCliConfig(
   return invoke<Record<string, unknown>>("update_cli_config", { patch });
 }
 
+// ── Codex Config ──
+
+export async function getCodexConfig(): Promise<import("./types").CodexConfigResult> {
+  dbg("api", "getCodexConfig");
+  return invoke<import("./types").CodexConfigResult>("get_codex_config");
+}
+
+export async function getProjectCodexConfig(cwd: string): Promise<Record<string, unknown>> {
+  dbg("api", "getProjectCodexConfig", { cwd });
+  return invoke<Record<string, unknown>>("get_project_codex_config", { cwd });
+}
+
+export async function updateCodexConfig(
+  patch: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  dbg("api", "updateCodexConfig", { patch });
+  return invoke<Record<string, unknown>>("update_codex_config", { patch });
+}
+
 // ── App Updates ──
 
 export async function checkForUpdates(): Promise<import("./types").UpdateInfo> {
