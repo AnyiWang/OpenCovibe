@@ -36,6 +36,8 @@ pub struct MemoryFileCandidate {
 pub enum RunStatus {
     Pending,
     Running,
+    /// Turn complete, waiting for user input. Session is still alive.
+    Idle,
     Completed,
     Failed,
     Stopped,
@@ -46,6 +48,7 @@ impl std::fmt::Display for RunStatus {
         match self {
             RunStatus::Pending => write!(f, "pending"),
             RunStatus::Running => write!(f, "running"),
+            RunStatus::Idle => write!(f, "idle"),
             RunStatus::Completed => write!(f, "completed"),
             RunStatus::Failed => write!(f, "failed"),
             RunStatus::Stopped => write!(f, "stopped"),

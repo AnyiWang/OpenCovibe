@@ -679,6 +679,7 @@
   "history_statusFailed": "Failed",
   "history_statusStopped": "Stopped",
   "history_statusRunning": "Running",
+  "history_statusDone": "Done",
   "history_project": "Project",
   "history_tools": "Tools",
   "history_dateFrom": "From",

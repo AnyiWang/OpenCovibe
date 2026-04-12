@@ -679,6 +679,7 @@
   "history_statusFailed": "失败",
   "history_statusStopped": "已停止",
   "history_statusRunning": "运行中",
+  "history_statusDone": "已完成",
   "history_project": "项目",
   "history_tools": "工具",
   "history_dateFrom": "从",

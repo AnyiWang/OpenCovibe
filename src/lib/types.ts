@@ -5,7 +5,7 @@ export interface MemoryFileCandidate {
   exists: boolean;
 }
 
-export type RunStatus = "pending" | "running" | "completed" | "failed" | "stopped";
+export type RunStatus = "pending" | "running" | "idle" | "completed" | "failed" | "stopped";
 
 export type RunEventType = "system" | "stdout" | "stderr" | "command" | "user" | "assistant";
 
