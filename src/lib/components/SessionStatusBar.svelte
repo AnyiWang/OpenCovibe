@@ -341,9 +341,21 @@
           : "bg-emerald-500",
   );
 
-  let currentModelInfo = $derived(models.find((m) => m.value === model));
-  let effortLevels = $derived(currentModelInfo?.supportedEffortLevels ?? []);
-  let showEffort = $derived(currentModelInfo?.supportsEffort === true && effortLevels.length > 0);
+  // Find model info: exact match first, then fuzzy (model ID contains alias)
+  let currentModelInfo = $derived.by(() => {
+    const exact = models.find((m) => m.value === model);
+    if (exact) return exact;
+    return models.find((m) => model.includes(m.value) && m.value !== "default");
+  });
+  // Effort: always collect levels from any model that supports them (for always-visible UI)
+  let anyModelEffortLevels = $derived.by(() => {
+    const supporting = models.find(
+      (m) => m.supportsEffort === true && m.supportedEffortLevels?.length,
+    );
+    return supporting?.supportedEffortLevels ?? [];
+  });
+  let effortLevels = $derived(currentModelInfo?.supportedEffortLevels ?? anyModelEffortLevels);
+  let effortDisabled = $derived(currentModelInfo?.supportsEffort !== true);
 
   let modelLabel = $derived.by(() => {
     // Check platform models first, then CLI models
@@ -455,7 +467,7 @@
             onclick={toggleModelDropdown}
           >
             {modelLabel}
-            {#if showEffort && effort}
+            {#if !effortDisabled && effort}
               <span class="text-foreground/60 text-[10px]">{effort}</span>
             {/if}
             <svg
@@ -851,7 +863,7 @@
         </button>
       {/each}
     </div>
-    {#if showEffort && onEffortChange}
+    {#if effortLevels.length > 0 && onEffortChange}
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div
         onkeydown={(e) => {
@@ -862,14 +874,21 @@
       >
         <div class="border-t mx-1 my-1"></div>
         <div class="px-3 py-2">
-          <div class="text-[10px] text-muted-foreground mb-1.5">{t("effort_label")}</div>
+          <div class="text-[10px] text-muted-foreground mb-1.5">
+            {t("effort_label")}{#if effortDisabled}<span class="ml-1 opacity-50"
+                >— {currentModelInfo?.displayName ?? model} not supported</span
+              >{/if}
+          </div>
           <div class="flex gap-1">
             {#each effortLevels as level}
               <button
                 class="flex-1 rounded px-2 py-1 text-xs transition-colors
-                  {effort === level
-                  ? 'bg-primary text-primary-foreground font-medium'
-                  : 'bg-muted/50 text-muted-foreground hover:bg-accent'}"
+                  {effortDisabled
+                  ? 'bg-muted/30 text-muted-foreground/40 cursor-not-allowed'
+                  : effort === level
+                    ? 'bg-primary text-primary-foreground font-medium'
+                    : 'bg-muted/50 text-muted-foreground hover:bg-accent'}"
+                disabled={effortDisabled}
                 onclick={() => onEffortChange(level)}>{level}</button
               >
             {/each}

@@ -48,6 +48,7 @@ const KNOWN_COMMAND_DESCRIPTIONS: Record<string, string> = {
   "add-dir": "Add a directory to the workspace",
   btw: "Ask a side question without interrupting the current task",
   loop: "Run a prompt or slash command on a recurring interval",
+  "team-onboarding": "Help teammates ramp on Claude Code with a guide from your usage",
 };
 
 // ── Fallback argumentHints for known CLI commands ──
@@ -502,6 +503,8 @@ const COMMAND_CATEGORY_MAP: Record<string, SlashCategory> = {
   plugin: "config",
   ide: "config",
   "add-dir": "config",
+  // Coding (continued)
+  "team-onboarding": "coding",
   // Help
   help: "help",
   doctor: "help",
