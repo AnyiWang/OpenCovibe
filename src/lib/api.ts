@@ -279,6 +279,11 @@ export async function exportConversation(runId: string): Promise<string> {
   return invoke<string>("export_conversation", { runId });
 }
 
+export async function writeHtmlExport(path: string, content: string): Promise<void> {
+  dbg("api", "writeHtmlExport", { path, contentLen: content.length });
+  return invoke<void>("write_html_export", { path, content });
+}
+
 // Memory file candidates
 export async function listMemoryFiles(
   cwd?: string,

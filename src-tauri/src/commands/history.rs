@@ -278,19 +278,19 @@ fn compute_facets(entries: &[RunIndexEntry]) -> RunSearchFacets {
         .into_iter()
         .map(|(value, count)| FacetCount { value, count })
         .collect();
-    projects.sort_by(|a, b| b.count.cmp(&a.count));
+    projects.sort_by_key(|x| std::cmp::Reverse(x.count));
 
     let mut tools: Vec<FacetCount> = tool_counts
         .into_iter()
         .map(|(value, count)| FacetCount { value, count })
         .collect();
-    tools.sort_by(|a, b| b.count.cmp(&a.count));
+    tools.sort_by_key(|x| std::cmp::Reverse(x.count));
 
     let mut agents: Vec<FacetCount> = agent_counts
         .into_iter()
         .map(|(value, count)| FacetCount { value, count })
         .collect();
-    agents.sort_by(|a, b| b.count.cmp(&a.count));
+    agents.sort_by_key(|x| std::cmp::Reverse(x.count));
 
     RunSearchFacets {
         projects,

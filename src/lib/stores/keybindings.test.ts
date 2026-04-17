@@ -474,7 +474,7 @@ describe("KeybindingStore", () => {
   });
 
   describe("new bindings", () => {
-    it("has all 8 new app bindings in defaults", () => {
+    it("has all 9 new app bindings in defaults", () => {
       const store = new KeybindingStore();
       const newCmds = [
         "app:shortcutHelp",
@@ -485,6 +485,7 @@ describe("KeybindingStore", () => {
         "chat:toggleVerbose",
         "chat:toggleTasks",
         "chat:undoLastTurn",
+        "app:exportChatHtml",
       ];
       for (const cmd of newCmds) {
         expect(store.resolved.find((b) => b.command === cmd)).toBeDefined();
@@ -503,6 +504,7 @@ describe("KeybindingStore", () => {
           "chat:toggleVerbose",
           "chat:toggleTasks",
           "chat:undoLastTurn",
+          "app:exportChatHtml",
         ].includes(b.command),
       );
       for (const b of newBindings) {

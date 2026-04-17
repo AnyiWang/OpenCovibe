@@ -1472,5 +1472,9 @@
   "preview_dismiss": "Dismiss",
   "preview_invalidUrl": "Only localhost URLs are supported",
   "preview_openFailed": "Failed to open preview window",
-  "preview_usage": "Usage: /preview http://localhost:3000"
+  "preview_usage": "Usage: /preview http://localhost:3000",
+  "export_noConversation": "No conversation to export",
+  "export_htmlSuccess": "Exported HTML",
+  "export_htmlFailed": "Export failed",
+  "export_htmlButton": "Export as HTML"
 }

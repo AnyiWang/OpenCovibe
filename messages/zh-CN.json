@@ -1472,5 +1472,9 @@
   "preview_dismiss": "取消",
   "preview_invalidUrl": "仅支持 localhost 地址",
   "preview_openFailed": "预览窗口打开失败",
-  "preview_usage": "用法：/preview http://localhost:3000"
+  "preview_usage": "用法：/preview http://localhost:3000",
+  "export_noConversation": "没有可导出的对话",
+  "export_htmlSuccess": "已导出 HTML",
+  "export_htmlFailed": "导出失败",
+  "export_htmlButton": "导出为 HTML"
 }
