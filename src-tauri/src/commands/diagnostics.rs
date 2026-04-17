@@ -994,30 +994,26 @@ fn validate_mcp_servers(
             .unwrap_or("stdio");
 
         match transport_type {
-            "stdio" => {
-                if !entry_obj.contains_key("command") || !entry_obj["command"].is_string() {
-                    issues.push(ConfigIssue {
-                        scope: scope.to_string(),
-                        file: file.display().to_string(),
-                        severity: "error".to_string(),
-                        message: format!("\"{}\" — missing \"command\" field (type=stdio)", name),
-                    });
-                }
+            "stdio" if !entry_obj.contains_key("command") || !entry_obj["command"].is_string() => {
+                issues.push(ConfigIssue {
+                    scope: scope.to_string(),
+                    file: file.display().to_string(),
+                    severity: "error".to_string(),
+                    message: format!("\"{}\" — missing \"command\" field (type=stdio)", name),
+                });
             }
-            "http" | "sse" => {
-                if !entry_obj.contains_key("url") || !entry_obj["url"].is_string() {
-                    issues.push(ConfigIssue {
-                        scope: scope.to_string(),
-                        file: file.display().to_string(),
-                        severity: "error".to_string(),
-                        message: format!(
-                            "\"{}\" — missing \"url\" field (type={})",
-                            name, transport_type
-                        ),
-                    });
-                }
+            "http" | "sse" if !entry_obj.contains_key("url") || !entry_obj["url"].is_string() => {
+                issues.push(ConfigIssue {
+                    scope: scope.to_string(),
+                    file: file.display().to_string(),
+                    severity: "error".to_string(),
+                    message: format!(
+                        "\"{}\" — missing \"url\" field (type={})",
+                        name, transport_type
+                    ),
+                });
             }
-            _ => {} // Unknown transport type: don't validate further
+            _ => {} // Valid or unknown transport type
         }
     }
 }

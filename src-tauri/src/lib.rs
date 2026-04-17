@@ -363,12 +363,10 @@ pub fn run() {
                         });
                     }
                 }
-                tauri::WindowEvent::Destroyed => {
+                tauri::WindowEvent::Destroyed if window.label() == "main" => {
                     // Safety fallback: cancel actors if main window is truly destroyed (e.g. app.exit()).
                     // Skip for secondary windows (e.g. preview) — destroying them must not shut down the app.
-                    if window.label() == "main" {
-                        cancel_for_exit.cancel();
-                    }
+                    cancel_for_exit.cancel();
                 }
                 _ => {}
             }
