@@ -1351,6 +1351,12 @@
     keybindingStore.registerCallback("chat:undoLastTurn", () => {
       handleRewind();
     });
+    keybindingStore.registerCallback("app:exportChatHtml", () => void handleExportHtml());
+    const onExportHtmlEvent = () => {
+      window.dispatchEvent(new CustomEvent("ocv:export-html-ack"));
+      void handleExportHtml();
+    };
+    window.addEventListener("ocv:export-html", onExportHtmlEvent);
 
     // Screenshot event listener (global hotkey → attachment injection)
     const chatTransport = getTransport();
@@ -1425,6 +1431,8 @@
       keybindingStore.unregisterCallback("chat:toggleVerbose");
       keybindingStore.unregisterCallback("chat:toggleTasks");
       keybindingStore.unregisterCallback("chat:undoLastTurn");
+      keybindingStore.unregisterCallback("app:exportChatHtml");
+      window.removeEventListener("ocv:export-html", onExportHtmlEvent);
       screenshotUnlisten.then((fn) => fn());
       dragEnterUnlisten.then((fn) => fn());
       dragLeaveUnlisten.then((fn) => fn());
@@ -1954,6 +1962,76 @@
     }
 
     return seq === permissionModeChangeSeq;
+  }
+
+  // ── HTML Export ──
+
+  async function handleExportHtml() {
+    if (!store.run) {
+      dbgWarn("chat", "handleExportHtml: no run");
+      showChatToast(t("export_noConversation"));
+      return;
+    }
+    dbg("chat", "handleExportHtml: start");
+
+    let html: string;
+    let title: string;
+    const prevFilter = toolFilter;
+    const prevLimit = renderLimit;
+    try {
+      // Force full render (clear filter + unlimited)
+      toolFilter = null;
+      renderLimit = Infinity;
+      await tick();
+      await new Promise((r) => requestAnimationFrame(() => r(undefined)));
+
+      // Re-query after Svelte re-render (DOM may have been replaced)
+      const rootEl = document.querySelector<HTMLElement>("[data-conversation-root]");
+      if (!rootEl) {
+        dbgWarn("chat", "handleExportHtml: data-conversation-root not found");
+        showChatToast(t("export_noConversation"));
+        return;
+      }
+
+      const { exportConversationToHtml, buildExportFilename: buildFn } =
+        await import("$lib/utils/html-export");
+
+      title = store.run.name ?? store.run.prompt?.slice(0, 80) ?? "Untitled";
+      html = await exportConversationToHtml(rootEl, {
+        title,
+        sessionInfo: {
+          model: store.model,
+          cwd: store.effectiveCwd,
+          startedAt: store.run.started_at,
+          turnCount: store.numTurns || store.timeline.filter((e) => e.kind === "user").length,
+        },
+      });
+
+      // Restore UI immediately (HTML already captured, no need to keep filter cleared)
+      toolFilter = prevFilter;
+      renderLimit = prevLimit;
+
+      const { save } = await import("@tauri-apps/plugin-dialog");
+      const path = await save({
+        defaultPath: buildFn(title),
+        filters: [{ name: "HTML", extensions: ["html"] }],
+      });
+      if (!path) {
+        dbg("chat", "handleExportHtml: user cancelled");
+        return;
+      }
+
+      await api.writeHtmlExport(path, html);
+      dbg("chat", "handleExportHtml: done", { path });
+      showChatToast(t("export_htmlSuccess"));
+    } catch (e) {
+      dbgWarn("chat", "handleExportHtml failed", e);
+      showChatToast(t("export_htmlFailed"));
+    } finally {
+      // Ensure restore even on early return paths
+      toolFilter = prevFilter;
+      renderLimit = prevLimit;
+    }
   }
 
   async function handleModelChange(newModel: string) {
@@ -3541,6 +3619,7 @@
         if (sidebarCollapsed) sidebarCollapsed = false;
         sidebarRequestedTab = "info";
       }}
+      onExportHtml={store.run ? () => void handleExportHtml() : undefined}
     />
 
     <!-- MCP panel (floating below status bar) -->
@@ -3712,9 +3791,9 @@
             </div>
           {:else}
             <!-- Timeline: chat messages + inline tool cards -->
-            <div>
+            <div data-conversation-root>
               {#if store.run?.parent_run_id}
-                <div class="chat-content-width py-2">
+                <div class="chat-content-width py-2" data-export-exclude>
                   <div
                     class="flex items-center gap-2 rounded-md border border-blue-500/20 bg-blue-500/5 px-3 py-2 text-xs text-blue-400"
                   >
@@ -3744,7 +3823,7 @@
                 </div>
               {/if}
               {#if notificationVisible && latestNotification}
-                <div class="chat-content-width py-1">
+                <div class="chat-content-width py-1" data-export-exclude>
                   <div
                     class="flex items-center gap-2 text-xs text-muted-foreground bg-teal-500/5 border border-teal-500/20 rounded px-3 py-1.5 animate-fade-in"
                   >
@@ -3754,7 +3833,7 @@
                 </div>
               {/if}
               {#if toolNamesInTimeline.length >= 2}
-                <div class="chat-content-width py-2">
+                <div class="chat-content-width py-2" data-export-exclude>
                   <div class="flex flex-wrap items-center gap-1.5">
                     <button
                       class="rounded-full px-2.5 py-0.5 text-xs font-medium transition-colors {!toolFilter
@@ -4024,9 +4103,9 @@
                 </div>
               {/if}
 
-              <!-- Pending hook callbacks -->
+              <!-- Pending hook callbacks (runtime UI — excluded from export) -->
               {#each store.hookEvents.filter((h) => h.status === "hook_pending") as hookEvent (hookEvent.request_id)}
-                <div class="chat-content-width pl-7">
+                <div class="chat-content-width pl-7" data-export-exclude>
                   <HookReviewCard {hookEvent} onRespond={handleHookCallbackRespond} />
                 </div>
               {/each}
@@ -4062,6 +4141,7 @@
                         {#if store.isRunning && !store.streamingText}
                           <div
                             class="h-2.5 w-2.5 rounded-full border-2 border-blue-500/30 border-t-blue-400 animate-spin"
+                            data-export-exclude
                           ></div>
                         {/if}
                         <svg
@@ -4122,7 +4202,7 @@
 
               <!-- Slash command processing indicator (before thinking kicks in) -->
               {#if processingSlashCmd && !thinkingVisible && !store.streamingText && !store.thinkingText}
-                <div class="w-full animate-fade-in">
+                <div class="w-full animate-fade-in" data-export-exclude>
                   <div class="chat-content-width py-2">
                     <div class="flex items-center gap-2 text-sm text-muted-foreground">
                       <div
@@ -4136,7 +4216,7 @@
 
               <!-- Thinking indicator (debounced 300ms to avoid flash on fast CLI commands) -->
               {#if thinkingVisible && !store.thinkingText}
-                <div class="w-full animate-fade-in">
+                <div class="w-full animate-fade-in" data-export-exclude>
                   <div class="chat-content-width py-4">
                     <div class="mb-1.5 flex items-center gap-2">
                       <div

@@ -58,6 +58,7 @@
     onPreviewToggle,
     previewOpen = false,
     onStatusClick,
+    onExportHtml,
   }: {
     run?: TaskRun | null;
     agent?: string;
@@ -107,6 +108,7 @@
     onPreviewToggle?: () => void;
     previewOpen?: boolean;
     onStatusClick?: () => void;
+    onExportHtml?: () => void;
   } = $props();
 
   $effect(() => {
@@ -543,6 +545,28 @@
 
     <!-- Right: actions + chevron -->
     <div class="flex items-center gap-2">
+      {#if onExportHtml}
+        <button
+          class="flex items-center gap-1 rounded px-2 py-0.5 text-foreground/50 hover:text-foreground hover:bg-accent transition-colors"
+          onclick={onExportHtml}
+          title={t("export_htmlButton")}
+          data-export-exclude
+        >
+          <svg
+            class="h-3 w-3"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            ><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8" /><polyline
+              points="16 6 12 2 8 6"
+            /><line x1="12" x2="12" y1="2" y2="15" /></svg
+          >
+          Export
+        </button>
+      {/if}
       {#if onPreviewToggle}
         <button
           class="flex items-center gap-1 rounded px-2 py-0.5 transition-colors
