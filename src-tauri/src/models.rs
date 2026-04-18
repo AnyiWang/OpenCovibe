@@ -1002,6 +1002,8 @@ pub enum BusEvent {
         skills: Vec<String>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         plugins: Vec<Value>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        plugin_errors: Vec<Value>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         fast_mode_state: Option<String>,
     },

@@ -297,12 +297,13 @@ pub fn fallback_cli_info() -> CliInfo {
             CliModelInfo {
                 value: "opus".to_string(),
                 display_name: "Opus".to_string(),
-                description: "Opus 4.6".to_string(),
+                description: "Opus 4.7".to_string(),
                 supports_effort: Some(true),
                 supported_effort_levels: Some(vec![
                     "low".into(),
                     "medium".into(),
                     "high".into(),
+                    "xhigh".into(),
                     "max".into(),
                 ]),
                 supports_adaptive_thinking: Some(true),
@@ -340,6 +341,11 @@ mod tests {
             .unwrap()
             .contains(&"medium".to_string()));
         assert_eq!(find("opus").supports_effort, Some(true));
+        assert!(find("opus")
+            .supported_effort_levels
+            .as_ref()
+            .unwrap()
+            .contains(&"xhigh".to_string()));
         assert_eq!(find("haiku").supports_effort, Some(false));
         assert!(find("haiku").supported_effort_levels.is_none());
     }

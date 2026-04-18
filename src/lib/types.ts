@@ -839,6 +839,7 @@ export type BusEvent =
       agents?: string[];
       skills?: string[];
       plugins?: unknown[];
+      plugin_errors?: unknown[];
       fast_mode_state?: string;
     }
   | {
@@ -1148,6 +1149,7 @@ export type HookEventType =
   | "InstructionsLoaded"
   | "Elicitation"
   | "ElicitationResult"
+  | "PreCompact"
   | "PostCompact"
   | "StopFailure"
   | "TaskCreated"

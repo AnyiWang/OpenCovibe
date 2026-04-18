@@ -29,6 +29,7 @@ export const HOOK_EVENT_TYPES: readonly HookEventType[] = [
   "InstructionsLoaded",
   "Elicitation",
   "ElicitationResult",
+  "PreCompact",
   "PostCompact",
   "StopFailure",
   "TaskCreated",
