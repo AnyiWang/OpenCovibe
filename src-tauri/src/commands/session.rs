@@ -491,6 +491,7 @@ pub(crate) async fn start_session_impl(
     initial_message: Option<String>,
     attachments: Option<Vec<AttachmentData>>,
     platform_id: Option<String>,
+    permission_mode_override: Option<String>,
 ) -> Result<(), String> {
     let _guard = spawn_locks.acquire(&run_id).await;
     let session_mode = mode.unwrap_or_default();
@@ -527,6 +528,18 @@ pub(crate) async fn start_session_impl(
     let user_settings = storage::settings::get_user_settings();
     let mut adapter_settings =
         adapter::build_adapter_settings(&agent_settings, &user_settings, meta.model.clone());
+
+    // 2a. Apply per-session permission_mode override (e.g. ExitPlanMode → acceptEdits).
+    //     Session-scoped: does not touch persisted user settings. Must run BEFORE spawn
+    //     so the CLI's --permission-mode arg reflects the override for the first turn.
+    if let Some(ref override_mode) = permission_mode_override {
+        log::debug!(
+            "[session] permission_mode override: {:?} → {:?}",
+            adapter_settings.permission_mode,
+            override_mode
+        );
+        adapter_settings.permission_mode = Some(override_mode.clone());
+    }
 
     // 2b. Resolve remote host from RunMeta (audit #2: single truth source)
     let remote = resolve_remote_host(&meta)?;
@@ -741,6 +754,7 @@ pub async fn start_session(
     initial_message: Option<String>,
     attachments: Option<Vec<AttachmentData>>,
     platform_id: Option<String>,
+    permission_mode_override: Option<String>,
 ) -> Result<(), String> {
     start_session_impl(
         emitter.inner(),
@@ -753,6 +767,7 @@ pub async fn start_session(
         initial_message,
         attachments,
         platform_id,
+        permission_mode_override,
     )
     .await
 }

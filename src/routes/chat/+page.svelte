@@ -3285,11 +3285,13 @@
       // 5. Navigate to fresh chat URL, then start a new session inline.
       //    Using sessionStorage + onMount doesn't work: /chat?run=X → /chat
       //    is the same route component and onMount won't re-fire.
+      //    permissionModeOverride threads through api.startSession → backend
+      //    adapter_settings, so the CLI spawns with --permission-mode acceptEdits
+      //    and the first "Implement..." turn runs in auto-accept (not plan).
       const planPrompt = `Implement the following plan:\n\n${planContent}`;
       await goto("/chat", { replaceState: true });
       await tick(); // let runId effect run loadRun("") → store.reset()
-      store.permissionMode = "acceptEdits"; // applied at spawn time for the new run
-      const newRunId = await store.startSession(planPrompt, cwd, []);
+      const newRunId = await store.startSession(planPrompt, cwd, [], "acceptEdits");
       await goto(`/chat?run=${newRunId}`, { replaceState: true });
       dbg("chat", "ExitPlanMode: new session started", { newRunId });
     } catch (e) {
