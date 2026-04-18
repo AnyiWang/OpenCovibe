@@ -34,6 +34,7 @@ import { updateInstalledVersion, getCliCommands } from "./cli-info.svelte";
 import * as snapshotCache from "$lib/utils/snapshot-cache";
 import { getTransport } from "$lib/transport";
 import { getAgentFeatures, type AgentFeatures } from "$lib/utils/agent-features";
+import { dedupeMcpServersByName } from "$lib/utils/mcp";
 
 // ── CLI permission mode normalization ──
 // CLI may return different names for the same mode across versions.
@@ -1365,7 +1366,7 @@ export class SessionStore {
       this.fastModeState = (obj.fastModeState as string) ?? "";
       this.apiKeySource = (obj.apiKeySource as string) ?? "";
       this.sessionCommands = (obj.sessionCommands ?? []) as CliCommand[];
-      this.mcpServers = (obj.mcpServers ?? []) as McpServerInfo[];
+      this.mcpServers = dedupeMcpServersByName((obj.mcpServers ?? []) as McpServerInfo[]);
       this.sessionTools = (obj.sessionTools ?? []) as string[];
       this.availableAgents = (obj.availableAgents ?? []) as string[];
       this.availableSkills = (obj.availableSkills ?? []) as string[];
@@ -2132,12 +2133,7 @@ export class SessionStore {
 
   /** Update MCP servers (e.g. after getMcpStatus refresh). Deduplicates by name. */
   updateMcpServers(servers: McpServerInfo[]): void {
-    const seen = new Set<string>();
-    this.mcpServers = servers.filter((s) => {
-      if (seen.has(s.name)) return false;
-      seen.add(s.name);
-      return true;
-    });
+    this.mcpServers = dedupeMcpServersByName(servers);
   }
 
   /** Resolve an AskUserQuestion tool: transition from ask_pending → success. */
@@ -2362,12 +2358,7 @@ export class SessionStore {
         }
         // Store MCP servers (per-session state, deduplicate by name)
         if (ev.mcp_servers && ev.mcp_servers.length > 0) {
-          const seen = new Set<string>();
-          this.mcpServers = ev.mcp_servers.filter((s) => {
-            if (seen.has(s.name)) return false;
-            seen.add(s.name);
-            return true;
-          });
+          this.mcpServers = dedupeMcpServersByName(ev.mcp_servers);
         }
         // Store CLI verbose fields
         if (ev.claude_code_version) {
