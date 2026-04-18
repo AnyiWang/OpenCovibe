@@ -1099,36 +1099,6 @@
     return () => window.removeEventListener("ocv:runs-changed", onRunsChanged);
   });
 
-  // Check for pending plan from ExitPlanMode "clear context"
-  onMount(() => {
-    const pendingPlan = sessionStorage.getItem("ocv:pending-plan-prompt");
-    const pendingCwd = sessionStorage.getItem("ocv:pending-plan-cwd");
-    if (pendingPlan && !store.run) {
-      sessionStorage.removeItem("ocv:pending-plan-prompt");
-      sessionStorage.removeItem("ocv:pending-plan-cwd");
-      const cwd = pendingCwd || localStorage.getItem("ocv:project-cwd") || "";
-      dbg("chat", "auto-sending pending plan from ExitPlanMode clear context");
-      // Use tick to ensure mount is complete
-      tick().then(async () => {
-        try {
-          const newRunId = await store.startSession(pendingPlan, cwd, []);
-          goto(`/chat?run=${newRunId}`);
-          // Set permission mode to acceptEdits in new session
-          // Wait for session to initialize first
-          setTimeout(async () => {
-            if (store.run) {
-              await api.setPermissionMode(store.run.id, "acceptEdits");
-              store.permissionMode = "acceptEdits";
-              dbg("chat", "new session permission mode set to acceptEdits");
-            }
-          }, 2000);
-        } catch (e) {
-          dbgWarn("chat", "auto-send pending plan failed:", e);
-        }
-      });
-    }
-  });
-
   // Start middleware + register handlers
   onMount(() => {
     let destroyed = false;
@@ -3312,12 +3282,16 @@
       await api.stopSession(runId);
       dbg("chat", "ExitPlanMode: session stopped");
 
-      // 5. Navigate to fresh chat and schedule plan sending
+      // 5. Navigate to fresh chat URL, then start a new session inline.
+      //    Using sessionStorage + onMount doesn't work: /chat?run=X → /chat
+      //    is the same route component and onMount won't re-fire.
       const planPrompt = `Implement the following plan:\n\n${planContent}`;
-      sessionStorage.setItem("ocv:pending-plan-prompt", planPrompt);
-      sessionStorage.setItem("ocv:pending-plan-cwd", cwd);
-      goto("/chat");
-      // The fresh chat page mount will detect sessionStorage items and auto-send
+      await goto("/chat", { replaceState: true });
+      await tick(); // let runId effect run loadRun("") → store.reset()
+      store.permissionMode = "acceptEdits"; // applied at spawn time for the new run
+      const newRunId = await store.startSession(planPrompt, cwd, []);
+      await goto(`/chat?run=${newRunId}`, { replaceState: true });
+      dbg("chat", "ExitPlanMode: new session started", { newRunId });
     } catch (e) {
       dbgWarn("chat", "ExitPlanMode clear context failed:", e);
       store.pendingClearContextPlan = null;
