@@ -147,6 +147,8 @@ const FRIENDLY_TOOL_NAMES: Record<string, string> = {
   WebSearch: "Search web",
   Task: "Run sub-agent",
   NotebookEdit: "Edit notebook",
+  PowerShell: "Run PowerShell",
+  Monitor: "Monitor events",
 };
 
 /** Map a tool name to a human-readable description. Falls back to the original name. */

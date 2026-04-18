@@ -186,6 +186,12 @@ const toolColors: Record<string, ToolColor> = {
     icon: "M5 3l7 9-7 9M14 21h7",
     border: "border-blue-500/30",
   },
+  Monitor: {
+    bg: "bg-cyan-500/10",
+    text: "text-cyan-600 dark:text-cyan-400",
+    icon: "M12 20v-6M6 20V10M18 20V4",
+    border: "border-cyan-500/30",
+  },
 };
 
 const defaultToolColor: ToolColor = {
