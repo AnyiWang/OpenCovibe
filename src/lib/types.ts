@@ -666,11 +666,21 @@ export interface MarketplaceInfo {
   plugin_count: number;
 }
 
+export type SkillSourceKind = "user" | "project-agents" | "project-codex" | "legacy" | "bundled";
+export type SkillDisabledBy = "path" | "name" | "bundled";
+
 export interface StandaloneSkill {
   name: string;
   description: string;
   path: string;
   scope?: string;
+  agent?: "claude" | "codex";
+  source_kind?: SkillSourceKind;
+  enabled?: boolean;
+  disabled_by?: SkillDisabledBy;
+  can_edit?: boolean;
+  can_delete?: boolean;
+  can_toggle?: boolean;
 }
 
 export interface InstalledPlugin {
@@ -785,6 +795,7 @@ export interface ConfiguredMcpServer {
   url?: string;
   env_keys: string[];
   header_keys: string[];
+  agent?: "claude" | "codex";
 }
 
 // ── Sidebar panel types ──

@@ -378,6 +378,43 @@ pub async fn dispatch_command(
             crate::commands::plugins::delete_skill(path, cwd)?;
             Ok(json!(true))
         }
+        // ── Codex Skills ──
+        "list_codex_skills" => {
+            let cwd = params.get("cwd").and_then(|v| v.as_str()).map(String::from);
+            let result = crate::commands::plugins::list_codex_skills(cwd)?;
+            serde_json::to_value(result).map_err(|e| e.to_string())
+        }
+        "create_codex_skill" => {
+            let name = extract_str(&params, "name")?;
+            let description = extract_str(&params, "description")?;
+            let content = extract_str(&params, "content")?;
+            let scope = extract_str(&params, "scope")?;
+            let cwd = params.get("cwd").and_then(|v| v.as_str()).map(String::from);
+            let result = crate::commands::plugins::create_codex_skill(
+                name,
+                description,
+                content,
+                scope,
+                cwd,
+            )?;
+            serde_json::to_value(result).map_err(|e| e.to_string())
+        }
+        "delete_codex_skill" => {
+            let path = extract_str(&params, "path")?;
+            let cwd = params.get("cwd").and_then(|v| v.as_str()).map(String::from);
+            crate::commands::plugins::delete_codex_skill(path, cwd)?;
+            Ok(json!(true))
+        }
+        "toggle_codex_skill" => {
+            let skill_path = extract_str(&params, "skill_path")?;
+            let enabled = params
+                .get("enabled")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true);
+            let cwd = params.get("cwd").and_then(|v| v.as_str()).map(String::from);
+            crate::commands::plugins::toggle_codex_skill(skill_path, enabled, cwd)?;
+            Ok(json!(true))
+        }
         "install_plugin" => {
             let name = extract_str(&params, "name")?;
             let scope = extract_str(&params, "scope")?;
@@ -549,6 +586,28 @@ pub async fn dispatch_command(
             let scope = extract_str(&params, "scope")?;
             let cwd = params.get("cwd").and_then(|v| v.as_str()).map(String::from);
             let result = crate::commands::mcp::toggle_mcp_server_config(name, enabled, scope, cwd)?;
+            serde_json::to_value(result).map_err(|e| e.to_string())
+        }
+        // ── Codex MCP ──
+        "list_codex_mcp_servers" => {
+            let cwd = params.get("cwd").and_then(|v| v.as_str()).map(String::from);
+            let result = crate::commands::mcp::list_codex_mcp_servers(cwd)?;
+            serde_json::to_value(result).map_err(|e| e.to_string())
+        }
+        "add_codex_mcp_server" => {
+            let name = extract_str(&params, "name")?;
+            let config = params
+                .get("config")
+                .cloned()
+                .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
+            let result = crate::commands::mcp::add_codex_mcp_server(name, config)?;
+            serde_json::to_value(result).map_err(|e| e.to_string())
+        }
+        "remove_codex_mcp_server" => {
+            let name = extract_str(&params, "name")?;
+            let scope = extract_str(&params, "scope")?;
+            let cwd = params.get("cwd").and_then(|v| v.as_str()).map(String::from);
+            let result = crate::commands::mcp::remove_codex_mcp_server(name, scope, cwd)?;
             serde_json::to_value(result).map_err(|e| e.to_string())
         }
         "check_mcp_registry_health" => {

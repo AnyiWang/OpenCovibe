@@ -1519,5 +1519,18 @@
   "preview_dismiss": "取消",
   "preview_invalidUrl": "仅支持 localhost 地址",
   "preview_openFailed": "预览窗口打开失败",
-  "preview_usage": "用法：/preview http://localhost:3000"
+  "preview_usage": "用法：/preview http://localhost:3000",
+
+  "extend_agentBadge_claude": "Claude",
+  "extend_agentBadge_codex": "Codex",
+  "extend_createIn": "创建到",
+  "extend_installTo": "安装到",
+  "extend_skills_bundledToggleManagedGlobally": "通过内置全局配置管理",
+  "extend_skills_disabledByBundled": "内置技能已禁用（用户配置）",
+  "extend_skills_disabledByName": "已被名称规则禁用",
+  "extend_skills_disabledByPath": "已被路径规则禁用",
+  "extend_skills_sourceKind_bundled": "内置",
+  "extend_skills_sourceKind_legacy": "旧版",
+  "extend_skills_sourceKind_projectAgents": "项目技能",
+  "extend_skills_sourceKind_projectCodex": "配置层技能"
 }

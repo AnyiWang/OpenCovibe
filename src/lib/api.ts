@@ -784,6 +784,44 @@ export async function deleteSkill(path: string, cwd?: string): Promise<void> {
   return invoke<void>("delete_skill", { path, cwd: cwd ?? null });
 }
 
+// ── Codex Skills ──
+
+export async function listCodexSkills(cwd?: string): Promise<StandaloneSkill[]> {
+  dbg("api", "listCodexSkills", { cwd });
+  return invoke<StandaloneSkill[]>("list_codex_skills", { cwd: cwd ?? null });
+}
+
+export async function createCodexSkill(
+  name: string,
+  description: string,
+  content: string,
+  scope: string,
+  cwd?: string,
+): Promise<StandaloneSkill> {
+  dbg("api", "createCodexSkill", { name, scope, cwd });
+  return invoke<StandaloneSkill>("create_codex_skill", {
+    name,
+    description,
+    content,
+    scope,
+    cwd: cwd ?? null,
+  });
+}
+
+export async function deleteCodexSkill(path: string, cwd?: string): Promise<void> {
+  dbg("api", "deleteCodexSkill", { path, cwd });
+  return invoke<void>("delete_codex_skill", { path, cwd: cwd ?? null });
+}
+
+export async function toggleCodexSkill(
+  skillPath: string,
+  enabled: boolean,
+  cwd?: string,
+): Promise<void> {
+  dbg("api", "toggleCodexSkill", { skillPath, enabled, cwd });
+  return invoke<void>("toggle_codex_skill", { skillPath, enabled, cwd: cwd ?? null });
+}
+
 export async function listInstalledPlugins(): Promise<InstalledPlugin[]> {
   dbg("api", "listInstalledPlugins");
   return invoke<InstalledPlugin[]>("list_installed_plugins");
@@ -930,6 +968,34 @@ export async function removeMcpServer(
 ): Promise<PluginOperationResult> {
   dbg("api", "removeMcpServer", { name, scope, cwd });
   return invoke<PluginOperationResult>("remove_mcp_server", {
+    name,
+    scope,
+    cwd: cwd ?? null,
+  });
+}
+
+// ── Codex MCP ──
+
+export async function listCodexMcpServers(cwd?: string): Promise<ConfiguredMcpServer[]> {
+  dbg("api", "listCodexMcpServers", { cwd });
+  return invoke<ConfiguredMcpServer[]>("list_codex_mcp_servers", { cwd: cwd ?? null });
+}
+
+export async function addCodexMcpServer(
+  name: string,
+  config: Record<string, unknown>,
+): Promise<PluginOperationResult> {
+  dbg("api", "addCodexMcpServer", { name });
+  return invoke<PluginOperationResult>("add_codex_mcp_server", { name, config });
+}
+
+export async function removeCodexMcpServer(
+  name: string,
+  scope: string,
+  cwd?: string,
+): Promise<PluginOperationResult> {
+  dbg("api", "removeCodexMcpServer", { name, scope, cwd });
+  return invoke<PluginOperationResult>("remove_codex_mcp_server", {
     name,
     scope,
     cwd: cwd ?? null,

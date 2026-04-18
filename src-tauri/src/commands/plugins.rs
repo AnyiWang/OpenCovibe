@@ -284,6 +284,56 @@ pub async fn install_community_skill(
         .await
 }
 
+// ── Codex skills commands ──
+
+#[tauri::command]
+pub fn list_codex_skills(cwd: Option<String>) -> Result<Vec<StandaloneSkill>, String> {
+    log::debug!("[plugins] list_codex_skills: cwd={:?}", cwd);
+    Ok(crate::storage::plugins::list_codex_skills(cwd.as_deref()))
+}
+
+#[tauri::command]
+pub fn create_codex_skill(
+    name: String,
+    description: String,
+    content: String,
+    scope: String,
+    cwd: Option<String>,
+) -> Result<StandaloneSkill, String> {
+    log::debug!(
+        "[plugins] create_codex_skill: name={}, scope={}",
+        name,
+        scope
+    );
+    crate::storage::plugins::create_codex_skill(
+        &name,
+        &description,
+        &content,
+        &scope,
+        cwd.as_deref(),
+    )
+}
+
+#[tauri::command]
+pub fn delete_codex_skill(path: String, cwd: Option<String>) -> Result<(), String> {
+    log::debug!("[plugins] delete_codex_skill: path={}", path);
+    crate::storage::plugins::delete_codex_skill(&path, cwd.as_deref())
+}
+
+#[tauri::command]
+pub fn toggle_codex_skill(
+    skill_path: String,
+    enabled: bool,
+    cwd: Option<String>,
+) -> Result<(), String> {
+    log::debug!(
+        "[plugins] toggle_codex_skill: path={}, enabled={}",
+        skill_path,
+        enabled
+    );
+    crate::storage::plugins::toggle_codex_skill(&skill_path, enabled, cwd.as_deref())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

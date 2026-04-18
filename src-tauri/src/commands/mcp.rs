@@ -1,6 +1,7 @@
 use crate::models::{
     ConfiguredMcpServer, McpRegistrySearchResult, PluginOperationResult, ProviderHealth,
 };
+use serde_json;
 use std::collections::HashMap;
 
 #[tauri::command]
@@ -108,4 +109,35 @@ pub async fn search_mcp_registry(
         return Err("Query too long (max 200 characters)".into());
     }
     crate::storage::mcp_registry::search(q, limit.unwrap_or(30), cursor.as_deref()).await
+}
+
+#[tauri::command]
+pub fn list_codex_mcp_servers(cwd: Option<String>) -> Result<Vec<ConfiguredMcpServer>, String> {
+    log::debug!("[mcp] list_codex_mcp_servers: cwd={:?}", cwd);
+    Ok(crate::storage::mcp_registry::list_codex_configured(
+        cwd.as_deref(),
+    ))
+}
+
+#[tauri::command]
+pub fn add_codex_mcp_server(
+    name: String,
+    config: serde_json::Value,
+) -> Result<PluginOperationResult, String> {
+    log::debug!("[mcp] add_codex_mcp_server: name={}", name);
+    crate::storage::mcp_registry::add_codex_server(&name, &config)
+}
+
+#[tauri::command]
+pub fn remove_codex_mcp_server(
+    name: String,
+    scope: String,
+    cwd: Option<String>,
+) -> Result<PluginOperationResult, String> {
+    log::debug!(
+        "[mcp] remove_codex_mcp_server: name={}, scope={}",
+        name,
+        scope
+    );
+    crate::storage::mcp_registry::remove_codex_server(&name, &scope, cwd.as_deref())
 }

@@ -1519,5 +1519,18 @@
   "preview_dismiss": "Dismiss",
   "preview_invalidUrl": "Only localhost URLs are supported",
   "preview_openFailed": "Failed to open preview window",
-  "preview_usage": "Usage: /preview http://localhost:3000"
+  "preview_usage": "Usage: /preview http://localhost:3000",
+
+  "extend_agentBadge_claude": "Claude",
+  "extend_agentBadge_codex": "Codex",
+  "extend_createIn": "Create in",
+  "extend_installTo": "Install to",
+  "extend_skills_bundledToggleManagedGlobally": "Managed via bundled config",
+  "extend_skills_disabledByBundled": "Bundled skills disabled (user config)",
+  "extend_skills_disabledByName": "Disabled by name rule",
+  "extend_skills_disabledByPath": "Disabled by path rule",
+  "extend_skills_sourceKind_bundled": "Bundled",
+  "extend_skills_sourceKind_legacy": "Legacy",
+  "extend_skills_sourceKind_projectAgents": "Project skill",
+  "extend_skills_sourceKind_projectCodex": "Config layer skill"
 }

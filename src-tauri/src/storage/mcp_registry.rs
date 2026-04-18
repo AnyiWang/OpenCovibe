@@ -411,6 +411,7 @@ fn parse_mcp_entry(name: &str, config: &serde_json::Value, scope: &str) -> Confi
         url,
         env_keys,
         header_keys,
+        ..Default::default()
     }
 }
 
@@ -836,6 +837,559 @@ fn validate_scope(scope: &str) -> Result<(), String> {
     }
 }
 
+// ── Codex MCP support ──
+
+/// Validate a Codex MCP server name: only [a-zA-Z0-9_-], no dots.
+fn validate_codex_name(name: &str) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("Server name cannot be empty".into());
+    }
+    if name.contains('.') {
+        return Err(format!(
+            "Server name '{}' contains '.'; only [a-zA-Z0-9_-] allowed",
+            name
+        ));
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return Err(format!(
+            "Server name '{}' contains invalid characters; only [a-zA-Z0-9_-] allowed",
+            name
+        ));
+    }
+    Ok(())
+}
+
+/// Allowed top-level fields shared by both stdio and streamable-http Codex MCP configs.
+const CODEX_MCP_SHARED_FIELDS: &[&str] = &[
+    "enabled",
+    "required",
+    "startup_timeout_sec",
+    "startup_timeout_ms",
+    "tool_timeout_sec",
+    "enabled_tools",
+    "disabled_tools",
+    "tools",
+    "scopes",
+    "name",
+];
+
+/// Additional fields allowed only for stdio transport (has `command`).
+const CODEX_MCP_STDIO_FIELDS: &[&str] = &["command", "args", "env", "env_vars", "cwd"];
+
+/// Additional fields allowed only for streamable-http transport (has `url`).
+const CODEX_MCP_HTTP_FIELDS: &[&str] = &[
+    "url",
+    "bearer_token_env_var",
+    "http_headers",
+    "env_http_headers",
+    "oauth_resource",
+];
+
+/// Validate a Codex MCP server config JSON before writing.
+fn validate_codex_config(config: &serde_json::Value) -> Result<(), String> {
+    let obj = config
+        .as_object()
+        .ok_or_else(|| "Config must be a JSON object".to_string())?;
+
+    let has_command = obj.contains_key("command");
+    let has_url = obj.contains_key("url");
+
+    if has_command && has_url {
+        return Err("Config must have 'command' OR 'url', not both".into());
+    }
+    if !has_command && !has_url {
+        return Err("Config must have 'command' (stdio) or 'url' (streamable-http)".into());
+    }
+
+    // Reject plaintext bearer_token
+    if obj.contains_key("bearer_token") {
+        return Err(
+            "Plaintext 'bearer_token' is not allowed; use 'bearer_token_env_var' instead".into(),
+        );
+    }
+
+    // Build allowed set based on transport
+    let mut allowed: std::collections::HashSet<&str> =
+        CODEX_MCP_SHARED_FIELDS.iter().copied().collect();
+    if has_command {
+        allowed.extend(CODEX_MCP_STDIO_FIELDS.iter());
+        // Reject http-only fields on stdio
+        for field in CODEX_MCP_HTTP_FIELDS {
+            if *field != "url" && obj.contains_key(*field) {
+                return Err(format!(
+                    "Field '{}' is only valid for streamable-http (url) transport",
+                    field
+                ));
+            }
+        }
+    } else {
+        allowed.extend(CODEX_MCP_HTTP_FIELDS.iter());
+        // Reject stdio-only fields on http
+        for field in CODEX_MCP_STDIO_FIELDS {
+            if *field != "command" && obj.contains_key(*field) {
+                return Err(format!(
+                    "Field '{}' is only valid for stdio (command) transport",
+                    field
+                ));
+            }
+        }
+    }
+
+    // Reject unknown top-level fields
+    for key in obj.keys() {
+        if !allowed.contains(key.as_str()) {
+            return Err(format!("Unknown field '{}' in Codex MCP config", key));
+        }
+    }
+
+    Ok(())
+}
+
+/// Recursively convert a serde_json::Value to a toml_edit::Item.
+fn json_to_toml_edit_item(jv: &serde_json::Value) -> toml_edit::Item {
+    match jv {
+        serde_json::Value::String(s) => toml_edit::value(s.as_str()),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                toml_edit::value(i)
+            } else if let Some(f) = n.as_f64() {
+                toml_edit::value(f)
+            } else {
+                toml_edit::value(n.to_string())
+            }
+        }
+        serde_json::Value::Bool(b) => toml_edit::value(*b),
+        serde_json::Value::Array(arr) => {
+            // Check if any element is an object — if so, use array of tables
+            let has_objects = arr.iter().any(|v| v.is_object());
+            if has_objects {
+                let mut aot = toml_edit::ArrayOfTables::new();
+                for item in arr {
+                    if let serde_json::Value::Object(obj) = item {
+                        let mut tbl = toml_edit::Table::new();
+                        for (k, v) in obj {
+                            tbl[k] = json_to_toml_edit_item(v);
+                        }
+                        aot.push(tbl);
+                    }
+                }
+                toml_edit::Item::ArrayOfTables(aot)
+            } else {
+                let mut a = toml_edit::Array::new();
+                for item in arr {
+                    match item {
+                        serde_json::Value::String(s) => a.push(s.as_str()),
+                        serde_json::Value::Number(n) => {
+                            if let Some(i) = n.as_i64() {
+                                a.push(i);
+                            } else if let Some(f) = n.as_f64() {
+                                a.push(f);
+                            }
+                        }
+                        serde_json::Value::Bool(b) => a.push(*b),
+                        _ => {}
+                    }
+                }
+                toml_edit::value(a)
+            }
+        }
+        serde_json::Value::Object(obj) => {
+            let mut tbl = toml_edit::Table::new();
+            for (k, v) in obj {
+                tbl[k] = json_to_toml_edit_item(v);
+            }
+            toml_edit::Item::Table(tbl)
+        }
+        serde_json::Value::Null => toml_edit::Item::None,
+    }
+}
+
+/// Parse a Codex TOML `[mcp_servers.X]` table into a ConfiguredMcpServer.
+fn parse_codex_mcp_entry(name: &str, table: &toml::Value, scope: &str) -> ConfiguredMcpServer {
+    let obj = match table.as_table() {
+        Some(t) => t,
+        None => {
+            return ConfiguredMcpServer {
+                name: name.to_string(),
+                scope: scope.to_string(),
+                agent: "codex".into(),
+                ..Default::default()
+            }
+        }
+    };
+
+    let command = obj
+        .get("command")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    let url = obj.get("url").and_then(|v| v.as_str()).map(String::from);
+
+    let server_type = if command.is_some() {
+        "stdio".to_string()
+    } else if url.is_some() {
+        "streamable-http".to_string()
+    } else {
+        "unknown".to_string()
+    };
+
+    let args = obj
+        .get("args")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .map(|v| {
+                    let s = v.as_str().unwrap_or("").to_string();
+                    redact_sensitive_arg(&s)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // Collect env keys from `env` table and `env_vars` entries
+    let mut env_keys: Vec<String> = Vec::new();
+    if let Some(env_table) = obj.get("env").and_then(|v| v.as_table()) {
+        env_keys.extend(env_table.keys().map(String::from));
+    }
+    if let Some(env_vars) = obj.get("env_vars").and_then(|v| v.as_table()) {
+        env_keys.extend(env_vars.keys().map(String::from));
+    }
+    if let Some(bearer_env) = obj.get("bearer_token_env_var").and_then(|v| v.as_str()) {
+        env_keys.push(bearer_env.to_string());
+    }
+
+    // Collect header keys from `http_headers` and `env_http_headers`
+    let mut header_keys: Vec<String> = Vec::new();
+    if let Some(hdrs) = obj.get("http_headers").and_then(|v| v.as_table()) {
+        header_keys.extend(hdrs.keys().map(String::from));
+    }
+    if let Some(env_hdrs) = obj.get("env_http_headers").and_then(|v| v.as_table()) {
+        header_keys.extend(env_hdrs.keys().map(String::from));
+    }
+
+    ConfiguredMcpServer {
+        name: name.to_string(),
+        server_type,
+        scope: scope.to_string(),
+        command,
+        args,
+        url,
+        env_keys,
+        header_keys,
+        agent: "codex".into(),
+    }
+}
+
+/// Find the git project root by walking up from `cwd`.
+fn find_git_root(cwd: &std::path::Path) -> Option<std::path::PathBuf> {
+    let mut dir = cwd;
+    loop {
+        if dir.join(".git").exists() {
+            return Some(dir.to_path_buf());
+        }
+        match dir.parent() {
+            Some(parent) => dir = parent,
+            None => return None,
+        }
+    }
+}
+
+/// Collect project-scope MCP servers by walking .codex/config.toml from root→cwd.
+/// Later layers override same-name servers within the project scope.
+fn collect_project_codex_servers(project_roots: &[std::path::PathBuf]) -> Vec<ConfiguredMcpServer> {
+    let mut by_name: std::collections::HashMap<String, ConfiguredMcpServer> =
+        std::collections::HashMap::new();
+
+    for config_path in project_roots {
+        if !config_path.is_file() {
+            continue;
+        }
+        let content = match std::fs::read_to_string(config_path) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        let tv: toml::Value = match toml::from_str(&content) {
+            Ok(v) => v,
+            Err(e) => {
+                log::debug!(
+                    "[codex_mcp] skipping {}: parse error: {}",
+                    config_path.display(),
+                    e
+                );
+                continue;
+            }
+        };
+        if let Some(mcp_table) = tv.get("mcp_servers").and_then(|v| v.as_table()) {
+            for (name, entry) in mcp_table {
+                let server = parse_codex_mcp_entry(name, entry, "project");
+                // Later layers override same-name within project scope
+                by_name.insert(name.clone(), server);
+            }
+            log::debug!(
+                "[codex_mcp] project layer {}: {} servers",
+                config_path.display(),
+                mcp_table.len()
+            );
+        }
+    }
+
+    by_name.into_values().collect()
+}
+
+/// Build the list of project .codex/config.toml paths from root→cwd.
+/// Stops BEFORE reading cwd's own layer — consistent with
+/// `load_project_codex_config` in cli_config.rs.
+fn project_codex_config_paths(cwd: &str) -> Vec<std::path::PathBuf> {
+    let cwd_path = std::path::PathBuf::from(cwd);
+    let project_root = match find_git_root(&cwd_path) {
+        Some(r) => r,
+        None => return vec![],
+    };
+
+    let mut paths = Vec::new();
+    let mut current = project_root.clone();
+    loop {
+        // Stop before reading cwd's layer (matches load_project_codex_config)
+        if current == cwd_path {
+            break;
+        }
+
+        let config_path = current.join(".codex").join("config.toml");
+        paths.push(config_path);
+
+        let relative = match cwd_path.strip_prefix(&current) {
+            Ok(r) => r,
+            Err(_) => break,
+        };
+        match relative.components().next() {
+            Some(component) => current = current.join(component),
+            None => break,
+        }
+    }
+
+    paths
+}
+
+/// Internal: list Codex configured MCP servers from explicit paths.
+fn list_codex_configured_with_paths(
+    user_config: &std::path::Path,
+    project_roots: &[std::path::PathBuf],
+) -> Vec<ConfiguredMcpServer> {
+    let mut servers = Vec::new();
+
+    // 1. User-scope from $CODEX_HOME/config.toml
+    if user_config.is_file() {
+        if let Ok(content) = std::fs::read_to_string(user_config) {
+            if let Ok(tv) = toml::from_str::<toml::Value>(&content) {
+                if let Some(mcp_table) = tv.get("mcp_servers").and_then(|v| v.as_table()) {
+                    for (name, entry) in mcp_table {
+                        servers.push(parse_codex_mcp_entry(name, entry, "user"));
+                    }
+                    log::debug!(
+                        "[codex_mcp] user servers from {}: {}",
+                        user_config.display(),
+                        mcp_table.len()
+                    );
+                }
+            }
+        }
+    }
+
+    // 2. Project-scope from ancestor .codex/config.toml chain
+    let project_servers = collect_project_codex_servers(project_roots);
+    log::debug!(
+        "[codex_mcp] project servers (effective): {}",
+        project_servers.len()
+    );
+    servers.extend(project_servers);
+
+    log::debug!("[codex_mcp] list_codex_configured: {} total", servers.len());
+    servers
+}
+
+/// List configured Codex MCP servers from user and project config files.
+///
+/// - User scope: `$CODEX_HOME/config.toml` → `[mcp_servers]`
+/// - Project scope: walk from .git root → cwd, reading `.codex/config.toml` at each layer
+///
+/// Same-name servers across scopes both appear (no cross-scope dedup).
+/// Within project scope, later layers override earlier same-name servers.
+pub fn list_codex_configured(cwd: Option<&str>) -> Vec<ConfiguredMcpServer> {
+    let user_config = match crate::storage::cli_config::codex_config_path() {
+        Ok(p) => p,
+        Err(e) => {
+            log::warn!("[codex_mcp] codex_config_path error: {}", e);
+            // Still try project configs
+            let project_roots = cwd
+                .map(|c| project_codex_config_paths(c))
+                .unwrap_or_default();
+            return list_codex_configured_with_paths(std::path::Path::new(""), &project_roots);
+        }
+    };
+
+    let project_roots = cwd
+        .map(|c| project_codex_config_paths(c))
+        .unwrap_or_default();
+
+    list_codex_configured_with_paths(&user_config, &project_roots)
+}
+
+/// Internal: add a Codex MCP server to a specific config file path.
+fn add_codex_server_to_path(
+    name: &str,
+    config: &serde_json::Value,
+    config_path: &std::path::Path,
+) -> Result<PluginOperationResult, String> {
+    validate_codex_name(name)?;
+    validate_codex_config(config)?;
+
+    // Read or create the TOML document
+    let mut doc: toml_edit::DocumentMut = match std::fs::read_to_string(config_path) {
+        Ok(s) => s
+            .parse::<toml_edit::DocumentMut>()
+            .map_err(|e| format!("TOML parse error in {}: {}", config_path.display(), e))?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => toml_edit::DocumentMut::new(),
+        Err(e) => return Err(format!("Failed to read {}: {}", config_path.display(), e)),
+    };
+
+    // Ensure [mcp_servers] table exists
+    if !doc.contains_table("mcp_servers") {
+        doc["mcp_servers"] = toml_edit::Item::Table(toml_edit::Table::new());
+    }
+
+    // Insert [mcp_servers.{name}] sub-table
+    let mcp_table = doc["mcp_servers"]
+        .as_table_mut()
+        .ok_or_else(|| "mcp_servers is not a table".to_string())?;
+
+    let obj = config
+        .as_object()
+        .ok_or_else(|| "Config must be a JSON object".to_string())?;
+
+    let mut server_table = toml_edit::Table::new();
+    for (k, v) in obj {
+        server_table[k] = json_to_toml_edit_item(v);
+    }
+
+    mcp_table[name] = toml_edit::Item::Table(server_table);
+
+    // Ensure parent directory exists
+    if let Some(parent) = config_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create directory: {}", e))?;
+    }
+
+    let content = doc.to_string();
+    std::fs::write(config_path, &content)
+        .map_err(|e| format!("Failed to write {}: {}", config_path.display(), e))?;
+
+    // Match cli_config.rs: set 0600 permissions (config can contain env/header references)
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(config_path, std::fs::Permissions::from_mode(0o600));
+    }
+
+    log::debug!(
+        "[codex_mcp] added server '{}' to {}",
+        name,
+        config_path.display()
+    );
+
+    Ok(PluginOperationResult {
+        success: true,
+        message: format!("Added Codex MCP server '{}'", name),
+    })
+}
+
+/// Add a Codex MCP server to the user-level config ($CODEX_HOME/config.toml).
+pub fn add_codex_server(
+    name: &str,
+    config: &serde_json::Value,
+) -> Result<PluginOperationResult, String> {
+    let config_path = crate::storage::cli_config::codex_config_path()?;
+    log::debug!(
+        "[codex_mcp] add_codex_server: name={}, path={}",
+        name,
+        config_path.display()
+    );
+    add_codex_server_to_path(name, config, &config_path)
+}
+
+/// Internal: remove a Codex MCP server from a specific config file path.
+fn remove_codex_server_from_path(
+    name: &str,
+    config_path: &std::path::Path,
+) -> Result<PluginOperationResult, String> {
+    let content = std::fs::read_to_string(config_path)
+        .map_err(|e| format!("Failed to read {}: {}", config_path.display(), e))?;
+
+    let mut doc: toml_edit::DocumentMut = content
+        .parse::<toml_edit::DocumentMut>()
+        .map_err(|e| format!("TOML parse error in {}: {}", config_path.display(), e))?;
+
+    let mcp_table = doc
+        .get_mut("mcp_servers")
+        .and_then(|item| item.as_table_mut())
+        .ok_or_else(|| format!("No [mcp_servers] table found in {}", config_path.display()))?;
+
+    if mcp_table.remove(name).is_none() {
+        return Err(format!("Server '{}' not found in [mcp_servers]", name));
+    }
+
+    // If [mcp_servers] is now empty, remove it entirely
+    if mcp_table.is_empty() {
+        doc.remove("mcp_servers");
+    }
+
+    let output = doc.to_string();
+    std::fs::write(config_path, &output)
+        .map_err(|e| format!("Failed to write {}: {}", config_path.display(), e))?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(config_path, std::fs::Permissions::from_mode(0o600));
+    }
+
+    log::debug!(
+        "[codex_mcp] removed server '{}' from {}",
+        name,
+        config_path.display()
+    );
+
+    Ok(PluginOperationResult {
+        success: true,
+        message: format!("Removed Codex MCP server '{}'", name),
+    })
+}
+
+/// Remove a Codex MCP server from the specified scope config.
+///
+/// - scope="user" → remove from $CODEX_HOME/config.toml
+/// - scope="project" → not supported yet
+pub fn remove_codex_server(
+    name: &str,
+    scope: &str,
+    _cwd: Option<&str>,
+) -> Result<PluginOperationResult, String> {
+    match scope {
+        "project" => Err("Project-scope MCP removal is not supported yet".into()),
+        "user" => {
+            let config_path = crate::storage::cli_config::codex_config_path()?;
+            log::debug!(
+                "[codex_mcp] remove_codex_server: name={}, path={}",
+                name,
+                config_path.display()
+            );
+            remove_codex_server_from_path(name, &config_path)
+        }
+        _ => Err(format!("Unknown scope: {}", scope)),
+    }
+}
+
 // ── Tests ──
 
 #[cfg(test)]
@@ -937,5 +1491,367 @@ mod tests {
         assert_eq!(entry.args[1], "8080");
         assert_eq!(entry.args[2], "***"); // contains "token"
         assert_eq!(entry.args[3], "***"); // the actual secret value doesn't match but "secret123" contains "secret"
+    }
+
+    // ── Codex MCP tests ──
+
+    #[test]
+    fn test_codex_mcp_add_preserves_comments() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let config_path = tmp.path().join("config.toml");
+
+        // Write initial config with comments
+        std::fs::write(
+            &config_path,
+            "# Main codex config\nmodel = \"o4-mini\"\n\n# My servers\n[mcp_servers.existing]\ncommand = \"old-server\"\n",
+        )
+        .unwrap();
+
+        let result = add_codex_server_to_path(
+            "new-server",
+            &serde_json::json!({"command": "my-cmd", "args": ["--flag"]}),
+            &config_path,
+        );
+        assert!(result.is_ok());
+        assert!(result.unwrap().success);
+
+        let content = std::fs::read_to_string(&config_path).unwrap();
+        // Comments should be preserved
+        assert!(content.contains("# Main codex config"));
+        assert!(content.contains("# My servers"));
+        // Both servers should exist
+        assert!(content.contains("[mcp_servers.existing]"));
+        assert!(content.contains("[mcp_servers.new-server]"));
+        assert!(content.contains("my-cmd"));
+    }
+
+    #[test]
+    fn test_codex_mcp_add_nested_headers() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let config_path = tmp.path().join("config.toml");
+
+        let result = add_codex_server_to_path(
+            "remote",
+            &serde_json::json!({
+                "url": "https://example.com/mcp",
+                "http_headers": {"X-Custom": "val1"},
+                "env_http_headers": {"Authorization": "AUTH_TOKEN_VAR"},
+                "bearer_token_env_var": "MY_BEARER"
+            }),
+            &config_path,
+        );
+        assert!(result.is_ok());
+        assert!(result.unwrap().success);
+
+        let content = std::fs::read_to_string(&config_path).unwrap();
+        assert!(content.contains("https://example.com/mcp"));
+        assert!(content.contains("X-Custom"));
+        assert!(content.contains("AUTH_TOKEN_VAR"));
+        assert!(content.contains("MY_BEARER"));
+    }
+
+    #[test]
+    fn test_codex_mcp_remove_user() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let config_path = tmp.path().join("config.toml");
+
+        // Add two servers
+        std::fs::write(
+            &config_path,
+            "[mcp_servers.alpha]\ncommand = \"alpha-cmd\"\n\n[mcp_servers.beta]\ncommand = \"beta-cmd\"\n",
+        )
+        .unwrap();
+
+        let result = remove_codex_server_from_path("alpha", &config_path);
+        assert!(result.is_ok());
+        assert!(result.unwrap().success);
+
+        let content = std::fs::read_to_string(&config_path).unwrap();
+        assert!(!content.contains("alpha"));
+        assert!(content.contains("beta"));
+    }
+
+    #[test]
+    fn test_codex_mcp_remove_project_unsupported() {
+        let result = remove_codex_server("test", "project", None);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not supported"));
+    }
+
+    #[test]
+    fn test_codex_mcp_list_user_and_project() {
+        let tmp = tempfile::TempDir::new().unwrap();
+
+        // User config
+        let user_config = tmp.path().join("user_config.toml");
+        std::fs::write(
+            &user_config,
+            "[mcp_servers.user-srv]\ncommand = \"user-cmd\"\n",
+        )
+        .unwrap();
+
+        // Project config (simulating a project layer)
+        let project_dir = tmp.path().join("project");
+        std::fs::create_dir_all(project_dir.join(".codex")).unwrap();
+        let project_config = project_dir.join(".codex").join("config.toml");
+        std::fs::write(
+            &project_config,
+            "[mcp_servers.proj-srv]\nurl = \"https://proj.example.com\"\n",
+        )
+        .unwrap();
+
+        let servers = list_codex_configured_with_paths(&user_config, &[project_config]);
+
+        assert_eq!(servers.len(), 2);
+
+        let user_srv = servers.iter().find(|s| s.name == "user-srv").unwrap();
+        assert_eq!(user_srv.scope, "user");
+        assert_eq!(user_srv.agent, "codex");
+        assert_eq!(user_srv.server_type, "stdio");
+
+        let proj_srv = servers.iter().find(|s| s.name == "proj-srv").unwrap();
+        assert_eq!(proj_srv.scope, "project");
+        assert_eq!(proj_srv.agent, "codex");
+        assert_eq!(proj_srv.server_type, "streamable-http");
+    }
+
+    #[test]
+    fn test_codex_mcp_add_invalid_stdio_with_url() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let config_path = tmp.path().join("config.toml");
+
+        // Has command (stdio) but also has url — invalid
+        let result = add_codex_server_to_path(
+            "bad",
+            &serde_json::json!({"command": "cmd", "url": "https://x.com"}),
+            &config_path,
+        );
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not both"));
+    }
+
+    #[test]
+    fn test_codex_mcp_add_invalid_http_with_command() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let config_path = tmp.path().join("config.toml");
+
+        // Has url (http) but also tries to use stdio-only field 'args'
+        let result = add_codex_server_to_path(
+            "bad",
+            &serde_json::json!({"url": "https://x.com", "args": ["--flag"]}),
+            &config_path,
+        );
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("only valid for stdio"));
+    }
+
+    #[test]
+    fn test_codex_mcp_project_effective_merge() {
+        let tmp = tempfile::TempDir::new().unwrap();
+
+        // Root layer: defines "shared" with command=old
+        let root_config = tmp.path().join("root.toml");
+        std::fs::write(
+            &root_config,
+            "[mcp_servers.shared]\ncommand = \"old-cmd\"\n",
+        )
+        .unwrap();
+
+        // CWD layer: defines "shared" with command=new (overrides)
+        let cwd_config = tmp.path().join("cwd.toml");
+        std::fs::write(&cwd_config, "[mcp_servers.shared]\ncommand = \"new-cmd\"\n").unwrap();
+
+        let project_servers = collect_project_codex_servers(&[root_config, cwd_config]);
+
+        assert_eq!(project_servers.len(), 1);
+        let srv = &project_servers[0];
+        assert_eq!(srv.name, "shared");
+        assert_eq!(srv.command, Some("new-cmd".to_string()));
+    }
+
+    #[test]
+    fn test_codex_mcp_user_and_project_same_name() {
+        let tmp = tempfile::TempDir::new().unwrap();
+
+        // User config with "overlap"
+        let user_config = tmp.path().join("user.toml");
+        std::fs::write(
+            &user_config,
+            "[mcp_servers.overlap]\ncommand = \"user-ver\"\n",
+        )
+        .unwrap();
+
+        // Project config with "overlap"
+        let proj_config = tmp.path().join("proj.toml");
+        std::fs::write(
+            &proj_config,
+            "[mcp_servers.overlap]\ncommand = \"proj-ver\"\n",
+        )
+        .unwrap();
+
+        let servers = list_codex_configured_with_paths(&user_config, &[proj_config]);
+
+        // Both should appear (no cross-scope dedup)
+        assert_eq!(servers.len(), 2);
+        let scopes: Vec<&str> = servers.iter().map(|s| s.scope.as_str()).collect();
+        assert!(scopes.contains(&"user"));
+        assert!(scopes.contains(&"project"));
+    }
+
+    #[test]
+    fn test_codex_mcp_add_allows_timeout_fields() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let config_path = tmp.path().join("config.toml");
+
+        let result = add_codex_server_to_path(
+            "with-timeout",
+            &serde_json::json!({
+                "command": "my-cmd",
+                "startup_timeout_sec": 30,
+                "tool_timeout_sec": 60
+            }),
+            &config_path,
+        );
+        assert!(result.is_ok());
+        assert!(result.unwrap().success);
+
+        let content = std::fs::read_to_string(&config_path).unwrap();
+        assert!(content.contains("startup_timeout_sec"));
+        assert!(content.contains("tool_timeout_sec"));
+    }
+
+    #[test]
+    fn test_codex_mcp_add_allows_oauth_resource_on_http() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let config_path = tmp.path().join("config.toml");
+
+        let result = add_codex_server_to_path(
+            "oauth-srv",
+            &serde_json::json!({
+                "url": "https://example.com/mcp",
+                "oauth_resource": "https://auth.example.com"
+            }),
+            &config_path,
+        );
+        assert!(result.is_ok());
+        assert!(result.unwrap().success);
+
+        let content = std::fs::read_to_string(&config_path).unwrap();
+        assert!(content.contains("oauth_resource"));
+    }
+
+    #[test]
+    fn test_codex_mcp_add_rejects_bearer_token_plaintext() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let config_path = tmp.path().join("config.toml");
+
+        let result = add_codex_server_to_path(
+            "bad",
+            &serde_json::json!({
+                "url": "https://example.com",
+                "bearer_token": "sk-secret"
+            }),
+            &config_path,
+        );
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("bearer_token_env_var"));
+    }
+
+    #[test]
+    fn test_codex_mcp_add_name_with_dot() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let config_path = tmp.path().join("config.toml");
+
+        let result = add_codex_server_to_path(
+            "my.server",
+            &serde_json::json!({"command": "cmd"}),
+            &config_path,
+        );
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("'.'"));
+    }
+
+    #[test]
+    fn test_codex_mcp_add_name_validation() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let config_path = tmp.path().join("config.toml");
+
+        // Space in name
+        let result = add_codex_server_to_path(
+            "my server",
+            &serde_json::json!({"command": "cmd"}),
+            &config_path,
+        );
+        assert!(result.is_err());
+
+        // Slash in name
+        let result = add_codex_server_to_path(
+            "org/server",
+            &serde_json::json!({"command": "cmd"}),
+            &config_path,
+        );
+        assert!(result.is_err());
+
+        // Empty name
+        let result =
+            add_codex_server_to_path("", &serde_json::json!({"command": "cmd"}), &config_path);
+        assert!(result.is_err());
+
+        // Valid names
+        let result = add_codex_server_to_path(
+            "my-server_v2",
+            &serde_json::json!({"command": "cmd"}),
+            &config_path,
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_codex_mcp_add_tools_passthrough() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let config_path = tmp.path().join("config.toml");
+
+        let tools_value = serde_json::json!([
+            {"name": "read_file", "description": "Read a file"},
+            {"name": "write_file", "description": "Write a file"}
+        ]);
+
+        let result = add_codex_server_to_path(
+            "with-tools",
+            &serde_json::json!({
+                "command": "my-cmd",
+                "tools": tools_value
+            }),
+            &config_path,
+        );
+        assert!(result.is_ok());
+
+        let content = std::fs::read_to_string(&config_path).unwrap();
+        assert!(content.contains("tools"));
+        // The tools field should have been written (passthrough)
+        assert!(content.contains("read_file"));
+        assert!(content.contains("write_file"));
+    }
+
+    #[test]
+    fn test_codex_mcp_remove_existing_quoted_key() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let config_path = tmp.path().join("config.toml");
+
+        // Write a config with a quoted key (e.g., hand-written with special chars)
+        std::fs::write(
+            &config_path,
+            "[mcp_servers]\n\n[mcp_servers.\"my-special-server\"]\ncommand = \"special\"\n\n[mcp_servers.normal]\ncommand = \"norm\"\n",
+        )
+        .unwrap();
+
+        // Remove should work for the quoted key name (just the bare name, not quotes)
+        let result = remove_codex_server_from_path("my-special-server", &config_path);
+        assert!(result.is_ok());
+        assert!(result.unwrap().success);
+
+        let content = std::fs::read_to_string(&config_path).unwrap();
+        assert!(!content.contains("special"));
+        assert!(content.contains("normal"));
     }
 }

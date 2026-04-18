@@ -1487,14 +1487,73 @@ pub struct MarketplaceInfo {
     pub plugin_count: usize,
 }
 
+/// Source kind for Codex skills (mirrors loader.rs scan order).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum SkillSourceKind {
+    User,          // $HOME/.agents/skills/
+    ProjectAgents, // {layer}/.agents/skills/
+    ProjectCodex,  // {layer}/.codex/skills/
+    Legacy,        // $CODEX_HOME/skills/ (non .system/)
+    Bundled,       // $CODEX_HOME/skills/.system/
+}
+
+/// How a Codex skill was disabled.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum SkillDisabledBy {
+    Path,    // path rule match
+    Name,    // name rule match
+    Bundled, // [skills.bundled] enabled=false
+}
+
+fn default_agent_claude() -> String {
+    "claude".to_string()
+}
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StandaloneSkill {
     pub name: String,
     pub description: String,
     pub path: String,
-    /// "user" or "project"
+    /// "user" or "project" or "system"
     #[serde(default)]
     pub scope: String,
+    #[serde(default = "default_agent_claude")]
+    pub agent: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_kind: Option<SkillSourceKind>,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disabled_by: Option<SkillDisabledBy>,
+    #[serde(default = "default_true")]
+    pub can_edit: bool,
+    #[serde(default = "default_true")]
+    pub can_delete: bool,
+    #[serde(default = "default_true")]
+    pub can_toggle: bool,
+}
+
+impl Default for StandaloneSkill {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            description: String::new(),
+            path: String::new(),
+            scope: String::new(),
+            agent: "claude".into(),
+            source_kind: None,
+            enabled: true,
+            disabled_by: None,
+            can_edit: true,
+            can_delete: true,
+            can_toggle: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1664,6 +1723,24 @@ pub struct ConfiguredMcpServer {
     pub env_keys: Vec<String>,
     #[serde(default)]
     pub header_keys: Vec<String>,
+    #[serde(default = "default_agent_claude")]
+    pub agent: String,
+}
+
+impl Default for ConfiguredMcpServer {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            server_type: String::new(),
+            scope: String::new(),
+            command: None,
+            args: vec![],
+            url: None,
+            env_keys: vec![],
+            header_keys: vec![],
+            agent: "claude".into(),
+        }
+    }
 }
 
 // ── Keybinding types ──
