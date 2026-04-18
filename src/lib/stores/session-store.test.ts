@@ -3143,6 +3143,48 @@ describe("SessionStore reducer", () => {
       expect(store.mcpServers[0].name).toBe("new1");
       expect(store.mcpServers[1].name).toBe("new2");
     });
+
+    // CLI may return the same server from user/project/local scopes as
+    // separate entries — UI collapses them to one row, first occurrence wins.
+    it("deduplicates mcp_servers from session_init by name", () => {
+      store.run = makeRun("run-1");
+      store.phase = "running";
+      const events: BusEvent[] = [
+        {
+          type: "session_init",
+          run_id: "run-1",
+          session_id: "sess-1",
+          model: "claude-opus-4-6",
+          tools: ["Bash"],
+          cwd: "/",
+          mcp_servers: [
+            { name: "context7", status: "connected", scope: "user" },
+            { name: "context7", status: "connected", scope: "project" },
+            { name: "postgres", status: "connected" },
+            { name: "context7", status: "failed", scope: "local" },
+          ],
+        },
+      ];
+      store.applyEventBatch(events as BusEvent[]);
+
+      expect(store.mcpServers).toHaveLength(2);
+      expect(store.mcpServers[0].name).toBe("context7");
+      expect(store.mcpServers[0].scope).toBe("user");
+      expect(store.mcpServers[1].name).toBe("postgres");
+    });
+
+    it("updateMcpServers deduplicates by name", () => {
+      store.run = makeRun("run-1");
+      store.phase = "running";
+      store.updateMcpServers([
+        { name: "context7", status: "connected" },
+        { name: "context7", status: "connected" },
+        { name: "github", status: "connected" },
+      ]);
+      expect(store.mcpServers).toHaveLength(2);
+      expect(store.mcpServers[0].name).toBe("context7");
+      expect(store.mcpServers[1].name).toBe("github");
+    });
   });
 
   // ── canResumeRun ──
@@ -3900,6 +3942,33 @@ describe("SessionStore reducer", () => {
         expect(ok).toBe(true);
         expect(store2.cliVersion).toBe("1.2.3-sentinel");
         expect(store2.sessionCwd).toBe("/sentinel/path");
+      });
+    });
+
+    describe("_tryApplySnapshot mcp dedup", () => {
+      // Snapshots written before commit 550c8f4 may contain duplicate
+      // mcpServers entries. Restoring must dedupe so old snapshots don't
+      // continue to show 10 rows when CLI returned 3 distinct names.
+      it("deduplicates mcpServers when restoring legacy snapshot", () => {
+        const store1 = new SessionStore();
+        const body = JSON.stringify({
+          timeline: [],
+          usage: { inputTokens: 0 },
+          mcpServers: [
+            { name: "context7", status: "connected", scope: "user" },
+            { name: "context7", status: "connected", scope: "project" },
+            { name: "github", status: "connected" },
+            { name: "context7", status: "connected", scope: "local" },
+          ],
+        });
+        const ok = (
+          store1 as unknown as { _tryApplySnapshot(b: string): boolean }
+        )._tryApplySnapshot(body);
+        expect(ok).toBe(true);
+        expect(store1.mcpServers).toHaveLength(2);
+        expect(store1.mcpServers[0].name).toBe("context7");
+        expect(store1.mcpServers[0].scope).toBe("user");
+        expect(store1.mcpServers[1].name).toBe("github");
       });
     });
 

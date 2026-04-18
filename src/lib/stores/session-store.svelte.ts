@@ -34,6 +34,7 @@ import { updateInstalledVersion, getCliCommands } from "./cli-info.svelte";
 import * as snapshotCache from "$lib/utils/snapshot-cache";
 import { getTransport } from "$lib/transport";
 import { getAgentFeatures, type AgentFeatures } from "$lib/utils/agent-features";
+import { dedupeMcpServersByName } from "$lib/utils/mcp";
 
 // ── CLI permission mode normalization ──
 // CLI may return different names for the same mode across versions.
@@ -1365,7 +1366,7 @@ export class SessionStore {
       this.fastModeState = (obj.fastModeState as string) ?? "";
       this.apiKeySource = (obj.apiKeySource as string) ?? "";
       this.sessionCommands = (obj.sessionCommands ?? []) as CliCommand[];
-      this.mcpServers = (obj.mcpServers ?? []) as McpServerInfo[];
+      this.mcpServers = dedupeMcpServersByName((obj.mcpServers ?? []) as McpServerInfo[]);
       this.sessionTools = (obj.sessionTools ?? []) as string[];
       this.availableAgents = (obj.availableAgents ?? []) as string[];
       this.availableSkills = (obj.availableSkills ?? []) as string[];
@@ -2130,9 +2131,9 @@ export class SessionStore {
     this._clearSpawnTimeout();
   }
 
-  /** Update MCP servers (e.g. after getMcpStatus refresh). */
+  /** Update MCP servers (e.g. after getMcpStatus refresh). Deduplicates by name. */
   updateMcpServers(servers: McpServerInfo[]): void {
-    this.mcpServers = servers;
+    this.mcpServers = dedupeMcpServersByName(servers);
   }
 
   /** Resolve an AskUserQuestion tool: transition from ask_pending → success. */
@@ -2355,9 +2356,9 @@ export class SessionStore {
             typeof c === "string" ? { name: c, description: "", aliases: [] } : (c as CliCommand),
           );
         }
-        // Store MCP servers (per-session state)
+        // Store MCP servers (per-session state, deduplicate by name)
         if (ev.mcp_servers && ev.mcp_servers.length > 0) {
-          this.mcpServers = ev.mcp_servers;
+          this.mcpServers = dedupeMcpServersByName(ev.mcp_servers);
         }
         // Store CLI verbose fields
         if (ev.claude_code_version) {
