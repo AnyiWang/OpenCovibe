@@ -2130,9 +2130,14 @@ export class SessionStore {
     this._clearSpawnTimeout();
   }
 
-  /** Update MCP servers (e.g. after getMcpStatus refresh). */
+  /** Update MCP servers (e.g. after getMcpStatus refresh). Deduplicates by name. */
   updateMcpServers(servers: McpServerInfo[]): void {
-    this.mcpServers = servers;
+    const seen = new Set<string>();
+    this.mcpServers = servers.filter((s) => {
+      if (seen.has(s.name)) return false;
+      seen.add(s.name);
+      return true;
+    });
   }
 
   /** Resolve an AskUserQuestion tool: transition from ask_pending → success. */
@@ -2355,9 +2360,14 @@ export class SessionStore {
             typeof c === "string" ? { name: c, description: "", aliases: [] } : (c as CliCommand),
           );
         }
-        // Store MCP servers (per-session state)
+        // Store MCP servers (per-session state, deduplicate by name)
         if (ev.mcp_servers && ev.mcp_servers.length > 0) {
-          this.mcpServers = ev.mcp_servers;
+          const seen = new Set<string>();
+          this.mcpServers = ev.mcp_servers.filter((s) => {
+            if (seen.has(s.name)) return false;
+            seen.add(s.name);
+            return true;
+          });
         }
         // Store CLI verbose fields
         if (ev.claude_code_version) {
