@@ -792,6 +792,10 @@ pub async fn dispatch_command(
                 .get("platform_id")
                 .and_then(|v| v.as_str())
                 .map(String::from);
+            let permission_mode_override = params
+                .get("permission_mode_override")
+                .and_then(|v| v.as_str())
+                .map(String::from);
             crate::commands::session::start_session_impl(
                 &state.emitter,
                 &state.sessions,
@@ -803,6 +807,7 @@ pub async fn dispatch_command(
                 initial_message,
                 attachments,
                 platform_id,
+                permission_mode_override,
             )
             .await?;
             Ok(json!(true))
