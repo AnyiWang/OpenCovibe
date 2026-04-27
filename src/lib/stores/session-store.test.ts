@@ -515,6 +515,44 @@ describe("SessionStore reducer", () => {
       });
       expect(store.timeline).toHaveLength(0);
     });
+
+    it("surfaces first api_retry auth error in timeline", () => {
+      store.run = makeRun("run-1");
+      store.phase = "running";
+      store.applyEvent({
+        type: "raw",
+        run_id: "run-1",
+        source: "claude_system_api_retry",
+        data: {
+          attempt: 1,
+          max_retries: 10,
+          error_status: 401,
+          error: "authentication_failed",
+          retry_delay_ms: 512.7,
+        } as unknown as Record<string, unknown>,
+      });
+      expect(store.timeline).toHaveLength(1);
+      expect(store.timeline[0].content).toContain("[api_retry]");
+      expect(store.timeline[0].content).toContain("HTTP 401");
+    });
+
+    it("suppresses intermediate api_retry spam", () => {
+      store.run = makeRun("run-1");
+      store.phase = "running";
+      store.applyEvent({
+        type: "raw",
+        run_id: "run-1",
+        source: "claude_system_api_retry",
+        data: {
+          attempt: 2,
+          max_retries: 10,
+          error_status: 401,
+          error: "authentication_failed",
+          retry_delay_ms: 1024,
+        } as unknown as Record<string, unknown>,
+      });
+      expect(store.timeline).toHaveLength(0);
+    });
   });
 
   // ── Reset ──
