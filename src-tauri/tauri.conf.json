@@ -53,7 +53,8 @@
           "xclip | xsel"
         ],
         "recommends": [
-          "wl-clipboard"
+          "wl-clipboard",
+          "fonts-noto-cjk | fonts-wqy-microhei"
         ]
       }
     },
