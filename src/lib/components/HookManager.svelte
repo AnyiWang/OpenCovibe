@@ -110,8 +110,13 @@
         editorHandlers = g.hooks.map((h: unknown) => {
           if (h && typeof h === "object" && !Array.isArray(h)) {
             const hObj = h as Rec;
+            const rawType = hObj.type;
+            const resolvedType: HookHandler["type"] =
+              rawType === "prompt" || rawType === "mcp_tool" || rawType === "http"
+                ? rawType
+                : "command";
             return {
-              type: hObj.type === "prompt" ? "prompt" : "command",
+              type: resolvedType,
               command: typeof hObj.command === "string" ? hObj.command : undefined,
               prompt: typeof hObj.prompt === "string" ? hObj.prompt : undefined,
               timeout: typeof hObj.timeout === "number" ? hObj.timeout : undefined,
@@ -121,6 +126,12 @@
               model: typeof hObj.model === "string" ? hObj.model : undefined,
               once: typeof hObj.once === "boolean" ? hObj.once : undefined,
               if: typeof hObj.if === "string" ? hObj.if : undefined,
+              server: typeof hObj.server === "string" ? hObj.server : undefined,
+              tool: typeof hObj.tool === "string" ? hObj.tool : undefined,
+              input:
+                hObj.input && typeof hObj.input === "object" && !Array.isArray(hObj.input)
+                  ? (hObj.input as Record<string, unknown>)
+                  : undefined,
             } as HookHandler;
           }
           return { type: "command" as const, command: "" };
@@ -153,6 +164,11 @@
       const handler: Rec = { type: h.type };
       if (h.type === "command" && h.command) handler.command = h.command;
       if (h.type === "prompt" && h.prompt) handler.prompt = h.prompt;
+      if (h.type === "mcp_tool") {
+        if (h.server) handler.server = h.server;
+        if (h.tool) handler.tool = h.tool;
+        if (h.input && Object.keys(h.input).length > 0) handler.input = h.input;
+      }
       if (h.timeout != null && h.timeout > 0) handler.timeout = h.timeout;
       if (h.async === true) handler.async = true;
       if (h.once === true) handler.once = true;
@@ -395,6 +411,15 @@
                         editorHandlers[hi] = { ...handler, type: "prompt" };
                       }}>{t("hooks_handlerPrompt")}</button
                     >
+                    <button
+                      class="rounded px-2 py-0.5 text-xs font-medium transition-colors {handler.type ===
+                      'mcp_tool'
+                        ? 'bg-primary text-primary-foreground'
+                        : 'text-muted-foreground hover:text-foreground'}"
+                      onclick={() => {
+                        editorHandlers[hi] = { ...handler, type: "mcp_tool" };
+                      }}>{t("hooks_handlerMcpTool")}</button
+                    >
                   </div>
                   {#if editorHandlers.length > 1}
                     <button
@@ -415,7 +440,7 @@
                   {/if}
                 </div>
 
-                <!-- Command / Prompt input -->
+                <!-- Command / Prompt / MCP Tool input -->
                 {#if handler.type === "command"}
                   <input
                     type="text"
@@ -429,7 +454,7 @@
                       };
                     }}
                   />
-                {:else}
+                {:else if handler.type === "prompt"}
                   <textarea
                     class="w-full rounded-md border border-border bg-background px-3 py-1.5 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring resize-y"
                     rows="3"
@@ -459,6 +484,77 @@
                         };
                       }}
                     />
+                  </div>
+                {:else if handler.type === "mcp_tool"}
+                  <!-- MCP server name -->
+                  <div>
+                    <label class="block text-[10px] text-muted-foreground mb-0.5"
+                      >{t("hooks_mcpServer")}</label
+                    >
+                    <input
+                      type="text"
+                      class="w-full rounded-md border border-border bg-background px-2 py-1 text-xs text-foreground font-mono placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+                      placeholder={t("hooks_mcpServerPlaceholder")}
+                      value={handler.server ?? ""}
+                      oninput={(e) => {
+                        editorHandlers[hi] = {
+                          ...handler,
+                          server: (e.target as HTMLInputElement).value || undefined,
+                        };
+                      }}
+                    />
+                  </div>
+                  <!-- MCP tool name -->
+                  <div>
+                    <label class="block text-[10px] text-muted-foreground mb-0.5"
+                      >{t("hooks_mcpTool")}</label
+                    >
+                    <input
+                      type="text"
+                      class="w-full rounded-md border border-border bg-background px-2 py-1 text-xs text-foreground font-mono placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+                      placeholder={t("hooks_mcpToolPlaceholder")}
+                      value={handler.tool ?? ""}
+                      oninput={(e) => {
+                        editorHandlers[hi] = {
+                          ...handler,
+                          tool: (e.target as HTMLInputElement).value || undefined,
+                        };
+                      }}
+                    />
+                  </div>
+                  <!-- Input JSON (optional) -->
+                  <div>
+                    <label class="block text-[10px] text-muted-foreground mb-0.5"
+                      >{t("hooks_mcpInput")}</label
+                    >
+                    <textarea
+                      class="w-full rounded-md border border-border bg-background px-2 py-1 text-xs text-foreground font-mono placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring resize-y"
+                      rows="3"
+                      placeholder={t("hooks_mcpInputPlaceholder")}
+                      value={handler.input ? JSON.stringify(handler.input, null, 2) : ""}
+                      oninput={(e) => {
+                        const raw = (e.target as HTMLTextAreaElement).value;
+                        if (!raw.trim()) {
+                          editorHandlers[hi] = { ...handler, input: undefined };
+                          return;
+                        }
+                        try {
+                          const parsed = JSON.parse(raw);
+                          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+                            editorHandlers[hi] = {
+                              ...handler,
+                              input: parsed as Record<string, unknown>,
+                            };
+                          }
+                        } catch {
+                          // Invalid JSON — preserve raw as last-good in input; don't overwrite.
+                          // User keeps editing; we'll re-parse on next keystroke.
+                        }
+                      }}
+                    ></textarea>
+                    <p class="mt-0.5 text-[10px] text-muted-foreground/70">
+                      {t("hooks_mcpInputHelp")}
+                    </p>
                   </div>
                 {/if}
 
