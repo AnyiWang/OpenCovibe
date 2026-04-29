@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { listConfiguredMcpServers, removeMcpServer } from "$lib/api";
+  import { listConfiguredMcpServers, removeMcpServer, listCodexMcpServers, removeCodexMcpServer } from "$lib/api";
   import { dbg, dbgWarn } from "$lib/utils/debug";
   import { t } from "$lib/i18n/index.svelte";
   import type { ConfiguredMcpServer } from "$lib/types";
@@ -26,6 +26,16 @@
     } | null;
   } = $props();
 
+  // ── Helpers ──
+
+  function serverKey(s: ConfiguredMcpServer): string {
+    return `${s.agent ?? "claude"}:${s.scope}:${s.name}`;
+  }
+
+  function displayTransport(t: string): string {
+    return t === "streamable-http" ? "HTTP" : t;
+  }
+
   // ── State ──
   let servers = $state<ConfiguredMcpServer[]>([]);
   let loading = $state(true);
@@ -42,8 +52,12 @@
   async function loadServers() {
     loading = true;
     try {
-      servers = await listConfiguredMcpServers(projectCwd || undefined);
-      dbg("mcp-configured", "loaded", { count: servers.length });
+      const [claude, codex] = await Promise.all([
+        listConfiguredMcpServers(projectCwd || undefined),
+        listCodexMcpServers(projectCwd || undefined),
+      ]);
+      servers = [...claude, ...codex];
+      dbg("mcp-configured", "loaded", { claude: claude.length, codex: codex.length });
     } catch (e) {
       dbgWarn("mcp-configured", "load error", e);
       servers = [];
@@ -54,7 +68,11 @@
 
   async function refreshServers() {
     try {
-      servers = await listConfiguredMcpServers(projectCwd || undefined);
+      const [claude, codex] = await Promise.all([
+        listConfiguredMcpServers(projectCwd || undefined),
+        listCodexMcpServers(projectCwd || undefined),
+      ]);
+      servers = [...claude, ...codex];
     } catch (e) {
       dbgWarn("mcp-configured", "refresh error", e);
     }
@@ -65,15 +83,20 @@
       title: t("mcp_removeTitle"),
       message: t("mcp_removeConfirm", { name: server.name, scope: server.scope }),
       onConfirm: async () => {
-        operationLoading = server.name;
+        operationLoading = serverKey(server);
         try {
-          const result = await removeMcpServer(server.name, server.scope, projectCwd || undefined);
+          let result;
+          if (server.agent === "codex") {
+            result = await removeCodexMcpServer(server.name, server.scope, projectCwd || undefined);
+          } else {
+            result = await removeMcpServer(server.name, server.scope, projectCwd || undefined);
+          }
           showToast(
             result.success ? t("mcp_removedServer", { name: server.name }) : result.message,
             result.success ? "success" : "error",
           );
           if (result.success) {
-            if (selectedServer?.name === server.name) {
+            if (selectedServer && serverKey(selectedServer) === serverKey(server)) {
               selectedServer = null;
             }
             await refreshServers();
@@ -93,6 +116,7 @@
       case "stdio":
         return "bg-blue-500/10 text-blue-600 dark:text-blue-400";
       case "http":
+      case "streamable-http":
         return "bg-teal-500/10 text-teal-600 dark:text-teal-400";
       case "sse":
         return "bg-purple-500/10 text-purple-600 dark:text-purple-400";
@@ -156,8 +180,8 @@
     <div class="w-[280px] shrink-0 overflow-y-auto space-y-1.5 pr-1">
       {#each servers as server}
         <div
-          class="w-full text-left rounded-lg border px-3 py-2 transition-colors cursor-pointer {selectedServer?.name ===
-            server.name && selectedServer?.scope === server.scope
+          class="w-full text-left rounded-lg border px-3 py-2 transition-colors cursor-pointer {selectedServer &&
+            serverKey(selectedServer) === serverKey(server)
             ? 'border-primary/50 bg-primary/5'
             : 'border-border/50 bg-muted/30 hover:bg-muted/50'}"
           onclick={() => (selectedServer = server)}
@@ -176,45 +200,53 @@
                     server.server_type,
                   )}"
                 >
-                  {server.server_type}
+                  {displayTransport(server.server_type)}
                 </span>
                 <span
                   class="rounded-full px-1.5 py-0.5 text-[10px] font-medium {scopeBadgeColor(
                     server.scope,
                   )}"
+                  title={server.agent === "codex" && server.scope === "project" ? "Project config (approx.)" : ""}
                 >
                   {server.scope}
                 </span>
+                {#if server.agent === "codex"}
+                  <span class="rounded-full px-1.5 py-0.5 text-[10px] font-medium bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
+                    {t("extend_agentBadge_codex")}
+                  </span>
+                {/if}
               </div>
             </div>
-            <button
-              class="shrink-0 rounded p-1 text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors disabled:opacity-50"
-              onclick={(e) => {
-                e.stopPropagation();
-                handleRemove(server);
-              }}
-              title={t("mcp_removeServerTooltip")}
-              disabled={operationLoading === server.name}
-            >
-              {#if operationLoading === server.name}
-                <div
-                  class="h-3.5 w-3.5 border-2 border-primary/30 border-t-primary rounded-full animate-spin"
-                ></div>
-              {:else}
-                <svg
-                  class="h-3.5 w-3.5"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  ><path d="M3 6h18" /><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" /><path
-                    d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"
-                  /></svg
-                >
-              {/if}
-            </button>
+            {#if !(server.agent === "codex" && server.scope === "project")}
+              <button
+                class="shrink-0 rounded p-1 text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors disabled:opacity-50"
+                onclick={(e) => {
+                  e.stopPropagation();
+                  handleRemove(server);
+                }}
+                title={t("mcp_removeServerTooltip")}
+                disabled={operationLoading === serverKey(server)}
+              >
+                {#if operationLoading === serverKey(server)}
+                  <div
+                    class="h-3.5 w-3.5 border-2 border-primary/30 border-t-primary rounded-full animate-spin"
+                  ></div>
+                {:else}
+                  <svg
+                    class="h-3.5 w-3.5"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    ><path d="M3 6h18" /><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" /><path
+                      d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"
+                    /></svg
+                  >
+                {/if}
+              </button>
+            {/if}
           </div>
         </div>
       {/each}
@@ -234,15 +266,21 @@
                     selectedServer.server_type,
                   )}"
                 >
-                  {selectedServer.server_type}
+                  {displayTransport(selectedServer.server_type)}
                 </span>
                 <span
                   class="rounded-full px-1.5 py-0.5 text-[10px] font-medium {scopeBadgeColor(
                     selectedServer.scope,
                   )}"
+                  title={selectedServer.agent === "codex" && selectedServer.scope === "project" ? "Project config (approx.)" : ""}
                 >
                   {selectedServer.scope}
                 </span>
+                {#if selectedServer.agent === "codex"}
+                  <span class="rounded-full px-1.5 py-0.5 text-[10px] font-medium bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
+                    {t("extend_agentBadge_codex")}
+                  </span>
+                {/if}
               </div>
             </div>
             <button
@@ -321,16 +359,18 @@
             </div>
           {/if}
 
-          <!-- Remove button -->
-          <div class="border-t border-border pt-3">
-            <button
-              class="rounded-md border border-destructive/30 px-3 py-1.5 text-xs text-destructive hover:bg-destructive/10 transition-colors disabled:opacity-50"
-              onclick={() => handleRemove(selectedServer!)}
-              disabled={operationLoading === selectedServer.name}
-            >
-              {operationLoading === selectedServer.name ? t("mcp_removing") : t("mcp_removeServer")}
-            </button>
-          </div>
+          <!-- Remove button (hidden for Codex project-scope) -->
+          {#if !(selectedServer.agent === "codex" && selectedServer.scope === "project")}
+            <div class="border-t border-border pt-3">
+              <button
+                class="rounded-md border border-destructive/30 px-3 py-1.5 text-xs text-destructive hover:bg-destructive/10 transition-colors disabled:opacity-50"
+                onclick={() => handleRemove(selectedServer!)}
+                disabled={operationLoading === serverKey(selectedServer)}
+              >
+                {operationLoading === serverKey(selectedServer) ? t("mcp_removing") : t("mcp_removeServer")}
+              </button>
+            </div>
+          {/if}
         </div>
       {:else}
         <div

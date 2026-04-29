@@ -22,6 +22,10 @@
     searchCommunitySkills,
     getCommunitySkillDetail,
     installCommunitySkill,
+    listCodexSkills,
+    createCodexSkill,
+    deleteCodexSkill,
+    toggleCodexSkill,
   } from "$lib/api";
   import { formatInstallCount, relativeTime } from "$lib/utils/format";
   import { renderMarkdown } from "$lib/utils/markdown";
@@ -68,7 +72,7 @@
   let loadWarnings = $state<string[]>([]);
   let searchQuery = $state("");
   let selectedCategory = $state<string | null>(null);
-  let selectedSkillPath = $state<string | null>(null);
+  let selectedSkillKey = $state<string | null>(null);
 
   // Skill editor state
   let editorMode = $state<null | "new" | "edit">(null);
@@ -78,6 +82,11 @@
   let editorScope = $state<"user" | "project">("user");
   let editorPath = $state("");
   let editorSaving = $state(false);
+  let editorAgent = $state<"claude" | "codex">("claude");
+
+  // Read-only detail state
+  let readonlyContent = $state<string | null>(null);
+  let readonlyLoading = $state(false);
 
   // Project CWD for project-scope skills
   let projectCwd = $state("");
@@ -166,6 +175,33 @@
     },
   ];
 
+  // ── Codex skill permission helpers ──
+
+  function canEditSkill(s: StandaloneSkill): boolean {
+    return s.agent === "codex" ? s.can_edit === true : s.can_edit !== false;
+  }
+  function canDeleteSkill(s: StandaloneSkill): boolean {
+    return s.agent === "codex" ? s.can_delete === true : s.can_delete !== false;
+  }
+  function canToggleSkill(s: StandaloneSkill): boolean {
+    return s.agent === "codex" ? s.can_toggle === true : s.can_toggle !== false;
+  }
+
+  function skillKey(s: StandaloneSkill): string {
+    return `${s.agent ?? "claude"}:${s.path}`;
+  }
+
+  async function loadCombinedSkills(cwd?: string): Promise<StandaloneSkill[]> {
+    const [claude, codex] = await Promise.allSettled([
+      listStandaloneSkills(cwd),
+      listCodexSkills(cwd),
+    ]);
+    return [
+      ...(claude.status === "fulfilled" ? claude.value : []),
+      ...(codex.status === "fulfilled" ? codex.value : []),
+    ];
+  }
+
   // ── Derived values ──
 
   let categories = $derived([
@@ -203,6 +239,7 @@
   let installedSlugsByScope = $derived.by(() => {
     const map: Record<string, Set<string>> = { user: new Set(), project: new Set() };
     for (const s of skills) {
+      if (s.agent === "codex") continue; // Codex skills don't participate in skills.sh install checks
       const slug = installedSlug(s.path);
       if (slug && s.scope && map[s.scope]) map[s.scope].add(slug);
     }
@@ -240,6 +277,7 @@
         listInstalledPlugins(),
         listStandaloneSkills(projectCwd || undefined),
         listMarketplaces(),
+        listCodexSkills(projectCwd || undefined),
       ]);
 
       if (results[0].status === "fulfilled") {
@@ -270,8 +308,15 @@
         warnings.push("marketplaces");
       }
 
+      if (results[4].status === "fulfilled") {
+        skills = [...skills, ...results[4].value];
+      } else {
+        dbgWarn("plugins", "codex skills load error", results[4].reason);
+        warnings.push("codex skills");
+      }
+
       loadWarnings = warnings;
-      loadError = warnings.length === 4;
+      loadError = warnings.length === 5;
 
       dbg("plugins", "loaded", {
         marketplace: plugins.length,
@@ -308,7 +353,7 @@
       dbg("plugins", "project-changed", { old: projectCwd, new: cwd });
       projectCwd = cwd;
       // Re-fetch skills for the new project context
-      listStandaloneSkills(projectCwd || undefined)
+      loadCombinedSkills(projectCwd || undefined)
         .then((s) => {
           skills = s;
         })
@@ -365,8 +410,9 @@
     editorDescription = "Brief description";
     editorContent = "# New Skill\n\nInstructions for Claude...";
     editorScope = "user";
+    editorAgent = "claude";
     editorPath = "";
-    selectedSkillPath = null;
+    selectedSkillKey = null;
   }
 
   function startEditSkill(skill: StandaloneSkill) {
@@ -378,7 +424,7 @@
     getSkillContent(skill.path, projectCwd || undefined)
       .then((raw) => {
         editorContent = raw;
-        selectedSkillPath = skill.path;
+        selectedSkillKey = skillKey(skill);
       })
       .catch((e) => {
         editorContent = t("plugin_loadFailedContent");
@@ -394,6 +440,18 @@
     editorPath = "";
   }
 
+  async function loadReadonlyContent(skill: StandaloneSkill) {
+    readonlyContent = null;
+    readonlyLoading = true;
+    try {
+      readonlyContent = await getSkillContent(skill.path, projectCwd || undefined);
+    } catch {
+      readonlyContent = null;
+    } finally {
+      readonlyLoading = false;
+    }
+  }
+
   async function handleCreateSkill() {
     const name = editorName.trim();
     if (!name) {
@@ -401,15 +459,26 @@
       return;
     }
     editorSaving = true;
-    dbg("plugins", "createSkill", { name, scope: editorScope });
+    dbg("plugins", "createSkill", { name, scope: editorScope, agent: editorAgent });
     try {
-      const skill = await createSkill(
-        name,
-        editorDescription.trim(),
-        editorContent,
-        editorScope,
-        projectCwd || undefined,
-      );
+      let skill: StandaloneSkill;
+      if (editorAgent === "codex") {
+        skill = await createCodexSkill(
+          name,
+          editorDescription.trim(),
+          editorContent,
+          editorScope,
+          projectCwd || undefined,
+        );
+      } else {
+        skill = await createSkill(
+          name,
+          editorDescription.trim(),
+          editorContent,
+          editorScope,
+          projectCwd || undefined,
+        );
+      }
       showToast(t("plugin_createdSkill", { name: skill.name }), "success");
       cancelEditor();
       await refreshSkills();
@@ -440,13 +509,17 @@
       title: t("plugin_deleteSkillTitle"),
       message: t("plugin_deleteSkillMsg", { name: skill.name }),
       onConfirm: async () => {
-        operationLoading = skill.path;
-        dbg("plugins", "deleteSkill", { path: skill.path });
+        operationLoading = skillKey(skill);
+        dbg("plugins", "deleteSkill", { path: skill.path, agent: skill.agent });
         try {
-          await deleteSkill(skill.path, projectCwd || undefined);
+          if (skill.agent === "codex") {
+            await deleteCodexSkill(skill.path, projectCwd || undefined);
+          } else {
+            await deleteSkill(skill.path, projectCwd || undefined);
+          }
           showToast(t("plugin_deletedSkill", { name: skill.name }), "success");
-          if (selectedSkillPath === skill.path) {
-            selectedSkillPath = null;
+          if (selectedSkillKey === skillKey(skill)) {
+            selectedSkillKey = null;
           }
           cancelEditor();
           await refreshSkills();
@@ -461,9 +534,27 @@
 
   async function refreshSkills() {
     try {
-      skills = await listStandaloneSkills(projectCwd || undefined);
+      skills = await loadCombinedSkills(projectCwd || undefined);
     } catch (e) {
       dbgWarn("plugins", "refresh skills error", e);
+    }
+  }
+
+  async function handleToggleSkill(skill: StandaloneSkill) {
+    const newEnabled = skill.enabled === false;
+    operationLoading = skillKey(skill);
+    try {
+      await toggleCodexSkill(skill.path, newEnabled, projectCwd || undefined);
+      showToast(
+        newEnabled ? t("plugin_skillEnabled", { name: skill.name })
+                   : t("plugin_skillDisabled", { name: skill.name }),
+        "success",
+      );
+      await refreshSkills();
+    } catch (e) {
+      showToast(t("plugin_failedToggleSkill", { error: String(e) }), "error");
+    } finally {
+      operationLoading = null;
     }
   }
 
@@ -908,6 +999,25 @@
             />
           </div>
 
+          <!-- Agent selector -->
+          <div>
+            <label class="block text-xs font-medium text-muted-foreground mb-1">{t("plugin_editorAgent")}</label>
+            <div class="flex rounded-md border border-border p-0.5 w-fit">
+              <button
+                class="rounded px-2.5 py-1 text-xs font-medium transition-colors {editorAgent === 'claude'
+                  ? 'bg-primary text-primary-foreground'
+                  : 'text-muted-foreground hover:text-foreground'}"
+                onclick={() => (editorAgent = "claude")}
+              >{t("extend_agentBadge_claude")}</button>
+              <button
+                class="rounded px-2.5 py-1 text-xs font-medium transition-colors {editorAgent === 'codex'
+                  ? 'bg-primary text-primary-foreground'
+                  : 'text-muted-foreground hover:text-foreground'}"
+                onclick={() => (editorAgent = "codex")}
+              >{t("extend_agentBadge_codex")}</button>
+            </div>
+          </div>
+
           <div>
             <label class="block text-xs font-medium text-muted-foreground mb-1"
               >{t("plugin_editorScope")}</label
@@ -1300,13 +1410,24 @@
             <div class="w-[280px] shrink-0 overflow-y-auto space-y-1.5 pr-1">
               {#each skills as skill}
                 <div
-                  class="w-full text-left rounded-lg border px-3 py-2 transition-colors cursor-pointer {selectedSkillPath ===
-                    skill.path && !editorMode
+                  class="w-full text-left rounded-lg border px-3 py-2 transition-colors cursor-pointer {skill.enabled === false ? 'opacity-50' : ''} {selectedSkillKey ===
+                    skillKey(skill) && !editorMode
                     ? 'border-primary/50 bg-primary/5'
                     : 'border-border/50 bg-muted/30 hover:bg-muted/50'}"
-                  onclick={() => startEditSkill(skill)}
+                  onclick={() => {
+                    if (canEditSkill(skill)) {
+                      startEditSkill(skill);
+                    } else {
+                      cancelEditor();
+                      selectedSkillKey = skillKey(skill);
+                      loadReadonlyContent(skill);
+                    }
+                  }}
                   onkeydown={(e) => {
-                    if (e.key === "Enter") startEditSkill(skill);
+                    if (e.key === "Enter") {
+                      if (canEditSkill(skill)) startEditSkill(skill);
+                      else { cancelEditor(); selectedSkillKey = skillKey(skill); loadReadonlyContent(skill); }
+                    }
                   }}
                   role="button"
                   tabindex="0"
@@ -1316,7 +1437,7 @@
                       <span class="text-sm font-medium text-foreground truncate block"
                         >{skill.name}</span
                       >
-                      <div class="flex items-center gap-2 mt-0.5">
+                      <div class="flex items-center gap-1.5 mt-0.5 flex-wrap">
                         {#if skill.scope}
                           <span
                             class="rounded-full px-1.5 py-0.5 text-[10px] font-medium {skill.scope ===
@@ -1325,39 +1446,90 @@
                               : 'bg-muted text-muted-foreground'}">{skill.scope}</span
                           >
                         {/if}
+                        {#if skill.agent === "codex"}
+                          <span class="rounded-full px-1.5 py-0.5 text-[10px] font-medium bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
+                            {t("extend_agentBadge_codex")}
+                          </span>
+                        {/if}
+                        {#if skill.source_kind === "bundled"}
+                          <span class="rounded-full px-1.5 py-0.5 text-[10px] font-medium bg-violet-500/10 text-violet-600 dark:text-violet-400">
+                            {t("extend_skills_sourceKind_bundled")}
+                          </span>
+                        {:else if skill.source_kind === "legacy"}
+                          <span class="rounded-full px-1.5 py-0.5 text-[10px] font-medium bg-amber-500/10 text-amber-600 dark:text-amber-400">
+                            {t("extend_skills_sourceKind_legacy")}
+                          </span>
+                        {:else if skill.source_kind === "project-codex"}
+                          <span class="rounded-full px-1.5 py-0.5 text-[10px] font-medium bg-cyan-500/10 text-cyan-600 dark:text-cyan-400">
+                            {t("extend_skills_sourceKind_projectCodex")}
+                          </span>
+                        {:else if skill.source_kind === "project-agents"}
+                          <span class="rounded-full px-1.5 py-0.5 text-[10px] font-medium bg-green-500/10 text-green-600 dark:text-green-400">
+                            {t("extend_skills_sourceKind_projectAgents")}
+                          </span>
+                        {/if}
                         <span class="text-[11px] text-muted-foreground truncate"
                           >{skill.description}</span
                         >
                       </div>
                     </div>
-                    <button
-                      class="shrink-0 rounded p-1 text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
-                      onclick={(e) => {
-                        e.stopPropagation();
-                        handleDeleteSkill(skill);
-                      }}
-                      title={t("plugin_deleteSkillTooltip")}
-                      disabled={operationLoading === skill.path}
-                    >
-                      <svg
-                        class="h-3.5 w-3.5"
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        stroke-width="2"
-                        stroke-linecap="round"
-                        stroke-linejoin="round"
-                        ><path d="M3 6h18" /><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" /><path
-                          d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"
-                        /></svg
-                      >
-                    </button>
+                    <div class="flex items-center gap-1 shrink-0">
+                      {#if skill.agent === "codex" && canToggleSkill(skill)}
+                        <button
+                          class="rounded p-1 text-muted-foreground hover:text-foreground transition-colors"
+                          onclick={(e) => {
+                            e.stopPropagation();
+                            handleToggleSkill(skill);
+                          }}
+                          title={skill.enabled === false ? t("plugin_skillToggleEnable") : t("plugin_skillToggleDisable")}
+                          disabled={operationLoading === skillKey(skill)}
+                        >
+                          <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            {#if skill.enabled === false}
+                              <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94" /><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19" /><line x1="1" x2="23" y1="1" y2="23" />
+                            {:else}
+                              <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle cx="12" cy="12" r="3" />
+                            {/if}
+                          </svg>
+                        </button>
+                      {:else if skill.agent === "codex" && !canToggleSkill(skill)}
+                        <span class="rounded p-1 text-muted-foreground/50" title={skill.disabled_by ?? t("plugin_skillCannotToggle")}>
+                          <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <rect width="18" height="11" x="3" y="11" rx="2" ry="2" /><path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                          </svg>
+                        </span>
+                      {/if}
+                      {#if canDeleteSkill(skill)}
+                        <button
+                          class="rounded p-1 text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
+                          onclick={(e) => {
+                            e.stopPropagation();
+                            handleDeleteSkill(skill);
+                          }}
+                          title={t("plugin_deleteSkillTooltip")}
+                          disabled={operationLoading === skillKey(skill)}
+                        >
+                          <svg
+                            class="h-3.5 w-3.5"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="2"
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                            ><path d="M3 6h18" /><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" /><path
+                              d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"
+                            /></svg
+                          >
+                        </button>
+                      {/if}
+                    </div>
                   </div>
                 </div>
               {/each}
             </div>
 
-            <!-- Right: Edit editor or placeholder -->
+            <!-- Right: Edit editor / read-only detail / placeholder -->
             <div class="flex-1 min-w-0 overflow-y-auto">
               {#if editorMode === "edit"}
                 <!-- Skill edit editor -->
@@ -1398,6 +1570,70 @@
                     </button>
                   </div>
                 </div>
+              {:else if selectedSkillKey && !editorMode}
+                {@const skill = skills.find(s => skillKey(s) === selectedSkillKey)}
+                {#if skill}
+                  <div class="rounded-lg border border-border/50 bg-muted/20 p-4 space-y-3">
+                    <div class="flex items-start justify-between">
+                      <div>
+                        <h3 class="text-sm font-semibold">{skill.name}</h3>
+                        <p class="text-[11px] text-muted-foreground mt-1">{skill.description}</p>
+                        <div class="flex items-center gap-1.5 mt-1.5 flex-wrap">
+                          {#if skill.scope}
+                            <span class="rounded-full px-1.5 py-0.5 text-[10px] font-medium {skill.scope === 'project' ? 'bg-blue-500/10 text-blue-600 dark:text-blue-400' : 'bg-muted text-muted-foreground'}">{skill.scope}</span>
+                          {/if}
+                          {#if skill.agent === "codex"}
+                            <span class="rounded-full px-1.5 py-0.5 text-[10px] font-medium bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">{t("extend_agentBadge_codex")}</span>
+                          {/if}
+                          {#if skill.source_kind === "bundled"}
+                            <span class="rounded-full px-1.5 py-0.5 text-[10px] font-medium bg-violet-500/10 text-violet-600 dark:text-violet-400">{t("extend_skills_sourceKind_bundled")}</span>
+                          {:else if skill.source_kind === "legacy"}
+                            <span class="rounded-full px-1.5 py-0.5 text-[10px] font-medium bg-amber-500/10 text-amber-600 dark:text-amber-400">{t("extend_skills_sourceKind_legacy")}</span>
+                          {:else if skill.source_kind === "project-codex"}
+                            <span class="rounded-full px-1.5 py-0.5 text-[10px] font-medium bg-cyan-500/10 text-cyan-600 dark:text-cyan-400">{t("extend_skills_sourceKind_projectCodex")}</span>
+                          {:else if skill.source_kind === "project-agents"}
+                            <span class="rounded-full px-1.5 py-0.5 text-[10px] font-medium bg-green-500/10 text-green-600 dark:text-green-400">{t("extend_skills_sourceKind_projectAgents")}</span>
+                          {/if}
+                          {#if skill.enabled === false}
+                            <span class="rounded-full px-1.5 py-0.5 text-[10px] font-medium bg-amber-500/10 text-amber-600 dark:text-amber-400">{t("plugin_skillStatusDisabled")}</span>
+                          {/if}
+                        </div>
+                      </div>
+                      <button
+                        class="shrink-0 text-muted-foreground hover:text-foreground"
+                        onclick={() => (selectedSkillKey = null)}
+                        title={t("common_close")}
+                      >
+                        <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18" /><path d="m6 6 12 12" /></svg>
+                      </button>
+                    </div>
+                    <div class="text-[11px] font-mono text-muted-foreground border-t border-border pt-2">{skill.path}</div>
+                    <!-- Read-only SKILL.md content -->
+                    {#if readonlyLoading}
+                      <div class="border-t border-border pt-3 flex items-center gap-2">
+                        <div class="h-3.5 w-3.5 border-2 border-primary/30 border-t-primary rounded-full animate-spin"></div>
+                        <span class="text-[11px] text-muted-foreground">{t("plugin_skillLoadingContent")}</span>
+                      </div>
+                    {:else if readonlyContent}
+                      <div class="border-t border-border pt-3">
+                        <div class="prose prose-sm dark:prose-invert max-w-none text-xs">
+                          {@html renderMarkdown(readonlyContent)}
+                        </div>
+                      </div>
+                    {/if}
+                    {#if canDeleteSkill(skill)}
+                      <div class="border-t border-border pt-3">
+                        <button
+                          class="rounded-md border border-destructive/30 px-3 py-1.5 text-xs text-destructive hover:bg-destructive/10 transition-colors disabled:opacity-50"
+                          onclick={() => handleDeleteSkill(skill)}
+                          disabled={operationLoading === skillKey(skill)}
+                        >
+                          {t("plugin_deleteSkillTitle")}
+                        </button>
+                      </div>
+                    {/if}
+                  </div>
+                {/if}
               {:else}
                 <div
                   class="rounded-lg border border-dashed border-border/50 p-6 flex items-center justify-center h-full"
