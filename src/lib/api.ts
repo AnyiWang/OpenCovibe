@@ -559,9 +559,22 @@ export async function respondHookCallback(
   runId: string,
   requestId: string,
   decision: "allow" | "deny" | "defer",
+  // PreToolUse hooks can rewrite tool input alongside `allow` (CLI v2.1.85+).
+  // Only honored by the CLI when decision == "allow".
+  updatedInput?: Record<string, unknown>,
 ): Promise<void> {
-  dbg("api", "respondHookCallback", { runId, requestId, decision });
-  return invoke("respond_hook_callback", { runId, requestId, decision });
+  dbg("api", "respondHookCallback", {
+    runId,
+    requestId,
+    decision,
+    hasUpdatedInput: updatedInput != null,
+  });
+  return invoke("respond_hook_callback", {
+    runId,
+    requestId,
+    decision,
+    updatedInput: updatedInput ?? null,
+  });
 }
 
 // ── Typed control request wrappers ──

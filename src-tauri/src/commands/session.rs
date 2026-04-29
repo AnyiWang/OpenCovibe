@@ -1406,17 +1406,26 @@ pub async fn respond_hook_callback(
     run_id: String,
     request_id: String,
     decision: String, // "allow", "deny", or "defer" (defer pauses tool call in headless sessions)
+    // PreToolUse hooks can rewrite tool input alongside `decision: "allow"` (CLI v2.1.85+).
+    // Only honored when decision == "allow"; CLI ignores it for deny/defer.
+    updated_input: Option<serde_json::Value>,
 ) -> Result<(), String> {
     log::debug!(
-        "[session] respond_hook_callback: run_id={}, req_id={}, decision={}",
+        "[session] respond_hook_callback: run_id={}, req_id={}, decision={}, has_updated_input={}",
         run_id,
         request_id,
-        decision
+        decision,
+        updated_input.is_some(),
     );
 
     let cmd_tx = get_cmd_tx(&sessions, &run_id).await?;
 
-    let response = serde_json::json!({ "decision": decision });
+    let mut response = serde_json::json!({ "decision": decision });
+    if decision == "allow" {
+        if let Some(input) = updated_input {
+            response["updatedInput"] = input;
+        }
+    }
 
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
     cmd_tx
