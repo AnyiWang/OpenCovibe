@@ -992,11 +992,13 @@ pub async fn dispatch_command(
             let run_id = extract_str(&params, "run_id")?;
             let request_id = extract_str(&params, "request_id")?;
             let decision = extract_str(&params, "decision")?;
+            let updated_input = params.get("updated_input").cloned();
             log::debug!(
-                "[dispatch] respond_hook_callback: run_id={}, req_id={}, decision={}",
+                "[dispatch] respond_hook_callback: run_id={}, req_id={}, decision={}, has_updated_input={}",
                 run_id,
                 request_id,
-                decision
+                decision,
+                updated_input.is_some(),
             );
             let cmd_tx = {
                 let map = state.sessions.lock().await;
@@ -1004,7 +1006,12 @@ pub async fn dispatch_command(
                     .map(|h| h.cmd_tx.clone())
                     .ok_or_else(|| format!("Session {} not found", run_id))?
             };
-            let response = json!({ "decision": decision });
+            let mut response = json!({ "decision": decision });
+            if decision == "allow" {
+                if let Some(input) = updated_input {
+                    response["updatedInput"] = input;
+                }
+            }
             let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
             cmd_tx
                 .send(ActorCommand::RespondHookCallback {
