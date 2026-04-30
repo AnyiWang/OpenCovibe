@@ -1414,6 +1414,9 @@
   "hooks_groupCount": "{count} 组",
   "hooks_handlerCount": "{count} 个处理器",
   "hooks_refresh": "刷新",
+  "hooks_agentLabel": "代理",
+  "hooks_claudeWarning": "Claude hooks 警告：{detail}",
+  "hooks_codexWarning": "Codex hooks 警告：{detail}",
 
   "todos_empty": "当前没有待办事项。",
 

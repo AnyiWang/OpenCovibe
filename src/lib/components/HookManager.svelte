@@ -1,10 +1,12 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { getCliConfig, updateCliConfig } from "$lib/api";
+  import { getCliConfig, updateCliConfig, getCodexHooks, updateCodexHooks } from "$lib/api";
   import { dbg, dbgWarn } from "$lib/utils/debug";
   import { t } from "$lib/i18n/index.svelte";
   import {
     HOOK_EVENT_TYPES,
+    CODEX_HOOK_EVENT_TYPES,
+    readTimeout,
     normalizeForDisplay,
     addGroup,
     removeGroup,
@@ -14,10 +16,19 @@
 
   type Rec = Record<string, any>;
 
+  interface TaggedGroup {
+    agent: "claude" | "codex";
+    group: unknown;
+    originalIndex: number;
+  }
+
   // ── State ──
   let cliConfig = $state<Record<string, unknown> | null>(null);
+  let codexHooks = $state<Rec | null>(null);
   let loading = $state(true);
   let loadError = $state<string | null>(null);
+  let claudeLoadWarning = $state<string | null>(null);
+  let codexHooksWarning = $state<string | null>(null);
   let saving = $state(false);
 
   // Toast
@@ -27,6 +38,7 @@
 
   // Editor
   let editorMode = $state<null | "new" | "edit">(null);
+  let editorAgent = $state<"claude" | "codex">("claude");
   let editorEvent = $state<string>(HOOK_EVENT_TYPES[0]);
   let editorMatcher = $state("");
   let editorHandlers = $state<HookHandler[]>([]);
@@ -41,9 +53,38 @@
 
   // ── Derived ──
   let rawHooks = $derived(cliConfig ? cliConfig.hooks : null);
-  let displayHooks = $derived(normalizeForDisplay(rawHooks));
-  let displayEntries = $derived(Object.entries(displayHooks));
-  let totalGroups = $derived(displayEntries.reduce((sum, [, groups]) => sum + groups.length, 0));
+
+  let availableEvents = $derived(
+    editorAgent === "codex" ? CODEX_HOOK_EVENT_TYPES : HOOK_EVENT_TYPES,
+  );
+
+  let displayEntries = $derived.by(() => {
+    const map = new Map<string, TaggedGroup[]>();
+    // Claude hooks
+    for (const [event, groups] of Object.entries(normalizeForDisplay(rawHooks))) {
+      map.set(
+        event,
+        groups.map((g, i) => ({ agent: "claude" as const, group: g, originalIndex: i })),
+      );
+    }
+    // Codex hooks — merge into same event key or add new
+    for (const [event, groups] of Object.entries(normalizeForDisplay(codexHooks))) {
+      const existing = map.get(event) ?? [];
+      existing.push(
+        ...(groups as unknown[]).map((g, i) => ({
+          agent: "codex" as const,
+          group: g,
+          originalIndex: i,
+        })),
+      );
+      map.set(event, existing);
+    }
+    return [...map.entries()];
+  });
+
+  let totalGroups = $derived(
+    displayEntries.reduce((sum, [, groups]) => sum + groups.length, 0),
+  );
 
   // ── Lifecycle ──
   onMount(() => {
@@ -53,28 +94,58 @@
   async function loadConfig() {
     loading = true;
     loadError = null;
-    try {
-      cliConfig = await getCliConfig();
-      dbg("hooks", "loaded config", { hasHooks: !!cliConfig?.hooks });
-    } catch (e) {
-      loadError = String(e);
-      dbgWarn("hooks", "load error", e);
-    } finally {
-      loading = false;
+    claudeLoadWarning = null;
+    codexHooksWarning = null;
+
+    const [claudeRes, codexRes] = await Promise.allSettled([getCliConfig(), getCodexHooks()]);
+
+    // Claude
+    if (claudeRes.status === "fulfilled") {
+      cliConfig = claudeRes.value;
+      claudeLoadWarning = null;
+    } else {
+      cliConfig = null;
+      claudeLoadWarning = String(claudeRes.reason);
     }
+
+    // Codex
+    if (codexRes.status === "fulfilled") {
+      codexHooks = codexRes.value.hooks as Rec;
+      codexHooksWarning = codexRes.value.warning ?? null;
+    } else {
+      codexHooks = null;
+      codexHooksWarning = String(codexRes.reason);
+    }
+
+    // loadError only when both failed — page is fully unusable
+    const claudeFailed = claudeRes.status === "rejected";
+    const codexFailed = codexRes.status === "rejected";
+    loadError = claudeFailed && codexFailed ? (claudeLoadWarning ?? codexHooksWarning) : null;
+
+    dbg("hooks", "loaded config", {
+      hasClaudeHooks: !!cliConfig?.hooks,
+      hasCodexHooks: !!codexHooks,
+    });
+    loading = false;
   }
 
   // ── Save helpers ──
-  async function saveHooks(newHooks: Rec) {
+  /** Returns true on success, false on failure. */
+  async function saveHooks(newHooks: Rec, agent: "claude" | "codex"): Promise<boolean> {
     saving = true;
     try {
-      const updated = await updateCliConfig({ hooks: newHooks });
-      cliConfig = updated;
+      if (agent === "codex") {
+        codexHooks = await updateCodexHooks(newHooks);
+      } else {
+        cliConfig = await updateCliConfig({ hooks: newHooks });
+      }
       showToast(t("hooks_saved"), "success");
-      dbg("hooks", "saved", { events: Object.keys(newHooks) });
+      dbg("hooks", "saved", { agent, events: Object.keys(newHooks) });
+      return true;
     } catch (e) {
       showToast(t("hooks_saveFailed", { error: String(e) }), "error");
       dbgWarn("hooks", "save error", e);
+      return false;
     } finally {
       saving = false;
     }
@@ -92,14 +163,16 @@
   // ── Editor ──
   function startAddGroup() {
     editorMode = "new";
-    editorEvent = HOOK_EVENT_TYPES[0];
+    // Keep editorAgent from last selection (default "claude")
+    editorEvent = editorAgent === "codex" ? CODEX_HOOK_EVENT_TYPES[0] : HOOK_EVENT_TYPES[0];
     editorMatcher = "";
     editorHandlers = [{ type: "command", command: "" }];
     editorGroupIndex = 0;
   }
 
-  function startEditGroup(event: string, index: number, group: unknown) {
+  function startEditGroup(event: string, index: number, group: unknown, agent: "claude" | "codex") {
     editorMode = "edit";
+    editorAgent = agent;
     editorEvent = event;
     editorGroupIndex = index;
 
@@ -110,11 +183,12 @@
         editorHandlers = g.hooks.map((h: unknown) => {
           if (h && typeof h === "object" && !Array.isArray(h)) {
             const hObj = h as Rec;
+            const timeout = readTimeout(hObj);
             return {
               type: hObj.type === "prompt" ? "prompt" : "command",
               command: typeof hObj.command === "string" ? hObj.command : undefined,
               prompt: typeof hObj.prompt === "string" ? hObj.prompt : undefined,
-              timeout: typeof hObj.timeout === "number" ? hObj.timeout : undefined,
+              timeout,
               async: typeof hObj.async === "boolean" ? hObj.async : undefined,
               statusMessage:
                 typeof hObj.statusMessage === "string" ? hObj.statusMessage : undefined,
@@ -150,6 +224,15 @@
     const group: Rec = {};
     if (editorMatcher.trim()) group.matcher = editorMatcher.trim();
     group.hooks = editorHandlers.map((h) => {
+      if (editorAgent === "codex") {
+        // Codex: only output known valid fields
+        const handler: Rec = { type: "command" };
+        if (h.command) handler.command = h.command;
+        if (h.timeout != null && h.timeout > 0) handler.timeout = h.timeout;
+        if (h.statusMessage) handler.statusMessage = h.statusMessage;
+        return handler;
+      }
+      // Claude: existing logic
       const handler: Rec = { type: h.type };
       if (h.type === "command" && h.command) handler.command = h.command;
       if (h.type === "prompt" && h.prompt) handler.prompt = h.prompt;
@@ -166,23 +249,25 @@
 
   async function handleSaveEditor() {
     const group = buildGroupFromEditor();
+    const source = editorAgent === "codex" ? codexHooks : rawHooks;
     let newHooks: Rec;
     if (editorMode === "new") {
-      newHooks = addGroup(rawHooks, editorEvent, group);
+      newHooks = addGroup(source, editorEvent, group);
     } else {
-      newHooks = patchGroup(rawHooks, editorEvent, editorGroupIndex, group);
+      newHooks = patchGroup(source, editorEvent, editorGroupIndex, group);
     }
-    await saveHooks(newHooks);
-    editorMode = null;
+    const ok = await saveHooks(newHooks, editorAgent);
+    if (ok) editorMode = null;
   }
 
-  function handleDeleteGroup(event: string, index: number) {
+  function handleDeleteGroup(event: string, index: number, agent: "claude" | "codex") {
     confirmAction = {
       title: t("hooks_deleteGroup"),
       message: t("hooks_deleteGroupMsg"),
       onConfirm: async () => {
-        const newHooks = removeGroup(rawHooks, event, index);
-        await saveHooks(newHooks);
+        const source = agent === "codex" ? codexHooks : rawHooks;
+        const newHooks = removeGroup(source, event, index);
+        await saveHooks(newHooks, agent);
       },
     };
   }
@@ -198,6 +283,16 @@
       parts.push(`${count} handler${count !== 1 ? "s" : ""}`);
     }
     return parts.join(" · ") || "—";
+  }
+
+  function switchEditorAgent(agent: "claude" | "codex") {
+    if (editorMode === "edit") return; // locked in edit mode
+    editorAgent = agent;
+    editorEvent = agent === "codex" ? CODEX_HOOK_EVENT_TYPES[0] : HOOK_EVENT_TYPES[0];
+    // Force command type for codex
+    if (agent === "codex") {
+      editorHandlers = editorHandlers.map((h) => ({ ...h, type: "command" }));
+    }
   }
 </script>
 
@@ -280,6 +375,22 @@
       {t("hooks_loadFailed", { error: loadError })}
     </div>
   {:else}
+    <!-- Warnings (independent, non-blocking) -->
+    {#if claudeLoadWarning}
+      <div
+        class="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-xs text-amber-600 dark:text-amber-400 mb-3"
+      >
+        {t("hooks_claudeWarning", { detail: claudeLoadWarning })}
+      </div>
+    {/if}
+    {#if codexHooksWarning}
+      <div
+        class="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-xs text-amber-600 dark:text-amber-400 mb-3"
+      >
+        {t("hooks_codexWarning", { detail: codexHooksWarning })}
+      </div>
+    {/if}
+
     <!-- Add button -->
     <div class="flex items-center gap-3">
       <button
@@ -307,6 +418,43 @@
           >
         </div>
 
+        <!-- Agent selector (new mode) / Agent label (edit mode) -->
+        <div>
+          <label class="block text-[11px] font-medium text-muted-foreground mb-1.5"
+            >{t("hooks_agentLabel")}</label
+          >
+          {#if editorMode === "new"}
+            <div class="flex gap-1 rounded-md border border-border p-0.5 w-fit">
+              <button
+                class="rounded px-2.5 py-1 text-xs font-medium transition-colors {editorAgent ===
+                'claude'
+                  ? 'bg-primary text-primary-foreground'
+                  : 'text-muted-foreground hover:text-foreground'}"
+                onclick={() => switchEditorAgent("claude")}
+                >{t("extend_agentBadge_claude")}</button
+              >
+              <button
+                class="rounded px-2.5 py-1 text-xs font-medium transition-colors {editorAgent ===
+                'codex'
+                  ? 'bg-emerald-500 text-white'
+                  : 'text-muted-foreground hover:text-foreground'}"
+                onclick={() => switchEditorAgent("codex")}
+                >{t("extend_agentBadge_codex")}</button
+              >
+            </div>
+          {:else}
+            <span
+              class="inline-block rounded-full px-2 py-0.5 text-[10px] font-medium {editorAgent === 'codex'
+                ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
+                : 'bg-primary/10 text-primary'}"
+            >
+              {editorAgent === "codex"
+                ? t("extend_agentBadge_codex")
+                : t("extend_agentBadge_claude")}
+            </span>
+          {/if}
+        </div>
+
         <!-- Edit warning -->
         {#if editorMode === "edit"}
           <div
@@ -322,7 +470,7 @@
             >{t("hooks_event")}</label
           >
           <div class="flex flex-wrap gap-1">
-            {#each HOOK_EVENT_TYPES as ev}
+            {#each availableEvents as ev}
               <button
                 class="rounded-md px-2.5 py-1 text-[11px] font-medium transition-colors
                   {editorEvent === ev
@@ -375,27 +523,31 @@
             {#each editorHandlers as handler, hi}
               <div class="rounded-md border border-border/50 bg-background px-3 py-2.5 space-y-2">
                 <div class="flex items-center justify-between gap-2">
-                  <!-- Type toggle -->
-                  <div class="flex gap-1 rounded-md border border-border p-0.5">
-                    <button
-                      class="rounded px-2 py-0.5 text-xs font-medium transition-colors {handler.type ===
-                      'command'
-                        ? 'bg-primary text-primary-foreground'
-                        : 'text-muted-foreground hover:text-foreground'}"
-                      onclick={() => {
-                        editorHandlers[hi] = { ...handler, type: "command" };
-                      }}>{t("hooks_handlerCommand")}</button
-                    >
-                    <button
-                      class="rounded px-2 py-0.5 text-xs font-medium transition-colors {handler.type ===
-                      'prompt'
-                        ? 'bg-primary text-primary-foreground'
-                        : 'text-muted-foreground hover:text-foreground'}"
-                      onclick={() => {
-                        editorHandlers[hi] = { ...handler, type: "prompt" };
-                      }}>{t("hooks_handlerPrompt")}</button
-                    >
-                  </div>
+                  <!-- Type toggle (hidden for Codex — command only) -->
+                  {#if editorAgent !== "codex"}
+                    <div class="flex gap-1 rounded-md border border-border p-0.5">
+                      <button
+                        class="rounded px-2 py-0.5 text-xs font-medium transition-colors {handler.type ===
+                        'command'
+                          ? 'bg-primary text-primary-foreground'
+                          : 'text-muted-foreground hover:text-foreground'}"
+                        onclick={() => {
+                          editorHandlers[hi] = { ...handler, type: "command" };
+                        }}>{t("hooks_handlerCommand")}</button
+                      >
+                      <button
+                        class="rounded px-2 py-0.5 text-xs font-medium transition-colors {handler.type ===
+                        'prompt'
+                          ? 'bg-primary text-primary-foreground'
+                          : 'text-muted-foreground hover:text-foreground'}"
+                        onclick={() => {
+                          editorHandlers[hi] = { ...handler, type: "prompt" };
+                        }}>{t("hooks_handlerPrompt")}</button
+                      >
+                    </div>
+                  {:else}
+                    <span class="text-[10px] text-muted-foreground">{t("hooks_handlerCommand")}</span>
+                  {/if}
                   {#if editorHandlers.length > 1}
                     <button
                       class="rounded p-1 text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
@@ -416,7 +568,7 @@
                 </div>
 
                 <!-- Command / Prompt input -->
-                {#if handler.type === "command"}
+                {#if handler.type === "command" || editorAgent === "codex"}
                   <input
                     type="text"
                     class="w-full rounded-md border border-border bg-background px-3 py-1.5 text-sm font-mono text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
@@ -480,75 +632,79 @@
                       }}
                     />
                   </div>
-                  <!-- Async toggle -->
-                  <button
-                    class="flex items-center gap-1.5"
-                    onclick={() => {
-                      editorHandlers[hi] = {
-                        ...handler,
-                        async: handler.async ? undefined : true,
-                      };
-                    }}
-                  >
-                    <div
-                      class="relative inline-flex h-4 w-7 shrink-0 items-center rounded-full transition-colors duration-200 {handler.async
-                        ? 'bg-primary'
-                        : 'bg-muted-foreground/25'}"
+                  <!-- Async toggle (Claude only) -->
+                  {#if editorAgent !== "codex"}
+                    <button
+                      class="flex items-center gap-1.5"
+                      onclick={() => {
+                        editorHandlers[hi] = {
+                          ...handler,
+                          async: handler.async ? undefined : true,
+                        };
+                      }}
                     >
                       <div
-                        class="inline-block h-3 w-3 transform rounded-full bg-white transition-transform duration-200 {handler.async
-                          ? 'translate-x-3.5'
-                          : 'translate-x-0.5'}"
-                      ></div>
-                    </div>
-                    <span class="text-[10px] text-muted-foreground">{t("hooks_async")}</span>
-                  </button>
-                  <!-- Once toggle -->
-                  <button
-                    class="flex items-center gap-1.5"
-                    onclick={() => {
-                      editorHandlers[hi] = {
-                        ...handler,
-                        once: handler.once ? undefined : true,
-                      };
-                    }}
-                  >
-                    <div
-                      class="relative inline-flex h-4 w-7 shrink-0 items-center rounded-full transition-colors duration-200 {handler.once
-                        ? 'bg-primary'
-                        : 'bg-muted-foreground/25'}"
+                        class="relative inline-flex h-4 w-7 shrink-0 items-center rounded-full transition-colors duration-200 {handler.async
+                          ? 'bg-primary'
+                          : 'bg-muted-foreground/25'}"
+                      >
+                        <div
+                          class="inline-block h-3 w-3 transform rounded-full bg-white transition-transform duration-200 {handler.async
+                            ? 'translate-x-3.5'
+                            : 'translate-x-0.5'}"
+                        ></div>
+                      </div>
+                      <span class="text-[10px] text-muted-foreground">{t("hooks_async")}</span>
+                    </button>
+                    <!-- Once toggle (Claude only) -->
+                    <button
+                      class="flex items-center gap-1.5"
+                      onclick={() => {
+                        editorHandlers[hi] = {
+                          ...handler,
+                          once: handler.once ? undefined : true,
+                        };
+                      }}
                     >
                       <div
-                        class="inline-block h-3 w-3 transform rounded-full bg-white transition-transform duration-200 {handler.once
-                          ? 'translate-x-3.5'
-                          : 'translate-x-0.5'}"
-                      ></div>
-                    </div>
-                    <span class="text-[10px] text-muted-foreground">{t("hooks_once")}</span>
-                  </button>
+                        class="relative inline-flex h-4 w-7 shrink-0 items-center rounded-full transition-colors duration-200 {handler.once
+                          ? 'bg-primary'
+                          : 'bg-muted-foreground/25'}"
+                      >
+                        <div
+                          class="inline-block h-3 w-3 transform rounded-full bg-white transition-transform duration-200 {handler.once
+                            ? 'translate-x-3.5'
+                            : 'translate-x-0.5'}"
+                        ></div>
+                      </div>
+                      <span class="text-[10px] text-muted-foreground">{t("hooks_once")}</span>
+                    </button>
+                  {/if}
                 </div>
 
-                <!-- Conditional filter -->
-                <div>
-                  <label class="block text-[10px] text-muted-foreground mb-0.5"
-                    >{t("hooks_condition")}</label
-                  >
-                  <input
-                    type="text"
-                    class="w-full rounded-md border border-border bg-background px-2 py-1 text-xs text-foreground font-mono placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
-                    placeholder={t("hooks_conditionPlaceholder")}
-                    value={handler.if ?? ""}
-                    oninput={(e) => {
-                      editorHandlers[hi] = {
-                        ...handler,
-                        if: (e.target as HTMLInputElement).value || undefined,
-                      };
-                    }}
-                  />
-                </div>
+                <!-- Conditional filter (Claude only) -->
+                {#if editorAgent !== "codex"}
+                  <div>
+                    <label class="block text-[10px] text-muted-foreground mb-0.5"
+                      >{t("hooks_condition")}</label
+                    >
+                    <input
+                      type="text"
+                      class="w-full rounded-md border border-border bg-background px-2 py-1 text-xs text-foreground font-mono placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+                      placeholder={t("hooks_conditionPlaceholder")}
+                      value={handler.if ?? ""}
+                      oninput={(e) => {
+                        editorHandlers[hi] = {
+                          ...handler,
+                          if: (e.target as HTMLInputElement).value || undefined,
+                        };
+                      }}
+                    />
+                  </div>
+                {/if}
 
                 <!-- Status message -->
-                {#if handler.type === "command"}
+                {#if handler.type === "command" || editorAgent === "codex"}
                   <div>
                     <label class="block text-[10px] text-muted-foreground mb-0.5"
                       >{t("hooks_statusMessage")}</label
@@ -635,17 +791,25 @@
             </div>
             <!-- Groups -->
             <div class="space-y-1.5">
-              {#each groups as group, gi}
+              {#each groups as tg}
                 <div
                   class="rounded-lg border border-border/50 bg-muted/30 px-3 py-2 flex items-center justify-between gap-3"
                 >
-                  <div class="flex-1 min-w-0">
-                    <span class="text-xs text-foreground">{groupSummary(group)}</span>
+                  <div class="flex items-center gap-2 flex-1 min-w-0">
+                    {#if tg.agent === "codex"}
+                      <span
+                        class="rounded-full px-1.5 py-0.5 text-[10px] font-medium bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 shrink-0"
+                      >
+                        {t("extend_agentBadge_codex")}
+                      </span>
+                    {/if}
+                    <span class="text-xs text-foreground truncate">{groupSummary(tg.group)}</span>
                   </div>
                   <div class="flex items-center gap-1 shrink-0">
                     <button
                       class="rounded p-1 text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
-                      onclick={() => startEditGroup(event, gi, group)}
+                      onclick={() =>
+                        startEditGroup(event, tg.originalIndex, tg.group, tg.agent)}
                       title={t("hooks_editGroup")}
                     >
                       <svg
@@ -663,7 +827,7 @@
                     </button>
                     <button
                       class="rounded p-1 text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
-                      onclick={() => handleDeleteGroup(event, gi)}
+                      onclick={() => handleDeleteGroup(event, tg.originalIndex, tg.agent)}
                       title={t("hooks_deleteGroup")}
                     >
                       <svg

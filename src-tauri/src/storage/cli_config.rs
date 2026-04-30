@@ -1,5 +1,5 @@
 use crate::storage::teams::claude_home_dir;
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::path::PathBuf;
 
 /// Path to the user-level CLI settings file: ~/.claude/settings.json
@@ -284,6 +284,116 @@ fn json_to_toml_item(jv: &Value) -> toml_edit::Item {
         }
         Value::Null => toml_edit::Item::None,
     }
+}
+
+// ── Codex hooks support ──
+
+/// Path to the Codex hooks file: $CODEX_HOME/hooks.json
+pub fn codex_hooks_path() -> Result<PathBuf, String> {
+    codex_home_dir().map(|d| d.join("hooks.json"))
+}
+
+/// Load Codex hooks ($CODEX_HOME/hooks.json).
+/// Returns (hooks_object, optional_warning).
+/// File not found → ({}, None). Parse error → ({}, Some(warning)).
+pub fn load_codex_hooks() -> (Value, Option<String>) {
+    let path = match codex_hooks_path() {
+        Ok(p) => p,
+        Err(e) => {
+            log::warn!("[codex_hooks] codex_home_dir error: {}", e);
+            return (Value::Object(serde_json::Map::new()), Some(e));
+        }
+    };
+
+    match std::fs::read_to_string(&path) {
+        Ok(s) => match serde_json::from_str::<Value>(&s) {
+            Ok(v) => match v.get("hooks") {
+                Some(h) if h.is_object() => {
+                    log::debug!("[codex_hooks] loaded from {}", path.display());
+                    (h.clone(), None)
+                }
+                Some(_) => {
+                    let msg = "hooks field is not an object".to_string();
+                    log::warn!("[codex_hooks] {}: {}", path.display(), msg);
+                    (Value::Object(serde_json::Map::new()), Some(msg))
+                }
+                None => {
+                    log::debug!("[codex_hooks] no hooks field in {}", path.display());
+                    (Value::Object(serde_json::Map::new()), None)
+                }
+            },
+            Err(e) => {
+                let msg = format!("JSON parse error: {}", e);
+                log::warn!("[codex_hooks] {}: {}", path.display(), msg);
+                (Value::Object(serde_json::Map::new()), Some(msg))
+            }
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            log::debug!(
+                "[codex_hooks] file not found (first run): {}",
+                path.display()
+            );
+            (Value::Object(serde_json::Map::new()), None)
+        }
+        Err(e) => {
+            let msg = format!("Read error: {}", e);
+            log::warn!("[codex_hooks] {}: {}", path.display(), msg);
+            (Value::Object(serde_json::Map::new()), Some(msg))
+        }
+    }
+}
+
+/// Replace the `hooks` field in $CODEX_HOME/hooks.json.
+/// - `hooks` must be a JSON object.
+/// - If the file exists but is malformed, returns Err (refuses to overwrite).
+/// - Creates parent directory and sets 0o600 permissions.
+pub fn update_codex_hooks(hooks: Value) -> Result<Value, String> {
+    if !hooks.is_object() {
+        return Err("hooks must be a JSON object".to_string());
+    }
+
+    let path = codex_hooks_path()?;
+
+    // Read existing file to preserve other top-level keys
+    let mut doc: Value = match std::fs::read_to_string(&path) {
+        Ok(s) => serde_json::from_str::<Value>(&s).map_err(|e| {
+            format!(
+                "hooks.json parse error (fix manually or delete file): {}",
+                e
+            )
+        })?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            json!({})
+        }
+        Err(e) => return Err(format!("Read error: {}", e)),
+    };
+
+    // Ensure doc is an object
+    if !doc.is_object() {
+        doc = json!({});
+    }
+
+    doc["hooks"] = hooks.clone();
+
+    // Ensure parent directory exists
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create directory: {}", e))?;
+    }
+
+    let content =
+        serde_json::to_string_pretty(&doc).map_err(|e| format!("Failed to serialize: {}", e))?;
+    std::fs::write(&path, &content).map_err(|e| format!("Failed to write: {}", e))?;
+
+    // Set file permissions to 0600
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    }
+
+    log::debug!("[codex_hooks] updated hooks.json");
+    Ok(hooks)
 }
 
 /// Load user-level CLI config (~/.claude/settings.json).

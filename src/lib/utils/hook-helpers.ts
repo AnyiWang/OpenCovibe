@@ -39,6 +39,22 @@ export const HOOK_EVENT_TYPES: readonly HookEventType[] = [
 
 export type { HookEventType };
 
+/** Codex CLI supported hook event types (5 types). Separate from HookEventType. */
+export const CODEX_HOOK_EVENT_TYPES: readonly string[] = [
+  "PreToolUse",
+  "PostToolUse",
+  "SessionStart",
+  "UserPromptSubmit",
+  "Stop",
+];
+
+/** Read handler timeout, compatible with Codex's timeoutSec alias. */
+export function readTimeout(h: Record<string, unknown>): number | undefined {
+  if (typeof h.timeout === "number") return h.timeout;
+  if (typeof h.timeoutSec === "number") return h.timeoutSec;
+  return undefined;
+}
+
 // ── Raw-based write helpers ──
 
 /** Ensure raw hooks is a plain object; fallback to {} for null/array/primitive. */

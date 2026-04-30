@@ -514,6 +514,31 @@ pub async fn dispatch_command(
             let result = crate::commands::cli_config::update_cli_config(patch)?;
             Ok(result)
         }
+        // ── Codex Config (web dispatch) ──
+        "get_codex_config" => {
+            let result = crate::commands::cli_config::get_codex_config()?;
+            Ok(result)
+        }
+        "get_project_codex_config" => {
+            let cwd = extract_str(&params, "cwd")?;
+            let result = crate::commands::cli_config::get_project_codex_config(cwd)?;
+            Ok(result)
+        }
+        "update_codex_config" => {
+            let patch = params.get("patch").cloned().unwrap_or(params.clone());
+            let result = crate::commands::cli_config::update_codex_config(patch)?;
+            Ok(result)
+        }
+        // ── Codex Hooks ──
+        "get_codex_hooks" => {
+            let result = crate::commands::cli_config::get_codex_hooks()?;
+            Ok(result)
+        }
+        "update_codex_hooks" => {
+            let hooks = params.get("hooks").cloned().unwrap_or(params.clone());
+            let result = crate::commands::cli_config::update_codex_hooks(hooks)?;
+            Ok(json!(result))
+        }
 
         // ── CLI Permissions ──
         "get_cli_permissions" => {

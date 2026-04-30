@@ -1414,6 +1414,9 @@
   "hooks_groupCount": "{count} groups",
   "hooks_handlerCount": "{count} handlers",
   "hooks_refresh": "Refresh",
+  "hooks_agentLabel": "Agent",
+  "hooks_claudeWarning": "Claude hooks warning: {detail}",
+  "hooks_codexWarning": "Codex hooks warning: {detail}",
 
   "todos_empty": "No todos currently tracked.",
 

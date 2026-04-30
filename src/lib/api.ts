@@ -1067,6 +1067,23 @@ export async function updateCliConfig(
   return invoke<Record<string, unknown>>("update_cli_config", { patch });
 }
 
+// ── Codex Hooks ──
+
+export async function getCodexHooks(): Promise<{
+  hooks: Record<string, unknown>;
+  warning?: string;
+}> {
+  dbg("api", "getCodexHooks");
+  return invoke("get_codex_hooks");
+}
+
+export async function updateCodexHooks(
+  hooks: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  dbg("api", "updateCodexHooks");
+  return invoke("update_codex_hooks", { hooks });
+}
+
 // ── Codex Config ──
 
 export async function getCodexConfig(): Promise<import("./types").CodexConfigResult> {

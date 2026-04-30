@@ -263,6 +263,8 @@ pub fn run() {
             commands::cli_config::get_codex_config,
             commands::cli_config::get_project_codex_config,
             commands::cli_config::update_codex_config,
+            commands::cli_config::get_codex_hooks,
+            commands::cli_config::update_codex_hooks,
             commands::cli_settings::get_cli_permissions,
             commands::cli_settings::update_cli_permissions,
             commands::onboarding::check_auth_status,
