@@ -6,9 +6,13 @@
   let {
     fileEntries = [],
     onScrollToTool,
+    onPreview,
+    selectedPath,
   }: {
     fileEntries: FileEntry[];
     onScrollToTool?: (toolUseId: string) => void;
+    onPreview?: (path: string) => void;
+    selectedPath?: string;
   } = $props();
 
   function shortPath(p: string): string {
@@ -52,11 +56,35 @@
     {#each fileEntries as entry, i (entry.path + "-" + i)}
       {@const color = actionColor(entry.action)}
       {@const canJump = !!entry.toolUseId}
+      {@const isSelected = selectedPath !== undefined && entry.path === selectedPath}
       {#if canJump}
         <button
-          class="w-full text-left px-2.5 py-1 hover:bg-accent/50 rounded-sm transition-colors group"
-          onclick={() => onScrollToTool?.(entry.toolUseId!)}
+          class="w-full text-left px-2.5 py-1 rounded-sm transition-colors group {isSelected
+            ? 'bg-accent'
+            : 'hover:bg-accent/50'}"
+          onclick={() => {
+            onScrollToTool?.(entry.toolUseId!);
+            onPreview?.(entry.path);
+          }}
           title={t("toolActivity_scrollToTool")}
+        >
+          <div class="flex items-center gap-1.5">
+            <span
+              class="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded text-[10px] font-bold {color.bg} {color.text}"
+            >
+              {actionLabel(entry.action)}
+            </span>
+            <span class="text-[11px] text-foreground truncate min-w-0 group-hover:underline"
+              >{shortPath(entry.path)}</span
+            >
+          </div>
+        </button>
+      {:else if onPreview}
+        <button
+          class="w-full text-left px-2.5 py-1 rounded-sm transition-colors group {isSelected
+            ? 'bg-accent'
+            : 'hover:bg-accent/50'}"
+          onclick={() => onPreview?.(entry.path)}
         >
           <div class="flex items-center gap-1.5">
             <span

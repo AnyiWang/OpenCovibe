@@ -39,6 +39,7 @@
     planContent,
     latestPlanTool,
     showPermissionInPanel,
+    onPreviewFile,
   }: {
     tool: BusToolItem;
     subTimeline?: TimelineEntry[];
@@ -67,6 +68,8 @@
     latestPlanTool?: boolean;
     /** Whether generic tool permissions are handled by the floating PermissionPanel. */
     showPermissionInPanel?: boolean;
+    /** Click on Edit/Write/Read tool card's file path → open preview in right panel. */
+    onPreviewFile?: (path: string) => void;
   } = $props();
 
   // Look up the task notification for this specific Task tool
@@ -1705,7 +1708,7 @@
             </button>
           {/if}
         {:else}
-          <ToolDetailView tool={enrichedTool} {isInputStreaming} />
+          <ToolDetailView tool={enrichedTool} {isInputStreaming} {onPreviewFile} />
         {/if}
       </div>
     {/if}
@@ -1758,6 +1761,7 @@
             {onPermissionRespond}
             {taskNotifications}
             {showPermissionInPanel}
+            {onPreviewFile}
           />
         {/if}
       {/each}

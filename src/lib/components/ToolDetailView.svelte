@@ -33,9 +33,11 @@
   let {
     tool,
     isInputStreaming = false,
+    onPreviewFile,
   }: {
     tool: BusToolItem;
     isInputStreaming?: boolean;
+    onPreviewFile?: (path: string) => void;
   } = $props();
 
   // ── Helpers ──
@@ -598,7 +600,16 @@
     <!-- Read: syntax-highlighted code with line numbers or image -->
     {#if filePath}
       <div class="tool-file-header flex items-center justify-between rounded-t">
-        <span class="truncate">{filePath}</span>
+        {#if onPreviewFile}
+          <button
+            type="button"
+            class="truncate text-left hover:text-foreground hover:underline transition-colors min-w-0"
+            onclick={() => onPreviewFile?.(filePath)}
+            title={t("toolDetail_previewFile") ?? filePath}>{filePath}</button
+          >
+        {:else}
+          <span class="truncate">{filePath}</span>
+        {/if}
         <div class="flex items-center gap-2 shrink-0">
           {#if readLineInfo}
             <span class="text-[10px] text-muted-foreground/60">{readLineInfo}</span>
@@ -668,7 +679,16 @@
   {:else if tool.tool_name === "Edit" || tool.tool_name === "edit_file"}
     <!-- Edit: diff view — structured patch (preferred) or old/new fallback -->
     {#if filePath}
-      <div class="tool-file-header rounded-t">{filePath}</div>
+      {#if onPreviewFile}
+        <button
+          type="button"
+          class="tool-file-header rounded-t w-full text-left hover:text-foreground hover:underline transition-colors"
+          onclick={() => onPreviewFile?.(filePath)}
+          title={t("toolDetail_previewFile") ?? filePath}>{filePath}</button
+        >
+      {:else}
+        <div class="tool-file-header rounded-t">{filePath}</div>
+      {/if}
     {/if}
     {#if editHasPatches}
       <!-- Structured unified diff from tool_use_result (adjust line numbers if needed) -->
@@ -751,7 +771,16 @@
   {:else if tool.tool_name === "Write" || tool.tool_name === "write_file"}
     <!-- Write: structuredPatch diff (overwrite) or content preview (new file) -->
     {#if filePath}
-      <div class="tool-file-header rounded-t">{filePath}</div>
+      {#if onPreviewFile}
+        <button
+          type="button"
+          class="tool-file-header rounded-t w-full text-left hover:text-foreground hover:underline transition-colors"
+          onclick={() => onPreviewFile?.(filePath)}
+          title={t("toolDetail_previewFile") ?? filePath}>{filePath}</button
+        >
+      {:else}
+        <div class="tool-file-header rounded-t">{filePath}</div>
+      {/if}
     {/if}
     <!-- Plan file (.claude/plans/*.md): render content as markdown instead of diff/code.
          This intentionally takes priority over writeHasPatches — plan files are meant to be
