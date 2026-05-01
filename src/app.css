@@ -632,14 +632,12 @@
 }
 
 /* Content-visibility optimization: skip layout/paint for off-screen entries.
- * - content-visibility: auto → off-screen elements skip layout/paint entirely
- * - contain: layout style paint → visible elements have bounded reflow scope
- *   (their internal layout changes don't bubble up to ancestors, and ancestor
- *   width changes don't force unbounded re-measurement of internal text)
- * - contain-intrinsic-size auto 300px → representative placeholder for off-screen */
+ * Note: `content-visibility: auto` already implies layout/style/paint containment
+ * dynamically (size containment when off-screen, normal when on-screen). Declaring
+ * `contain` explicitly overrides this dynamic behavior and was observed to cause
+ * 2.5s style recalc storms on click in WKWebView. Let the browser manage it. */
 .cv-auto {
   content-visibility: auto;
-  contain: layout style paint;
   contain-intrinsic-size: auto 300px;
 }
 

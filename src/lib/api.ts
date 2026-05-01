@@ -1,5 +1,6 @@
 import { getTransport } from "./transport";
 import { dbg, dbgWarn, redactSensitive } from "./utils/debug";
+import { perfMarkAsync } from "./utils/perf";
 
 function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   return getTransport().invoke<T>(cmd, args);
@@ -249,7 +250,11 @@ export async function checkIsDirectory(path: string): Promise<boolean> {
 }
 
 export async function readFileBase64(path: string, cwd?: string): Promise<[string, string]> {
-  return invoke<[string, string]>("read_file_base64", { path, cwd: cwd ?? null });
+  return perfMarkAsync(
+    "ipc-readFileBase64",
+    () => invoke<[string, string]>("read_file_base64", { path, cwd: cwd ?? null }),
+    { path },
+  );
 }
 
 // Git
@@ -265,7 +270,11 @@ export async function getGitBranch(cwd: string): Promise<string> {
 
 export async function getGitDiff(cwd: string, staged: boolean, file?: string): Promise<string> {
   dbg("api", "getGitDiff", { cwd, staged, file });
-  return invoke<string>("get_git_diff", { cwd, staged, file: file ?? null });
+  return perfMarkAsync(
+    "ipc-getGitDiff",
+    () => invoke<string>("get_git_diff", { cwd, staged, file: file ?? null }),
+    { cwd, staged, file },
+  );
 }
 
 export async function getGitStatus(cwd: string): Promise<string> {
@@ -295,13 +304,24 @@ export async function listMemoryFiles(
 // Files
 export async function readTextFile(path: string, cwd?: string): Promise<string> {
   dbg("api", "readTextFile", path, { cwd });
-  return invoke<string>("read_text_file", { path, cwd: cwd ?? null });
+  return perfMarkAsync(
+    "ipc-readTextFile",
+    async () => {
+      const content = await invoke<string>("read_text_file", { path, cwd: cwd ?? null });
+      return content;
+    },
+    { path, chars: 0 }, // chars not known until after; left for shape consistency
+  );
 }
 
 /** Cheap file size lookup — used by FilePreviewPane to skip readTextFile for huge files. */
 export async function statTextFile(path: string, cwd?: string): Promise<number> {
   dbg("api", "statTextFile", path, { cwd });
-  return invoke<number>("stat_text_file", { path, cwd: cwd ?? null });
+  return perfMarkAsync(
+    "ipc-statTextFile",
+    () => invoke<number>("stat_text_file", { path, cwd: cwd ?? null }),
+    { path },
+  );
 }
 
 export async function writeTextFile(path: string, content: string, cwd?: string): Promise<void> {
