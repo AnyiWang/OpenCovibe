@@ -1094,6 +1094,25 @@
     return () => window.removeEventListener("ocv:project-changed", handler);
   });
 
+  // Warm up file IPC chain: validate_file_path's first invocation walks several
+  // canonicalize() calls (data dir, claude dir, agents' working dirs, project cwd).
+  // Firing one stat at chat-page mount primes the OS FS cache so the user's first
+  // file click doesn't pay the cold-cache cost.
+  onMount(() => {
+    const cwd = localStorage.getItem("ocv:project-cwd") || "";
+    if (!cwd) return;
+    const t0 = performance.now();
+    api
+      .statTextFile(cwd, cwd)
+      .then(() => dbg("file-ipc", "warmup done", { ms: +(performance.now() - t0).toFixed(0) }))
+      .catch((e) =>
+        dbg("file-ipc", "warmup err (still warmed)", {
+          ms: +(performance.now() - t0).toFixed(0),
+          err: String(e),
+        }),
+      );
+  });
+
   // Sync run name when sidebar/history renames the current run
   onMount(() => {
     function onRunsChanged() {
