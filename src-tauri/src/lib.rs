@@ -246,6 +246,7 @@ pub fn run() {
             commands::agents::create_agent_file,
             commands::agents::update_agent_file,
             commands::agents::delete_agent_file,
+            commands::agents::list_codex_agents,
             commands::clipboard::get_clipboard_files,
             commands::clipboard::read_clipboard_file,
             commands::clipboard::save_temp_attachment,

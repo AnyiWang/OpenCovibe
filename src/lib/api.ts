@@ -1232,6 +1232,11 @@ export async function listAgents(cwd?: string): Promise<AgentDefinitionSummary[]
   return invoke<AgentDefinitionSummary[]>("list_agents", { cwd: cwd ?? null });
 }
 
+export async function listCodexAgents(): Promise<AgentDefinitionSummary[]> {
+  dbg("api", "listCodexAgents");
+  return invoke<AgentDefinitionSummary[]>("list_codex_agents");
+}
+
 export async function readAgentFile(
   scope: "user" | "project",
   fileName: string,

@@ -1,7 +1,7 @@
 <script lang="ts">
-  import { listAgents, readAgentFile, deleteAgentFile, createAgentFile } from "$lib/api";
+  import { listAgents, readAgentFile, deleteAgentFile, createAgentFile, listCodexAgents } from "$lib/api";
   import { t } from "$lib/i18n/index.svelte";
-  import { dbg, dbgWarn } from "$lib/utils/debug";
+  import { dbgWarn } from "$lib/utils/debug";
   import type { AgentDefinitionSummary } from "$lib/types";
   import AgentEditor from "./AgentEditor.svelte";
 
@@ -70,10 +70,43 @@
     },
   ];
 
+  // ── Codex built-in roles (hardcoded, read-only) ──
+  const codexBuiltInAgents: AgentDefinitionSummary[] = [
+    {
+      file_name: "default",
+      name: "default",
+      description:
+        "Built-in Codex role used by spawn_agent — standard behavior with no special overrides.",
+      source: "built-in",
+      scope: "user",
+      readonly: true,
+      agent: "codex",
+    },
+    {
+      file_name: "explorer",
+      name: "explorer",
+      description: "Read-only Codex role for fast codebase exploration via spawn_agent.",
+      source: "built-in",
+      scope: "user",
+      readonly: true,
+      agent: "codex",
+    },
+    {
+      file_name: "worker",
+      name: "worker",
+      description: "Read-only Codex role for implementation work via spawn_agent.",
+      source: "built-in",
+      scope: "user",
+      readonly: true,
+      agent: "codex",
+    },
+  ];
+
   // ── State ──
   let loading = $state(true);
   let customAgents = $state<AgentDefinitionSummary[]>([]);
   let pluginAgents = $state<AgentDefinitionSummary[]>([]);
+  let codexPluginAgents = $state<AgentDefinitionSummary[]>([]);
   let pluginError = $state(false);
   let selectedAgent = $state<AgentDefinitionSummary | null>(null);
   let selectedContent = $state<string | null>(null);
@@ -94,16 +127,47 @@
     loading = true;
     pluginError = false;
     try {
-      const all = await listAgents(projectCwd || undefined);
-      dbg("agents-panel", "loaded agents", { count: all.length });
-      customAgents = all.filter((a) => a.scope === "user" || a.scope === "project");
-      const plugins = all.filter((a) => a.scope === "plugin");
-      pluginAgents = plugins;
-      pluginError = false;
+      const [claude, codex] = await Promise.allSettled([
+        listAgents(projectCwd || undefined),
+        listCodexAgents(),
+      ]);
+
+      const nextCustom =
+        claude.status === "fulfilled"
+          ? claude.value.filter((a) => a.scope === "user" || a.scope === "project")
+          : [];
+      const nextPlugin =
+        claude.status === "fulfilled" ? claude.value.filter((a) => a.scope === "plugin") : [];
+      const nextCodex = codex.status === "fulfilled" ? codex.value : [];
+
+      customAgents = nextCustom;
+      pluginAgents = nextPlugin;
+      codexPluginAgents = nextCodex;
+      pluginError = claude.status === "rejected";
+
+      if (codex.status === "rejected") {
+        dbgWarn("agents-panel", "codex agents load error", codex.reason);
+      }
+
+      // Clear stale selection using local arrays (no $derived dependency)
+      if (selectedAgent) {
+        const all = [
+          ...builtInAgents,
+          ...codexBuiltInAgents,
+          ...nextCustom,
+          ...nextPlugin,
+          ...nextCodex,
+        ];
+        if (!all.some((a) => agentKey(a) === agentKey(selectedAgent!))) {
+          selectedAgent = null;
+          selectedContent = null;
+        }
+      }
     } catch (e) {
       dbgWarn("agents-panel", "failed to load agents", e);
       customAgents = [];
       pluginAgents = [];
+      codexPluginAgents = [];
       pluginError = true;
     } finally {
       loading = false;
@@ -118,10 +182,17 @@
   // ── Computed ──
   let existingAgentNames = $derived(customAgents.map((a) => a.name));
 
+  function agentKey(a: AgentDefinitionSummary): string {
+    return `${a.agent ?? "claude"}:${a.source}:${a.file_name}`;
+  }
+
+  let allBuiltIn = $derived([...builtInAgents, ...codexBuiltInAgents]);
+  let allPlugin = $derived([...pluginAgents, ...codexPluginAgents]);
+
   let displayedAgents = $derived.by(() => {
-    if (activeGroup === "built-in") return builtInAgents;
+    if (activeGroup === "built-in") return allBuiltIn;
     if (activeGroup === "custom") return customAgents;
-    return pluginAgents;
+    return allPlugin;
   });
 
   // ── Actions ──
@@ -205,8 +276,10 @@
     if (agent.scope === "user") return t("agent_scopeUser");
     if (agent.scope === "project") return t("agent_scopeProject");
     if (agent.scope === "plugin") {
-      // source = "plugin:marketplace:plugin_name"
       const parts = agent.source.split(":");
+      // Codex: "codex-plugin:vercel" or "codex-plugin:marketplace:plugin" or "codex-plugin:mp:plugin:skill"
+      if (parts[0] === "codex-plugin") return parts.slice(1).join(" / ");
+      // Claude: "plugin:marketplace:plugin_name"
       return parts.length >= 3 ? parts[2] : t("agent_sourcePlugin");
     }
     return agent.scope;
@@ -291,7 +364,7 @@
 
   <!-- Group tabs -->
   <div class="flex gap-1 mb-4">
-    {#each [{ id: "built-in" as const, label: t("agent_builtIn"), count: builtInAgents.length }, { id: "custom" as const, label: t("agent_custom"), count: customAgents.length }, { id: "plugin" as const, label: t("agent_plugin"), count: pluginAgents.length }] as tab}
+    {#each [{ id: "built-in" as const, label: t("agent_builtIn"), count: allBuiltIn.length }, { id: "custom" as const, label: t("agent_custom"), count: customAgents.length }, { id: "plugin" as const, label: t("agent_plugin"), count: allPlugin.length }] as tab}
       <button
         class="px-3 py-1 text-xs rounded-md transition-colors
           {activeGroup === tab.id
@@ -341,8 +414,7 @@
           {#each displayedAgents as agent}
             <button
               class="w-full text-left rounded-md border px-3 py-2.5 transition-colors
-                {selectedAgent?.file_name === agent.file_name &&
-              selectedAgent?.source === agent.source
+                {selectedAgent && agentKey(selectedAgent) === agentKey(agent)
                 ? 'border-primary bg-primary/5'
                 : 'border-transparent hover:bg-muted/50'}"
               onclick={() => selectAgent(agent)}
@@ -363,6 +435,11 @@
                 >
                   {scopeLabel(agent)}
                 </span>
+                {#if agent.agent === "codex"}
+                  <span class="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
+                    {t("extend_agentBadge_codex")}
+                  </span>
+                {/if}
                 {#if agent.model}
                   <span
                     class="inline-flex items-center rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground"
@@ -406,6 +483,11 @@
                 >
                   {scopeLabel(selectedAgent)}
                 </span>
+                {#if selectedAgent.agent === "codex"}
+                  <span class="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
+                    {t("extend_agentBadge_codex")}
+                  </span>
+                {/if}
                 {#if selectedAgent.readonly}
                   <span
                     class="inline-flex items-center rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground"

@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 // ── Types ──
@@ -20,6 +20,8 @@ pub struct AgentDefinitionSummary {
     pub isolation: Option<String>,
     pub readonly: bool,
     pub raw_content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -234,6 +236,7 @@ fn parse_agent_file(
         } else {
             None
         },
+        agent: None,
     }
 }
 
@@ -402,7 +405,342 @@ async fn discover_plugin_agents() -> Vec<AgentDefinitionSummary> {
     agents
 }
 
+// ── Codex plugin agent discovery ──
+
+/// Collect agents from a .tmp plugin dir.
+/// Inserts marketplace-free alias keys into `seen_tmp_aliases` to block cache fallback.
+fn collect_tmp_codex_agents(
+    dir: &Path,
+    source: &str,
+    plugin_name: &str,
+    seen_tmp_aliases: &mut HashSet<String>,
+    seen_canonical: &mut HashSet<PathBuf>,
+    out: &mut Vec<AgentDefinitionSummary>,
+) {
+    for mut a in scan_agents_dir(dir, source, "plugin", true) {
+        let md_path = dir.join(format!("{}.md", a.file_name));
+        let canonical = std::fs::canonicalize(&md_path).unwrap_or(md_path);
+        if seen_canonical.contains(&canonical) {
+            continue;
+        }
+        let alias = format!("codex-plugin:{}:{}", plugin_name, a.file_name);
+        if seen_tmp_aliases.contains(&alias) {
+            continue;
+        }
+        seen_canonical.insert(canonical);
+        seen_tmp_aliases.insert(alias);
+        a.agent = Some("codex".into());
+        out.push(a);
+    }
+}
+
+/// Collect agents from a cache plugin dir.
+/// Checks `seen_tmp_aliases` (marketplace-free) to block .tmp→cache duplicates.
+/// Uses marketplace-aware key in `seen_cache` so same-name plugins from
+/// different marketplaces coexist.
+fn collect_cache_codex_agents(
+    dir: &Path,
+    source: &str,
+    tmp_plugin_key: &str,
+    seen_tmp_aliases: &HashSet<String>,
+    cache_key_prefix: &str,
+    seen_cache: &mut HashSet<String>,
+    seen_canonical: &mut HashSet<PathBuf>,
+    out: &mut Vec<AgentDefinitionSummary>,
+) {
+    for mut a in scan_agents_dir(dir, source, "plugin", true) {
+        let md_path = dir.join(format!("{}.md", a.file_name));
+        let canonical = std::fs::canonicalize(&md_path).unwrap_or(md_path);
+        if seen_canonical.contains(&canonical) {
+            continue;
+        }
+        // Blocked by .tmp alias?
+        let tmp_alias = format!("codex-plugin:{}:{}", tmp_plugin_key, a.file_name);
+        if seen_tmp_aliases.contains(&tmp_alias) {
+            continue;
+        }
+        // Marketplace-aware cache dedup
+        let cache_key = format!("codex-plugin:{}:{}", cache_key_prefix, a.file_name);
+        if seen_cache.contains(&cache_key) {
+            continue;
+        }
+        seen_canonical.insert(canonical);
+        seen_cache.insert(cache_key);
+        a.agent = Some("codex".into());
+        out.push(a);
+    }
+}
+
+/// Check if a Codex plugin is disabled.
+///
+/// - With marketplace: looks up `"plugin@marketplace"` in `plugins_config`.
+/// - Without marketplace (.tmp path): uses `plugin_enabled_map` to find the
+///   matching marketplace entry. Unambiguous single match → use its state.
+///   Multiple marketplaces → conservative show. No match → show.
+fn is_codex_plugin_disabled(
+    plugin_name: &str,
+    marketplace: Option<&str>,
+    plugins_config: &serde_json::Map<String, serde_json::Value>,
+    plugin_enabled_map: &HashMap<String, Vec<(String, bool)>>,
+) -> bool {
+    match marketplace {
+        Some(mp) => {
+            let id = format!("{}@{}", plugin_name, mp);
+            plugins_config
+                .get(&id)
+                .and_then(|v| v.get("enabled"))
+                .and_then(|v| v.as_bool())
+                .map(|e| !e)
+                .unwrap_or(false)
+        }
+        None => {
+            // .tmp path — no marketplace, use mapping
+            match plugin_enabled_map.get(plugin_name) {
+                Some(entries) if entries.len() == 1 => !entries[0].1,
+                Some(entries) if entries.len() > 1 => {
+                    log::debug!(
+                        "[agents] ambiguous plugin '{}' across {} marketplaces, showing",
+                        plugin_name,
+                        entries.len()
+                    );
+                    false // conservative: show
+                }
+                _ => false, // no match → show
+            }
+        }
+    }
+}
+
+/// Discover agents from installed Codex plugins.
+/// Scans two locations:
+///   1. Primary: ~/.codex/.tmp/plugins/plugins/*/agents/
+///   2. Fallback: ~/.codex/plugins/cache/{marketplace}/{plugin}/{version}/agents/
+///              + skills/*/agents/
+/// Respects enabled/disabled state from config.toml [plugins.*].
+fn discover_codex_plugin_agents() -> Vec<AgentDefinitionSummary> {
+    let codex_home = match crate::storage::cli_config::codex_home_dir() {
+        Ok(d) => d,
+        Err(e) => {
+            log::warn!("[agents] codex_home_dir error: {}", e);
+            return vec![];
+        }
+    };
+
+    // Load config.toml once — extract [plugins.*] enabled states
+    let (config, config_warning) = crate::storage::cli_config::load_codex_config();
+    let plugins_config = config
+        .get("plugins")
+        .and_then(|v| v.as_object())
+        .cloned()
+        .unwrap_or_default();
+
+    if config_warning.is_some() {
+        log::warn!(
+            "[agents] config.toml warning — all Codex plugin agents will default to enabled"
+        );
+    }
+
+    // Build plugin_name → Vec<(marketplace, enabled)> mapping.
+    // Two sources: (1) cache directory structure, (2) config.toml [plugins.*] entries.
+    // Config fallback covers plugins in .tmp but not in cache (e.g. vercel, figma).
+    let mut plugin_enabled_map: HashMap<String, Vec<(String, bool)>> = HashMap::new();
+    let mut seen_config_ids: HashSet<String> = HashSet::new();
+
+    // Source 1: cache directory — physical plugin dirs
+    let cache_root_for_map = codex_home.join("plugins").join("cache");
+    if cache_root_for_map.is_dir() {
+        for mp in std::fs::read_dir(&cache_root_for_map)
+            .into_iter()
+            .flatten()
+            .flatten()
+        {
+            if !mp.path().is_dir() {
+                continue;
+            }
+            let mp_name = mp.file_name().to_string_lossy().to_string();
+            for plugin in std::fs::read_dir(mp.path()).into_iter().flatten().flatten() {
+                if !plugin.path().is_dir() {
+                    continue;
+                }
+                let pname = plugin.file_name().to_string_lossy().to_string();
+                let id = format!("{}@{}", pname, mp_name);
+                let enabled = plugins_config
+                    .get(&id)
+                    .and_then(|v| v.get("enabled"))
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true);
+                seen_config_ids.insert(id);
+                plugin_enabled_map
+                    .entry(pname)
+                    .or_default()
+                    .push((mp_name.clone(), enabled));
+            }
+        }
+    }
+
+    // Source 2: config.toml [plugins.*] entries not already covered by cache.
+    // Handles plugins that exist in .tmp but have no cache directory.
+    // Config key format: "plugin_name@marketplace_name"
+    for (id, val) in &plugins_config {
+        if seen_config_ids.contains(id) {
+            continue;
+        }
+        if let Some((pname, mp_name)) = id.split_once('@') {
+            let enabled = val.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true);
+            plugin_enabled_map
+                .entry(pname.to_string())
+                .or_default()
+                .push((mp_name.to_string(), enabled));
+        }
+    }
+
+    let mut agents = Vec::new();
+    // seen_tmp_aliases: marketplace-free keys from .tmp — used to block cache fallback
+    let mut seen_tmp_aliases: HashSet<String> = HashSet::new();
+    // seen_cache: marketplace-aware keys — cache-to-cache dedup (cross-version)
+    let mut seen_cache: HashSet<String> = HashSet::new();
+    let mut seen_canonical: HashSet<PathBuf> = HashSet::new();
+
+    // Shorthand closure delegating to the extracted pure function
+    let is_disabled = |plugin_name: &str, marketplace: Option<&str>| -> bool {
+        is_codex_plugin_disabled(
+            plugin_name,
+            marketplace,
+            &plugins_config,
+            &plugin_enabled_map,
+        )
+    };
+
+    // 1. Primary: ~/.codex/.tmp/plugins/plugins/*/agents/
+    //    Inserts marketplace-free keys into seen_tmp_aliases so cache fallback is blocked.
+    let tmp_root = codex_home.join(".tmp").join("plugins").join("plugins");
+    if tmp_root.is_dir() {
+        for entry in std::fs::read_dir(&tmp_root).into_iter().flatten().flatten() {
+            if !entry.path().is_dir() {
+                continue;
+            }
+            let plugin_name = entry.file_name().to_string_lossy().to_string();
+            if is_disabled(&plugin_name, None) {
+                continue;
+            }
+
+            let agents_dir = entry.path().join("agents");
+            let source = format!("codex-plugin:{}", plugin_name);
+            collect_tmp_codex_agents(
+                &agents_dir,
+                &source,
+                &plugin_name,
+                &mut seen_tmp_aliases,
+                &mut seen_canonical,
+                &mut agents,
+            );
+        }
+    }
+
+    // 2. Fallback: ~/.codex/plugins/cache/{marketplace}/{plugin}/{version}/
+    //    Checks seen_tmp_aliases first (marketplace-free) — if .tmp already has
+    //    this plugin's agent, skip it. Uses marketplace-aware seen_cache for
+    //    cache-to-cache dedup so same-name plugins from different marketplaces coexist.
+    let cache_root = codex_home.join("plugins").join("cache");
+    if cache_root.is_dir() {
+        for mp in std::fs::read_dir(&cache_root)
+            .into_iter()
+            .flatten()
+            .flatten()
+        {
+            if !mp.path().is_dir() {
+                continue;
+            }
+            let mp_name = mp.file_name().to_string_lossy().to_string();
+            for plugin in std::fs::read_dir(mp.path()).into_iter().flatten().flatten() {
+                if !plugin.path().is_dir() {
+                    continue;
+                }
+                let plugin_name = plugin.file_name().to_string_lossy().to_string();
+                if is_disabled(&plugin_name, Some(&mp_name)) {
+                    continue;
+                }
+
+                // Select active version — matches Plugins page logic:
+                // "local" wins if present, otherwise lexicographically last.
+                let version_names: Vec<String> = std::fs::read_dir(plugin.path())
+                    .into_iter()
+                    .flatten()
+                    .flatten()
+                    .filter(|e| e.path().is_dir())
+                    .map(|e| e.file_name().to_string_lossy().to_string())
+                    .collect();
+                if version_names.is_empty() {
+                    continue;
+                }
+                let active = if version_names.iter().any(|v| v == "local") {
+                    "local".to_string()
+                } else {
+                    let mut sorted = version_names;
+                    sorted.sort();
+                    sorted.last().unwrap().clone()
+                };
+                let vp = plugin.path().join(&active);
+
+                let source = format!("codex-plugin:{}:{}", mp_name, plugin_name);
+                let cache_prefix = format!("{}:{}", mp_name, plugin_name);
+                collect_cache_codex_agents(
+                    &vp.join("agents"),
+                    &source,
+                    &plugin_name,
+                    &seen_tmp_aliases,
+                    &cache_prefix,
+                    &mut seen_cache,
+                    &mut seen_canonical,
+                    &mut agents,
+                );
+
+                // skills/*/agents/
+                let skills_dir = vp.join("skills");
+                if skills_dir.is_dir() {
+                    for skill in std::fs::read_dir(&skills_dir)
+                        .into_iter()
+                        .flatten()
+                        .flatten()
+                    {
+                        if !skill.path().is_dir() {
+                            continue;
+                        }
+                        let skill_name = skill.file_name().to_string_lossy().to_string();
+                        let s = format!("codex-plugin:{}:{}:{}", mp_name, plugin_name, skill_name);
+                        let tmp_plugin = format!("{}:{}", plugin_name, skill_name);
+                        let cache_plugin = format!("{}:{}:{}", mp_name, plugin_name, skill_name);
+                        collect_cache_codex_agents(
+                            &skill.path().join("agents"),
+                            &s,
+                            &tmp_plugin,
+                            &seen_tmp_aliases,
+                            &cache_plugin,
+                            &mut seen_cache,
+                            &mut seen_canonical,
+                            &mut agents,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    log::debug!(
+        "[agents] discover_codex_plugin_agents: {} total",
+        agents.len()
+    );
+    agents
+}
+
 // ── Tauri commands ──
+
+/// List Codex plugin agents (pure filesystem scan, no CLI call).
+#[tauri::command]
+pub fn list_codex_agents() -> Result<Vec<AgentDefinitionSummary>, String> {
+    log::debug!("[agents] list_codex_agents");
+    Ok(discover_codex_plugin_agents())
+}
 
 /// List all agent definitions from user/project/plugin sources.
 #[tauri::command]
@@ -823,5 +1161,283 @@ You are a code reviewer."#;
         assert_eq!(agents.len(), 1);
         assert_eq!(agents[0].file_name, "my-bot");
         assert_eq!(agents[0].name, "My Bot");
+    }
+
+    // ── collect_codex_agents dedup tests ──
+
+    fn write_agent_md(dir: &Path, name: &str) {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(
+            dir.join(format!("{}.md", name)),
+            format!(
+                "---\nname: {}\ndescription: test agent\n---\nYou are {}.",
+                name, name
+            ),
+        )
+        .unwrap();
+    }
+
+    /// .tmp has vercel/deployment-expert.md, cache has openai-curated/vercel/.../deployment-expert.md
+    /// → only 1 agent returned (.tmp wins)
+    #[test]
+    fn codex_dedup_tmp_blocks_cache() {
+        let root = tempfile::tempdir().unwrap();
+        let tmp_agents = root.path().join("tmp").join("vercel").join("agents");
+        let cache_agents = root
+            .path()
+            .join("cache")
+            .join("openai-curated")
+            .join("vercel")
+            .join("abc123")
+            .join("agents");
+
+        write_agent_md(&tmp_agents, "deployment-expert");
+        write_agent_md(&cache_agents, "deployment-expert");
+
+        let mut agents = Vec::new();
+        let mut seen_tmp: HashSet<String> = HashSet::new();
+        let mut seen_cache: HashSet<String> = HashSet::new();
+        let mut seen_canonical: HashSet<PathBuf> = HashSet::new();
+
+        // .tmp phase
+        collect_tmp_codex_agents(
+            &tmp_agents,
+            "codex-plugin:vercel",
+            "vercel",
+            &mut seen_tmp,
+            &mut seen_canonical,
+            &mut agents,
+        );
+        assert_eq!(agents.len(), 1);
+        assert_eq!(agents[0].agent.as_deref(), Some("codex"));
+
+        // cache phase — should be blocked by tmp alias
+        collect_cache_codex_agents(
+            &cache_agents,
+            "codex-plugin:openai-curated:vercel",
+            "vercel",
+            &seen_tmp,
+            "openai-curated:vercel",
+            &mut seen_cache,
+            &mut seen_canonical,
+            &mut agents,
+        );
+        // Still 1 — cache copy was blocked
+        assert_eq!(agents.len(), 1);
+    }
+
+    /// cache has mp-a/foo/agent.md and mp-b/foo/agent.md, .tmp has nothing
+    /// → 2 agents returned (different marketplaces, not merged)
+    #[test]
+    fn codex_dedup_different_marketplaces_coexist() {
+        let root = tempfile::tempdir().unwrap();
+        let mp_a_agents = root
+            .path()
+            .join("cache")
+            .join("mp-a")
+            .join("foo")
+            .join("v1")
+            .join("agents");
+        let mp_b_agents = root
+            .path()
+            .join("cache")
+            .join("mp-b")
+            .join("foo")
+            .join("v1")
+            .join("agents");
+
+        write_agent_md(&mp_a_agents, "helper");
+        write_agent_md(&mp_b_agents, "helper");
+
+        let mut agents = Vec::new();
+        let seen_tmp: HashSet<String> = HashSet::new(); // empty — no .tmp
+        let mut seen_cache: HashSet<String> = HashSet::new();
+        let mut seen_canonical: HashSet<PathBuf> = HashSet::new();
+
+        // mp-a
+        collect_cache_codex_agents(
+            &mp_a_agents,
+            "codex-plugin:mp-a:foo",
+            "foo",
+            &seen_tmp,
+            "mp-a:foo",
+            &mut seen_cache,
+            &mut seen_canonical,
+            &mut agents,
+        );
+        assert_eq!(agents.len(), 1);
+
+        // mp-b — different marketplace-aware key, should NOT be blocked
+        collect_cache_codex_agents(
+            &mp_b_agents,
+            "codex-plugin:mp-b:foo",
+            "foo",
+            &seen_tmp,
+            "mp-b:foo",
+            &mut seen_cache,
+            &mut seen_canonical,
+            &mut agents,
+        );
+        assert_eq!(agents.len(), 2);
+    }
+
+    /// Same marketplace, different plugins, same agent filename → 2 agents
+    #[test]
+    fn codex_dedup_same_marketplace_different_plugins() {
+        let root = tempfile::tempdir().unwrap();
+        let foo_agents = root
+            .path()
+            .join("cache")
+            .join("mp-a")
+            .join("foo")
+            .join("v1")
+            .join("agents");
+        let bar_agents = root
+            .path()
+            .join("cache")
+            .join("mp-a")
+            .join("bar")
+            .join("v1")
+            .join("agents");
+
+        write_agent_md(&foo_agents, "helper");
+        write_agent_md(&bar_agents, "helper");
+
+        let mut agents = Vec::new();
+        let seen_tmp: HashSet<String> = HashSet::new();
+        let mut seen_cache: HashSet<String> = HashSet::new();
+        let mut seen_canonical: HashSet<PathBuf> = HashSet::new();
+
+        // foo
+        collect_cache_codex_agents(
+            &foo_agents,
+            "codex-plugin:mp-a:foo",
+            "foo",
+            &seen_tmp,
+            "mp-a:foo",
+            &mut seen_cache,
+            &mut seen_canonical,
+            &mut agents,
+        );
+        assert_eq!(agents.len(), 1);
+
+        // bar — same marketplace, different plugin → should NOT be blocked
+        collect_cache_codex_agents(
+            &bar_agents,
+            "codex-plugin:mp-a:bar",
+            "bar",
+            &seen_tmp,
+            "mp-a:bar",
+            &mut seen_cache,
+            &mut seen_canonical,
+            &mut agents,
+        );
+        assert_eq!(agents.len(), 2);
+    }
+
+    /// Test is_codex_plugin_disabled with marketplace (direct config lookup)
+    #[test]
+    fn codex_disabled_with_marketplace() {
+        let mut config = serde_json::Map::new();
+        config.insert(
+            "vercel@openai-curated".to_string(),
+            serde_json::json!({"enabled": false}),
+        );
+        let map: HashMap<String, Vec<(String, bool)>> = HashMap::new();
+
+        // Direct marketplace lookup → disabled
+        assert!(is_codex_plugin_disabled(
+            "vercel",
+            Some("openai-curated"),
+            &config,
+            &map
+        ));
+        // Enabled plugin
+        assert!(!is_codex_plugin_disabled(
+            "figma",
+            Some("openai-curated"),
+            &config,
+            &map
+        ));
+        // No config entry → default enabled
+        assert!(!is_codex_plugin_disabled(
+            "vercel",
+            Some("other-mp"),
+            &config,
+            &map
+        ));
+    }
+
+    /// Test is_codex_plugin_disabled without marketplace (.tmp path, uses map)
+    #[test]
+    fn codex_disabled_tmp_via_map() {
+        let config = serde_json::Map::new();
+
+        // Single marketplace entry, disabled → .tmp should be blocked
+        let mut map: HashMap<String, Vec<(String, bool)>> = HashMap::new();
+        map.entry("vercel".to_string())
+            .or_default()
+            .push(("openai-curated".to_string(), false));
+        assert!(is_codex_plugin_disabled("vercel", None, &config, &map));
+
+        // Single marketplace entry, enabled → .tmp should show
+        let mut map2: HashMap<String, Vec<(String, bool)>> = HashMap::new();
+        map2.entry("figma".to_string())
+            .or_default()
+            .push(("openai-curated".to_string(), true));
+        assert!(!is_codex_plugin_disabled("figma", None, &config, &map2));
+
+        // Ambiguous: multiple marketplaces → conservative show
+        let mut map3: HashMap<String, Vec<(String, bool)>> = HashMap::new();
+        map3.entry("foo".to_string())
+            .or_default()
+            .push(("mp-a".to_string(), false));
+        map3.entry("foo".to_string())
+            .or_default()
+            .push(("mp-b".to_string(), true));
+        assert!(!is_codex_plugin_disabled("foo", None, &config, &map3));
+
+        // No match at all → default show
+        assert!(!is_codex_plugin_disabled("unknown", None, &config, &map));
+    }
+
+    /// Config-only disabled (no cache dir): config.toml has vercel@openai-curated
+    /// enabled=false, map is populated from config fallback → .tmp/vercel is hidden
+    #[test]
+    fn codex_disabled_plugin_from_config_only() {
+        let mut config = serde_json::Map::new();
+        config.insert(
+            "vercel@openai-curated".to_string(),
+            serde_json::json!({"enabled": false}),
+        );
+
+        // Simulate the config→map fallback path from discover_codex_plugin_agents:
+        // config entry "vercel@openai-curated" with no cache dir → added to map
+        let mut map: HashMap<String, Vec<(String, bool)>> = HashMap::new();
+        for (id, val) in &config {
+            if let Some((pname, mp_name)) = id.split_once('@') {
+                let enabled = val.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true);
+                map.entry(pname.to_string())
+                    .or_default()
+                    .push((mp_name.to_string(), enabled));
+            }
+        }
+
+        // .tmp path (no marketplace) → should be disabled via map
+        assert!(is_codex_plugin_disabled("vercel", None, &config, &map));
+        // Direct marketplace lookup also works
+        assert!(is_codex_plugin_disabled(
+            "vercel",
+            Some("openai-curated"),
+            &config,
+            &map
+        ));
+        // Unknown plugin → not disabled
+        assert!(!is_codex_plugin_disabled(
+            "superpowers",
+            None,
+            &config,
+            &map
+        ));
     }
 }

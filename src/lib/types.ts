@@ -1424,6 +1424,7 @@ export interface AgentDefinitionSummary {
   isolation?: string;
   readonly: boolean;
   raw_content?: string;
+  agent?: "claude" | "codex";
 }
 
 // ── Preview / Element Picker ──

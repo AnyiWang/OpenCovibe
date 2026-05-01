@@ -805,6 +805,10 @@ pub async fn dispatch_command(
             let result = crate::commands::agents::list_agents(cwd).await?;
             serde_json::to_value(result).map_err(|e| e.to_string())
         }
+        "list_codex_agents" => {
+            let result = crate::commands::agents::list_codex_agents()?;
+            serde_json::to_value(result).map_err(|e| e.to_string())
+        }
         "read_agent_file" => {
             let scope = extract_str(&params, "scope")?;
             let file_name = extract_str(&params, "file_name")?;
