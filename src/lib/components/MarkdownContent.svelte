@@ -9,14 +9,50 @@
     streaming = false,
     basePath = "",
     class: className = "",
+    lazy = true,
   }: {
     text?: string;
     streaming?: boolean;
     basePath?: string;
     class?: string;
+    /** When true (default), defer markdown parsing until element enters viewport.
+     *  Off-screen entries render raw <pre> until then. Pass false for places where
+     *  the content is always visible and lazy-render would just add a re-render. */
+    lazy?: boolean;
   } = $props();
 
   let container: HTMLDivElement | undefined = $state();
+  let lazyEl: HTMLElement | undefined = $state();
+  /** Set to true once element has been intersection-observed near the viewport.
+   *  Sticky — once true, stays true (so scrolling away doesn't un-parse content). */
+  let visibleOnce = $state(!lazy);
+
+  // ── Lazy markdown rendering: skip parse until element is near viewport ──
+  // Off-screen MarkdownContent shows raw <pre>{text}</pre>. When IntersectionObserver
+  // detects approach (within 300px rootMargin), we flip visibleOnce → markdown parse.
+  // This eliminates the ~150-200ms total of synchronous md-render at chat-page mount
+  // when timeline has dozens of historical entries.
+  $effect(() => {
+    if (!lazy || streaming || visibleOnce) return;
+    const el = lazyEl;
+    if (!el) return;
+    if (typeof IntersectionObserver === "undefined") {
+      // No IntersectionObserver (e.g., very old WebView) — fall back to immediate parse.
+      visibleOnce = true;
+      return;
+    }
+    const obs = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting)) {
+          visibleOnce = true;
+          obs.disconnect();
+        }
+      },
+      { rootMargin: "300px 0px" },
+    );
+    obs.observe(el);
+    return () => obs.disconnect();
+  });
 
   // ── Streaming display: rAF-coalesced raw <pre>; non-streaming: full markdown render ──
   // Streaming mode shows raw text in a <pre> (zero parse cost). DOM writes are coalesced
@@ -69,8 +105,9 @@
   // Cancel pending rAF on unmount only (not on every effect rerun).
   onDestroy(cancelPendingFrame);
 
-  // Non-streaming: $derived runs renderMarkdown once per text change. Streaming: skipped.
-  let html = $derived(streaming ? "" : displayText ? renderMarkdown(displayText) : "");
+  // Markdown rendering gate: skip when streaming OR not yet visible (lazy).
+  let renderMarkdownNow = $derived(!streaming && visibleOnce);
+  let html = $derived(renderMarkdownNow && displayText ? renderMarkdown(displayText) : "");
 
   $effect(() => {
     if (!container || !html) return;
@@ -130,8 +167,9 @@
   });
 </script>
 
-{#if streaming}
+{#if !renderMarkdownNow}
   <pre
+    bind:this={lazyEl}
     class="whitespace-pre-wrap break-words font-sans text-sm leading-relaxed text-foreground/90 m-0 {className}">{displayText}</pre>
 {:else}
   <div
