@@ -1,5 +1,6 @@
 import { Marked } from "marked";
 import { escapeHtml } from "$lib/utils/ansi";
+import { perfMark } from "$lib/utils/perf";
 import hljs from "highlight.js/lib/core";
 import javascript from "highlight.js/lib/languages/javascript";
 import typescript from "highlight.js/lib/languages/typescript";
@@ -106,11 +107,15 @@ marked.use({
 });
 
 export function renderMarkdown(text: string): string {
-  const raw = marked.parse(text);
-  if (typeof raw !== "string") {
-    return "";
-  }
-  return DOMPurify.sanitize(raw, {
-    ADD_ATTR: ["class", "target", "data-code-copy"],
-  });
+  return perfMark(
+    "md-render",
+    () => {
+      const raw = marked.parse(text);
+      if (typeof raw !== "string") return "";
+      return DOMPurify.sanitize(raw, {
+        ADD_ATTR: ["class", "target", "data-code-copy"],
+      });
+    },
+    { chars: text.length, codeFenceCount: text.match(/```/g)?.length ?? 0 },
+  );
 }

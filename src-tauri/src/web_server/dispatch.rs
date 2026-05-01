@@ -222,6 +222,12 @@ pub async fn dispatch_command(
             let content = crate::commands::files::read_text_file(path, cwd)?;
             Ok(json!(content))
         }
+        "stat_text_file" => {
+            let path = extract_str(&params, "path")?;
+            let cwd = params.get("cwd").and_then(|v| v.as_str()).map(String::from);
+            let size = crate::commands::files::stat_text_file(path, cwd)?;
+            Ok(json!(size))
+        }
         "write_text_file" => {
             let path = extract_str(&params, "path")?;
             let content = extract_str(&params, "content")?;

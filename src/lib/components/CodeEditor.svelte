@@ -20,6 +20,7 @@
   import { languages } from "@codemirror/language-data";
   import { oneDark } from "@codemirror/theme-one-dark";
   import { dbg, dbgWarn } from "$lib/utils/debug";
+  import { perfMark, perfMarkAsync } from "$lib/utils/perf";
   import { fileName } from "$lib/utils/format";
   import { resolveStaticLanguage, resolveByFirstLine } from "$lib/utils/codemirror-languages";
 
@@ -130,54 +131,56 @@
     const dark = isDarkMode();
     dbg("code-editor", "mount", { filePath, readonly, dark });
 
-    const state = EditorState.create({
-      doc: content,
-      extensions: [
-        lineNumbers(),
-        highlightActiveLineGutter(),
-        highlightActiveLine(),
-        drawSelection(), // Renders CM6 cursor (native caret is hidden via caret-color: transparent in app.css)
-        bracketMatching(),
-        history(),
-        keymap.of([
-          {
-            key: "Mod-s",
-            run: () => {
-              onsave?.();
-              return true;
-            },
-          },
-          ...defaultKeymap,
-          ...historyKeymap,
-        ]),
-        syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
-        // Static tok-* class fallback: if style-mod CSS injection fails
-        // (observed on Intel Mac WKWebView), the static CSS in <style> below
-        // provides baseline syntax highlighting via classHighlighter.
-        syntaxHighlighting(classHighlighter),
-        EditorView.editable.of(!readonly),
-        EditorState.readOnly.of(readonly),
-        themeCompartment.of(dark ? oneDark : []),
-        langCompartment.of([]),
-        EditorView.updateListener.of((update) => {
-          if (update.docChanged && !updating) {
-            updating = true;
-            content = update.state.doc.toString();
-            updating = false;
-          }
-        }),
-      ],
-    });
+    perfMark(
+      "cm-create-view",
+      () => {
+        const state = EditorState.create({
+          doc: content,
+          extensions: [
+            lineNumbers(),
+            highlightActiveLineGutter(),
+            highlightActiveLine(),
+            drawSelection(), // Renders CM6 cursor (native caret is hidden via caret-color: transparent in app.css)
+            bracketMatching(),
+            history(),
+            keymap.of([
+              {
+                key: "Mod-s",
+                run: () => {
+                  onsave?.();
+                  return true;
+                },
+              },
+              ...defaultKeymap,
+              ...historyKeymap,
+            ]),
+            syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
+            // Static tok-* class fallback: if style-mod CSS injection fails
+            // (observed on Intel Mac WKWebView), the static CSS in <style> below
+            // provides baseline syntax highlighting via classHighlighter.
+            syntaxHighlighting(classHighlighter),
+            EditorView.editable.of(!readonly),
+            EditorState.readOnly.of(readonly),
+            themeCompartment.of(dark ? oneDark : []),
+            langCompartment.of([]),
+            EditorView.updateListener.of((update) => {
+              if (update.docChanged && !updating) {
+                updating = true;
+                content = update.state.doc.toString();
+                updating = false;
+              }
+            }),
+          ],
+        });
+        view = new EditorView({ state, parent: editorEl });
+      },
+      { chars: content.length },
+    );
 
-    view = new EditorView({ state, parent: editorEl });
-
-    // Load language support
-    const seq = ++langSeq;
-    resolveLanguage(filePath).then((lang) => {
-      if (seq !== langSeq || !view) return; // stale — user already switched files
-      view.dispatch({ effects: langCompartment.reconfigure(lang) });
-      if (lang.length > 0) verifySyntaxStyles(view);
-    });
+    // Note: language resolution is owned by the $effect below. It runs once `view` becomes
+    // reactive (i.e., immediately after assignment above) AND on every filePath change.
+    // Doing it here too would issue a duplicate request whose result becomes stale —
+    // this also distorted the `cm-resolve-lang` perf metric.
 
     // Watch dark mode changes via MutationObserver on <html> class
     const observer = new MutationObserver(() => {
@@ -210,16 +213,25 @@
     }
   });
 
-  // Reconfigure language when filePath changes
+  // Reconfigure language on initial mount (when view becomes available) and on filePath change.
+  // Owns the only resolveLanguage call path — onMount no longer runs it.
   $effect(() => {
     if (!view) return;
     const _path = filePath; // track dependency
     const seq = ++langSeq;
-    resolveLanguage(_path).then((lang) => {
-      if (seq !== langSeq || !view) return; // stale — user already switched files
-      view.dispatch({ effects: langCompartment.reconfigure(lang) });
-      if (lang.length > 0) verifySyntaxStyles(view);
-    });
+    // Wrap the FULL flow (resolve + dispatch reconfigure + verify) so perf reflects total
+    // language-load cost, not just the dynamic import. The dispatch triggers re-parse +
+    // syntax highlight over the document, which can be the dominant cost for large files.
+    perfMarkAsync(
+      "cm-resolve-lang",
+      async () => {
+        const lang = await resolveLanguage(_path);
+        if (seq !== langSeq || !view) return; // stale — user already switched files
+        view.dispatch({ effects: langCompartment.reconfigure(lang) });
+        if (lang.length > 0) verifySyntaxStyles(view);
+      },
+      { filePath: _path },
+    );
   });
 </script>
 

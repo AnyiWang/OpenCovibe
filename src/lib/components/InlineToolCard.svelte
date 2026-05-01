@@ -1748,7 +1748,10 @@
               <pre
                 class="text-xs font-mono whitespace-pre-wrap break-words text-blue-300/70 italic mb-1 leading-relaxed">{subEntry.thinkingText.trimEnd()}</pre>
             {/if}
-            <MarkdownContent text={subEntry.content} />
+            <MarkdownContent
+              text={subEntry.content}
+              streaming={subEntry.id?.startsWith("__sub_stream_") ?? false}
+            />
           </div>
         {:else if subEntry.kind === "tool"}
           <svelte:self

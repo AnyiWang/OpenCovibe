@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { getGitDiff, readTextFile, readFileBase64, writeTextFile } from "$lib/api";
+  import { getGitDiff, readTextFile, readFileBase64, writeTextFile, statTextFile } from "$lib/api";
   import { dbg } from "$lib/utils/debug";
   import { fileName as pathFileName } from "$lib/utils/format";
   import { t } from "$lib/i18n/index.svelte";
@@ -15,6 +15,7 @@
     editable = false,
     isRemote = false,
     scopeKey = "",
+    active = true,
     onLoaded,
     onLoadFailed,
     onCloseDiff,
@@ -26,6 +27,8 @@
     editable?: boolean;
     isRemote?: boolean;
     scopeKey?: string;
+    /** When false (parent tab inactive), do NOT initiate new loads; existing content is preserved. */
+    active?: boolean;
     onLoaded?: (path: string) => void;
     onLoadFailed?: (path: string, err: string) => void;
     onCloseDiff?: () => void;
@@ -42,6 +45,12 @@
   let fileDirty = $state(false);
   let fileSaving = $state(false);
   let editorMode = $state<"edit" | "rendered">("edit");
+  /** True when file exceeds size threshold — show warning instead of loading into CodeMirror. */
+  let fileTooLarge = $state(false);
+  let fileSize = $state(0);
+
+  /** Files larger than this are not auto-previewed (CodeMirror init becomes very slow). */
+  const MAX_PREVIEW_SIZE = 1_000_000; // 1MB
 
   let diffContent = $state("");
   let diffLoading = $state(false);
@@ -94,6 +103,8 @@
   async function loadPreview(p: string, c: string): Promise<void> {
     const seq = ++loadSeq;
     fileError = "";
+    fileTooLarge = false;
+    fileSize = 0;
     const ext = getExtension(p);
     editorMode = isPreviewable(ext) ? "rendered" : "edit";
     fileLoading = true;
@@ -108,12 +119,42 @@
         fileContent = "";
         originalContent = "";
       } else {
-        const content = await readTextFile(p, c);
-        if (seq !== loadSeq) return;
-        fileContent = content;
-        originalContent = content;
+        // Stat first (cheap metadata) so multi-MB files don't pay readTextFile's full
+        // disk-read + IPC + JS string allocation cost just to be discarded by the size guard.
+        // Stat failures fall through to readTextFile so the existing error path stays intact.
+        let preReadSize: number | null = null;
+        try {
+          preReadSize = await statTextFile(p, c);
+          if (seq !== loadSeq) return;
+        } catch (e) {
+          dbg("preview-pane", "stat failed, falling through to read", { path: p, err: String(e) });
+        }
+        if (preReadSize !== null && preReadSize > MAX_PREVIEW_SIZE) {
+          fileSize = preReadSize;
+          fileTooLarge = true;
+          fileContent = "";
+          originalContent = "";
+        } else {
+          const content = await readTextFile(p, c);
+          if (seq !== loadSeq) return;
+          fileSize = content.length;
+          // Defense-in-depth: stat may return stale/inaccurate size on some filesystems
+          // (e.g. sparse files, network mounts). Re-check after read.
+          if (content.length > MAX_PREVIEW_SIZE) {
+            fileTooLarge = true;
+            fileContent = "";
+            originalContent = "";
+          } else {
+            fileContent = content;
+            originalContent = content;
+          }
+        }
       }
-      dbg("preview-pane", "file loaded", { path: p, size: fileContent.length });
+      dbg("preview-pane", "file loaded", {
+        path: p,
+        size: fileSize,
+        tooLarge: fileTooLarge,
+      });
       onLoaded?.(p);
     } catch (e) {
       if (seq !== loadSeq) return;
@@ -169,12 +210,17 @@
   // ── Reactive load ──
   // Svelte 5: read all reactive props inside the effect to register dependency tracking.
   $effect(() => {
-    // Establish dependencies: cwd, path, mode, scopeKey, isRemote
+    // Establish dependencies: cwd, path, mode, scopeKey, isRemote, active
     void scopeKey;
     const _cwd = cwd;
     const _path = path;
     const _mode = mode;
     const _isRemote = isRemote;
+    const _active = active;
+
+    // Inactive (parent tab hidden): keep already-loaded content visible, but don't
+    // initiate new IPC loads on cwd/path/mode/scopeKey changes.
+    if (!_active) return;
 
     // Reset on remote or empty path
     if (_isRemote || !_path) {
@@ -417,6 +463,12 @@
       {:else if fileError}
         <div class="flex flex-1 items-center justify-center p-4">
           <p class="text-sm text-destructive">{fileError}</p>
+        </div>
+      {:else if fileTooLarge}
+        <div class="flex flex-1 items-center justify-center p-4">
+          <p class="text-xs text-muted-foreground text-center">
+            {t("preview_tooLarge")} ({Math.round(fileSize / 1024)} KB)
+          </p>
         </div>
       {:else if kind === "image" && imageDataUrl}
         <div
