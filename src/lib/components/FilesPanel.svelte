@@ -57,18 +57,28 @@
       {@const color = actionColor(entry.action)}
       {@const canJump = !!entry.toolUseId}
       {@const isSelected = selectedPath !== undefined && entry.path === selectedPath}
-      {#if canJump}
-        <button
-          class="w-full text-left px-2.5 py-1 rounded-sm transition-colors group {isSelected
+      {@const isClickable = !!onPreview || canJump}
+      {#if isClickable}
+        <!--
+          Row click = preview only (no chat re-render). Use a small "jump" icon button at
+          the end (only when canJump && onScrollToTool) to scroll the chat to that tool card.
+          Splitting these prevents the chat from re-rendering every time the user just wants
+          to peek at a file.
+        -->
+        <div
+          class="group flex items-center gap-1 px-2.5 py-1 rounded-sm transition-colors {isSelected
             ? 'bg-accent'
             : 'hover:bg-accent/50'}"
-          onclick={() => {
-            onScrollToTool?.(entry.toolUseId!);
-            onPreview?.(entry.path);
-          }}
-          title={t("toolActivity_scrollToTool")}
         >
-          <div class="flex items-center gap-1.5">
+          <button
+            type="button"
+            class="flex-1 min-w-0 flex items-center gap-1.5 text-left"
+            onclick={() => {
+              if (onPreview) onPreview(entry.path);
+              else if (canJump) onScrollToTool?.(entry.toolUseId!);
+            }}
+            title={onPreview ? entry.path : t("toolActivity_scrollToTool")}
+          >
             <span
               class="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded text-[10px] font-bold {color.bg} {color.text}"
             >
@@ -77,26 +87,29 @@
             <span class="text-[11px] text-foreground truncate min-w-0 group-hover:underline"
               >{shortPath(entry.path)}</span
             >
-          </div>
-        </button>
-      {:else if onPreview}
-        <button
-          class="w-full text-left px-2.5 py-1 rounded-sm transition-colors group {isSelected
-            ? 'bg-accent'
-            : 'hover:bg-accent/50'}"
-          onclick={() => onPreview?.(entry.path)}
-        >
-          <div class="flex items-center gap-1.5">
-            <span
-              class="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded text-[10px] font-bold {color.bg} {color.text}"
+          </button>
+          {#if canJump && onScrollToTool && onPreview}
+            <button
+              type="button"
+              class="shrink-0 opacity-0 group-hover:opacity-100 transition-opacity p-0.5 text-muted-foreground/60 hover:text-foreground"
+              onclick={() => onScrollToTool?.(entry.toolUseId!)}
+              title={t("toolActivity_scrollToTool")}
+              aria-label={t("toolActivity_scrollToTool")}
             >
-              {actionLabel(entry.action)}
-            </span>
-            <span class="text-[11px] text-foreground truncate min-w-0 group-hover:underline"
-              >{shortPath(entry.path)}</span
-            >
-          </div>
-        </button>
+              <svg
+                class="h-3 w-3"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <polyline points="9 18 15 12 9 6" />
+              </svg>
+            </button>
+          {/if}
+        </div>
       {:else}
         <div class="px-2.5 py-1 cursor-default">
           <div class="flex items-center gap-1.5">

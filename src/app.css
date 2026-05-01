@@ -631,10 +631,14 @@
   border-bottom: 1px solid hsl(var(--border) / 0.5);
 }
 
-/* Content-visibility optimization (disabled on WebKit via IS_WEBKIT) */
+/* Content-visibility optimization: skip layout/paint for off-screen entries.
+ * Note: `content-visibility: auto` already implies layout/style/paint containment
+ * dynamically (size containment when off-screen, normal when on-screen). Declaring
+ * `contain` explicitly overrides this dynamic behavior and was observed to cause
+ * 2.5s style recalc storms on click in WKWebView. Let the browser manage it. */
 .cv-auto {
   content-visibility: auto;
-  contain-intrinsic-size: auto 100px;
+  contain-intrinsic-size: auto 300px;
 }
 
 /* Scrollbar-hide utility (for horizontal pill rows) */

@@ -10,6 +10,7 @@
   import FilesPanel from "$lib/components/FilesPanel.svelte";
   import FilePreviewPane from "$lib/components/FilePreviewPane.svelte";
   import { onMount } from "svelte";
+  import { fpsCounter, isPerfEnabled } from "$lib/utils/perf";
   import SessionInfoPanel from "$lib/components/SessionInfoPanel.svelte";
   import StatusIcon from "$lib/components/StatusIcon.svelte";
   import {
@@ -67,6 +68,34 @@
   type SidebarPanel = "tools" | "context" | "files" | "info" | "tasks";
   let activeTab: SidebarPanel = $state("tools");
 
+  // Lazy keep-alive: a tab is mounted on first activation and stays mounted thereafter.
+  // Switching back to a previously-opened tab is then visibility-only (no remount).
+  // Svelte 5: $state(Set) requires reassignment to trigger reactivity (mutation methods
+  // alone won't), mirroring the existing collapsedTurns pattern below.
+  let mountedTabs = $state(new Set<SidebarPanel>(["tools"]));
+  $effect(() => {
+    if (!mountedTabs.has(activeTab)) {
+      mountedTabs = new Set(mountedTabs).add(activeTab);
+    }
+  });
+
+  // Perf: measure tab-switch frame cost. Tracks the gap between activeTab change and the next
+  // animation frame — proxy for "how much work was queued by switching".
+  // Gated by isPerfEnabled() so non-debug runs don't pay performance.now() + rAF overhead.
+  let _prevTab: SidebarPanel | null = null;
+  $effect(() => {
+    const cur = activeTab;
+    const from = _prevTab;
+    _prevTab = cur;
+    if (from === null || from === cur) return;
+    if (!isPerfEnabled()) return;
+    const t0 = performance.now();
+    requestAnimationFrame(() => {
+      const dt = performance.now() - t0;
+      if (dt > 1) dbg("perf", "tab-switch", { from, to: cur, ms: +dt.toFixed(2) });
+    });
+  });
+
   // ── External tab request ──
   $effect(() => {
     if (requestedTab) {
@@ -94,55 +123,31 @@
   });
 
   // ── Width state (browser-safe initialization) ──
+  // Note: auto-widening on previewPath change was removed because the width change forced
+  // chat-main to reflow its thousands of message nodes every time previewPath transitioned,
+  // causing perceptible lag. Users drag the handle to adjust (persisted to localStorage).
+  // Default bumped from 320 → 420 to give more reasonable starting room for code preview;
+  // 320 was too narrow for typical lines. Users can still drag narrower if desired.
   const WIDTH_MIN = 280;
   const WIDTH_MAX = 720;
-  const WIDTH_DEFAULT = 320;
-  const WIDTH_AUTO_PREVIEW = 560;
+  const WIDTH_DEFAULT = 420;
 
   function clampWidth(v: number): number {
     return Math.max(WIDTH_MIN, Math.min(WIDTH_MAX, v));
   }
 
   let savedWidth = $state(WIDTH_DEFAULT);
-  let viewportWidth = $state(1200);
-  /** True once the user has explicitly resized (or loaded a persisted resize). Disables auto-floor. */
-  let userHasResized = $state(false);
 
   onMount(() => {
     if (typeof window === "undefined") return;
     const stored = window.localStorage.getItem("ocv:toolactivity-width");
     if (stored) {
       const n = parseInt(stored, 10);
-      if (Number.isFinite(n)) {
-        savedWidth = clampWidth(n);
-        userHasResized = true;
-      }
+      if (Number.isFinite(n)) savedWidth = clampWidth(n);
     }
-    viewportWidth = window.innerWidth;
-    const onResize = () => {
-      viewportWidth = window.innerWidth;
-    };
-    window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
   });
 
-  /**
-   * Effective width displayed:
-   * - If user has explicitly resized (or has a persisted preference) → always respect savedWidth.
-   * - Else if a preview is open → temporarily widen to accommodate code, but DO NOT persist.
-   * - Else → savedWidth (compact default).
-   *
-   * This keeps the auto-widening transient: closing the preview returns to savedWidth, and
-   * once the user drags the handle their preference is honored regardless of preview state.
-   */
-  let effectiveWidth = $derived.by(() => {
-    if (userHasResized) return clampWidth(savedWidth);
-    if (previewPath) {
-      const autoFloor = Math.min(WIDTH_AUTO_PREVIEW, 0.45 * viewportWidth);
-      return clampWidth(Math.max(savedWidth, autoFloor));
-    }
-    return clampWidth(savedWidth);
-  });
+  let effectiveWidth = $derived(clampWidth(savedWidth));
 
   // ── Resize handle (VS Code-style: ghost line during drag, single commit on release) ──
   // Why this approach: in-place live resize forces chat-main reflow on every pointermove,
@@ -156,6 +161,7 @@
   let pendingWidth: number | null = null;
   let rafId: number | null = null;
   let asideEl: HTMLElement | undefined = $state();
+  let dragFpsStop: (() => void) | null = null;
 
   function onResizeStart(e: PointerEvent) {
     resizing = true;
@@ -165,6 +171,7 @@
     ghostX = e.clientX;
     (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
     e.preventDefault();
+    dragFpsStop = fpsCounter("aside-drag");
   }
 
   function flushGhostFrame() {
@@ -196,12 +203,13 @@
 
     if (pendingWidth !== null && pendingWidth !== savedWidth) {
       savedWidth = pendingWidth;
-      userHasResized = true;
       if (typeof window !== "undefined") {
         window.localStorage.setItem("ocv:toolactivity-width", String(savedWidth));
       }
     }
     pendingWidth = null;
+    dragFpsStop?.();
+    dragFpsStop = null;
   }
 
   // ── Helpers ──
@@ -568,8 +576,8 @@
 {#if resizing}
   <!-- Ghost line during drag: zero-cost preview, no layout reflow elsewhere -->
   <div
-    class="fixed top-0 bottom-0 w-0.5 bg-primary/60 z-[9999] pointer-events-none"
-    style="left: {ghostX}px;"
+    class="fixed top-0 bottom-0 z-[9999] pointer-events-none bg-primary"
+    style="left: {ghostX - 1}px; width: 3px; box-shadow: 0 0 8px hsl(var(--primary) / 0.6);"
   ></div>
 {/if}
 <aside
@@ -742,326 +750,383 @@
       </div>
     </div>
 
-    {#if activeTab === "tasks"}
-      <!-- Background tasks panel -->
-      <div class="flex-1 overflow-y-auto">
-        {#if backgroundTasks.size === 0}
-          <div class="flex items-center justify-center h-32 text-xs text-muted-foreground/50">
-            {t("bgTask_empty")}
-          </div>
-        {:else}
-          <div class="py-1 space-y-0.5">
-            {#each sortedBgTasks as item (item.task_id)}
-              {@const isDone = item.status === "completed"}
-              {@const isFailed = item.status === "failed" || item.status === "error"}
-              {@const isActive = !isDone && !isFailed}
-              {@const rawData = (item.data as Record<string, unknown> | undefined)?.data as
-                | Record<string, unknown>
-                | undefined}
-              {@const usage = rawData?.usage as
-                | { duration_ms?: number; tool_uses?: number; total_tokens?: number }
-                | undefined}
-              {@const toolUseId = item.tool_use_id}
-              <button
-                class="w-full text-left mx-1.5 rounded px-2 py-1.5 transition-colors {isDone
-                  ? 'text-foreground/40 hover:bg-accent/30'
-                  : isFailed
-                    ? 'bg-destructive/5 text-foreground/50 hover:bg-destructive/10'
-                    : 'bg-blue-500/5 text-foreground/70 hover:bg-blue-500/10'}"
-                onclick={() => {
-                  if (toolUseId) onScrollToTool?.(toolUseId);
-                }}
-                title={toolUseId ? t("toolActivity_scrollToTool") : ""}
-              >
-                <div class="flex items-center gap-2">
-                  <StatusIcon status={isActive ? "running" : isDone ? "done" : "error"} size="sm" />
-                  <span class="flex-1 min-w-0 truncate text-[11px]"
-                    >{item.summary || item.message}</span
+    <!-- Lazy keep-alive: each tab mounts on first activation and stays mounted (visibility-only after).
+         Tab content is absolutely positioned within this relative wrapper so all mounted tabs share
+         the same layout slot but only the active one is visible/interactive. -->
+    <div class="flex-1 flex flex-col min-h-0 relative">
+      {#if mountedTabs.has("tasks")}
+        <div
+          class="absolute inset-0 flex flex-col"
+          style="visibility: {activeTab === 'tasks'
+            ? 'visible'
+            : 'hidden'}; pointer-events: {activeTab === 'tasks' ? 'auto' : 'none'};"
+        >
+          <!-- Background tasks panel -->
+          <div class="flex-1 overflow-y-auto">
+            {#if backgroundTasks.size === 0}
+              <div class="flex items-center justify-center h-32 text-xs text-muted-foreground/50">
+                {t("bgTask_empty")}
+              </div>
+            {:else}
+              <div class="py-1 space-y-0.5">
+                {#each sortedBgTasks as item (item.task_id)}
+                  {@const isDone = item.status === "completed"}
+                  {@const isFailed = item.status === "failed" || item.status === "error"}
+                  {@const isActive = !isDone && !isFailed}
+                  {@const rawData = (item.data as Record<string, unknown> | undefined)?.data as
+                    | Record<string, unknown>
+                    | undefined}
+                  {@const usage = rawData?.usage as
+                    | { duration_ms?: number; tool_uses?: number; total_tokens?: number }
+                    | undefined}
+                  {@const toolUseId = item.tool_use_id}
+                  <button
+                    class="w-full text-left mx-1.5 rounded px-2 py-1.5 transition-colors {isDone
+                      ? 'text-foreground/40 hover:bg-accent/30'
+                      : isFailed
+                        ? 'bg-destructive/5 text-foreground/50 hover:bg-destructive/10'
+                        : 'bg-blue-500/5 text-foreground/70 hover:bg-blue-500/10'}"
+                    onclick={() => {
+                      if (toolUseId) onScrollToTool?.(toolUseId);
+                    }}
+                    title={toolUseId ? t("toolActivity_scrollToTool") : ""}
                   >
-                  {#if isActive}
-                    <span class="shrink-0 text-[10px] text-foreground/30 tabular-nums"
-                      >{bgElapsed(item.startedAt)}</span
-                    >
-                  {/if}
-                </div>
-                {#if usage && (usage.tool_uses || usage.total_tokens || usage.duration_ms)}
-                  <div class="mt-0.5 text-[10px] text-muted-foreground/60 pl-5">
-                    {#if usage.tool_uses}{usage.tool_uses} tools{/if}
-                    {#if usage.tool_uses && usage.duration_ms}
-                      ·
+                    <div class="flex items-center gap-2">
+                      <StatusIcon
+                        status={isActive ? "running" : isDone ? "done" : "error"}
+                        size="sm"
+                      />
+                      <span class="flex-1 min-w-0 truncate text-[11px]"
+                        >{item.summary || item.message}</span
+                      >
+                      {#if isActive}
+                        <span class="shrink-0 text-[10px] text-foreground/30 tabular-nums"
+                          >{bgElapsed(item.startedAt)}</span
+                        >
+                      {/if}
+                    </div>
+                    {#if usage && (usage.tool_uses || usage.total_tokens || usage.duration_ms)}
+                      <div class="mt-0.5 text-[10px] text-muted-foreground/60 pl-5">
+                        {#if usage.tool_uses}{usage.tool_uses} tools{/if}
+                        {#if usage.tool_uses && usage.duration_ms}
+                          ·
+                        {/if}
+                        {#if usage.duration_ms}{formatDuration(usage.duration_ms)}{/if}
+                        {#if (usage.tool_uses || usage.duration_ms) && usage.total_tokens}
+                          ·
+                        {/if}
+                        {#if usage.total_tokens}{formatTokenCount(usage.total_tokens)} tok{/if}
+                      </div>
                     {/if}
-                    {#if usage.duration_ms}{formatDuration(usage.duration_ms)}{/if}
-                    {#if (usage.tool_uses || usage.duration_ms) && usage.total_tokens}
-                      ·
-                    {/if}
-                    {#if usage.total_tokens}{formatTokenCount(usage.total_tokens)} tok{/if}
-                  </div>
-                {/if}
-              </button>
-            {/each}
-          </div>
-        {/if}
-      </div>
-    {:else if activeTab === "context"}
-      <ContextHistoryPanel history={contextHistory} {turnUsages} {sessionInfo} />
-    {:else if activeTab === "files"}
-      <div class="flex flex-1 flex-col min-h-0">
-        <div class="flex-shrink-0 max-h-[40vh] overflow-y-auto border-b border-border/50">
-          <FilesPanel
-            {fileEntries}
-            {onScrollToTool}
-            onPreview={(p) => (previewPath = p)}
-            selectedPath={previewPath ?? undefined}
-          />
-        </div>
-        <div class="flex-1 min-h-0 overflow-hidden">
-          <FilePreviewPane
-            {cwd}
-            path={previewPath ?? ""}
-            mode="preview"
-            editable={false}
-            {isRemote}
-            scopeKey={runId}
-          />
-        </div>
-      </div>
-    {:else if activeTab === "info"}
-      <!-- Subagents section (shown above session info when Task tools exist) -->
-      {#if subagents.length > 0}
-        <div class="px-3 py-2 border-b border-border/50">
-          <div
-            class="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-1.5"
-          >
-            {t("tool_subagents", { count: String(subagents.length) })}
-          </div>
-          <div class="space-y-1.5">
-            {#each subagents as sa (sa.toolUseId)}
-              {@const isDone = sa.status === "success"}
-              {@const isError = sa.status === "error" || sa.status === "denied"}
-              {@const isRunning = !isDone && !isError}
-              <button
-                class="w-full text-left rounded-md border border-border/50 bg-background/50 px-2.5 py-1.5 hover:bg-accent/30 transition-colors"
-                onclick={() => onScrollToTool?.(sa.toolUseId)}
-                title="Scroll to tool"
-              >
-                <div class="flex items-center gap-1.5">
-                  <span class="text-[11px] font-medium text-foreground">{sa.meta.subagentType}</span
-                  >
-                  {#if sa.meta.model}
-                    <span
-                      class="text-[10px] px-1 py-0.5 rounded bg-cyan-500/15 text-cyan-600 dark:text-cyan-400 font-medium"
-                      >{sa.meta.model}</span
-                    >
-                  {/if}
-                  <span class="ml-auto">
-                    {#if isDone}
-                      <StatusIcon status="done" size="sm" />
-                    {:else if isError}
-                      <StatusIcon status="error" size="sm" />
-                    {:else if isRunning}
-                      <StatusIcon status="running" size="sm" />
-                    {/if}
-                  </span>
-                </div>
-                {#if sa.meta.description}
-                  <div class="text-[10px] text-muted-foreground truncate mt-0.5">
-                    {sa.meta.description}
-                  </div>
-                {/if}
-                {#if sa.toolCount > 0 || sa.durationMs != null}
-                  <div class="text-[10px] text-muted-foreground/60 mt-0.5">
-                    {#if sa.toolCount > 0}{sa.toolCount} tools{/if}
-                    {#if sa.toolCount > 0 && sa.durationMs != null}
-                      ·
-                    {/if}
-                    {#if sa.durationMs != null}{formatDuration(sa.durationMs)}{/if}
-                  </div>
-                {/if}
-              </button>
-            {/each}
-          </div>
-        </div>
-      {/if}
-      <SessionInfoPanel info={sessionInfo} {activeTab} />
-    {:else}
-      <!-- Tools panel -->
-      <!-- Summary chips -->
-      {#if toolStats.summary.length > 1}
-        <div class="flex flex-wrap gap-1 px-2.5 py-1.5 border-b border-border/50">
-          {#each toolStats.summary as [name, count]}
-            {@const style = getToolColor(name)}
-            <span
-              class="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded {style.bg} {style.text} font-medium"
-            >
-              {name}
-              <span class="opacity-70">{count}</span>
-            </span>
-          {/each}
-        </div>
-      {/if}
-
-      <!-- Tool list -->
-      <div class="flex-1 overflow-y-auto py-0.5">
-        {#if toolStats.totalToolCount === 0}
-          <div class="flex items-center justify-center h-32 text-xs text-muted-foreground/50">
-            {t("toolActivity_noToolCalls")}
-          </div>
-        {:else if useTimeline}
-          <!-- Timeline mode: grouped by turn -->
-          {#each turns as turn (turn.turnIndex)}
-            {@const isCollapsed = collapsedTurns.has(turn.turnIndex)}
-            {@const tu = usageByTurn.get(turn.turnIndex)}
-            {@const hasTools = turn.tools.length > 0}
-            <!-- Turn header: div with two sibling buttons (no nesting) -->
-            <div
-              class="flex items-center w-full px-2.5 py-1.5 hover:bg-accent/50 transition-colors border-b border-border/30"
-            >
-              <button
-                class="flex-1 flex items-center gap-1.5 text-left min-w-0"
-                onclick={() => {
-                  if (hasTools) {
-                    toggleTurn(turn.turnIndex);
-                  } else if (turn.anchorId) {
-                    dbg("tool-activity", "scroll to turn (no tools)", {
-                      turnIndex: turn.turnIndex,
-                      anchorId: turn.anchorId,
-                    });
-                    onScrollToTurn?.(turn.anchorId);
-                  }
-                }}
-              >
-                {#if hasTools}
-                  <svg
-                    class="h-3 w-3 text-muted-foreground/50 shrink-0 transition-transform {isCollapsed
-                      ? ''
-                      : 'rotate-90'}"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="2"
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                  >
-                    <polyline points="9 18 15 12 9 6" />
-                  </svg>
-                {/if}
-                <span class="text-[11px] font-medium text-muted-foreground truncate">
-                  {#if turn.userPreview}
-                    {t("toolActivity_turn", { index: String(turn.turnIndex) })}
-                    <span class="text-foreground/70">{truncate(turn.userPreview, 25)}</span>
-                  {:else}
-                    <span class="text-muted-foreground/60">{t("toolActivity_systemResume")}</span>
-                  {/if}
-                </span>
-                <span class="ml-auto flex items-center gap-1.5 shrink-0">
-                  {#if tu}
-                    <span class="text-[10px] text-muted-foreground"
-                      >{formatTokenCount(tu.inputTokens + tu.outputTokens)}</span
-                    >
-                  {/if}
-                  {#if hasTools}
-                    <span
-                      class="text-[10px] px-1.5 py-0.5 rounded-full bg-muted text-muted-foreground font-medium"
-                      >{countToolNodes(turn.tools)}</span
-                    >
-                  {/if}
-                </span>
-              </button>
-              {#if turn.anchorId}
-                <button
-                  class="shrink-0 ml-1 p-0.5 rounded text-muted-foreground/40 hover:text-foreground hover:bg-muted transition-colors"
-                  onclick={() => {
-                    dbg("tool-activity", "scroll to turn", {
-                      turnIndex: turn.turnIndex,
-                      anchorId: turn.anchorId,
-                    });
-                    onScrollToTurn?.(turn.anchorId!);
-                  }}
-                  title={t("toolActivity_scrollToTurn")}
-                >
-                  <svg
-                    class="h-3 w-3"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="2"
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                    ><circle cx="12" cy="12" r="3" /><path d="M12 2v4m0 12v4M2 12h4m12 0h4" /></svg
-                  >
-                </button>
-              {/if}
-            </div>
-
-            <!-- Tools in this turn (only render if turn has tools) -->
-            {#if hasTools && !isCollapsed}
-              <div class="py-0.5">
-                {#each turn.tools as node (node.tool.tool_use_id)}
-                  {@render toolNodeView(node)}
+                  </button>
                 {/each}
               </div>
             {/if}
-          {/each}
-        {:else}
-          <!-- HookEvent fallback mode (pipe/PTY) -->
-          {#each hookToolEvents as event, ei (ei)}
-            {@const style = getToolColor(event.tool_name ?? "")}
-            {@const detail = getHookDetail(event)}
-            {@const cat = categorizeHookStatus(event.status)}
-            <div class="px-2.5 py-1">
-              <div class="flex items-center gap-1.5">
-                {@render statusIcon(cat)}
-                <div class="flex h-4 w-4 shrink-0 items-center justify-center rounded {style.bg}">
-                  <svg
-                    class="h-2.5 w-2.5 {style.text}"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="2"
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                  >
-                    <path d={style.icon} />
-                  </svg>
-                </div>
-                <span class="text-[11px] font-medium text-foreground shrink-0"
-                  >{event.tool_name ?? event.hook_type}</span
-                >
-                {#if detail}
-                  <span class="text-[10px] text-muted-foreground truncate min-w-0">{detail}</span>
-                {/if}
-              </div>
-            </div>
-          {/each}
-        {/if}
-      </div>
-
-      <!-- Stats footer (status counts only, tools tab only) -->
-      {#if toolStats.totalToolCount > 0}
-        <div class="border-t border-border px-3 py-1.5">
-          <div class="flex items-center gap-3 text-[11px]">
-            {#if toolStats.doneCount > 0}
-              <span class="flex items-center gap-1 text-emerald-500 dark:text-emerald-400">
-                <StatusIcon status="done" size="sm" />
-                {toolStats.doneCount}
-              </span>
-            {/if}
-            {#if toolStats.runningCount > 0}
-              <span class="flex items-center gap-1 text-muted-foreground">
-                <StatusIcon status="running" size="sm" />
-                {toolStats.runningCount}
-              </span>
-            {/if}
-            {#if toolStats.errorCount > 0}
-              <span class="flex items-center gap-1 text-destructive">
-                <StatusIcon status="error" size="sm" />
-                {toolStats.errorCount}
-              </span>
-            {/if}
           </div>
         </div>
       {/if}
-    {/if}
+      {#if mountedTabs.has("context")}
+        <div
+          class="absolute inset-0 flex flex-col"
+          style="visibility: {activeTab === 'context'
+            ? 'visible'
+            : 'hidden'}; pointer-events: {activeTab === 'context' ? 'auto' : 'none'};"
+        >
+          <ContextHistoryPanel history={contextHistory} {turnUsages} {sessionInfo} />
+        </div>
+      {/if}
+      {#if mountedTabs.has("files")}
+        <div
+          class="absolute inset-0 flex flex-col"
+          style="visibility: {activeTab === 'files'
+            ? 'visible'
+            : 'hidden'}; pointer-events: {activeTab === 'files' ? 'auto' : 'none'};"
+        >
+          <div class="flex flex-1 flex-col min-h-0">
+            <div class="flex-shrink-0 max-h-[40vh] overflow-y-auto border-b border-border/50">
+              <FilesPanel
+                {fileEntries}
+                {onScrollToTool}
+                onPreview={(p) => (previewPath = p)}
+                selectedPath={previewPath ?? undefined}
+              />
+            </div>
+            <div class="flex-1 min-h-0 overflow-hidden">
+              <FilePreviewPane
+                {cwd}
+                path={previewPath ?? ""}
+                mode="preview"
+                editable={false}
+                {isRemote}
+                scopeKey={runId}
+                active={activeTab === "files"}
+              />
+            </div>
+          </div>
+        </div>
+      {/if}
+      {#if mountedTabs.has("info")}
+        <div
+          class="absolute inset-0 flex flex-col overflow-y-auto"
+          style="visibility: {activeTab === 'info'
+            ? 'visible'
+            : 'hidden'}; pointer-events: {activeTab === 'info' ? 'auto' : 'none'};"
+        >
+          <!-- Subagents section (shown above session info when Task tools exist) -->
+          {#if subagents.length > 0}
+            <div class="px-3 py-2 border-b border-border/50">
+              <div
+                class="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-1.5"
+              >
+                {t("tool_subagents", { count: String(subagents.length) })}
+              </div>
+              <div class="space-y-1.5">
+                {#each subagents as sa (sa.toolUseId)}
+                  {@const isDone = sa.status === "success"}
+                  {@const isError = sa.status === "error" || sa.status === "denied"}
+                  {@const isRunning = !isDone && !isError}
+                  <button
+                    class="w-full text-left rounded-md border border-border/50 bg-background/50 px-2.5 py-1.5 hover:bg-accent/30 transition-colors"
+                    onclick={() => onScrollToTool?.(sa.toolUseId)}
+                    title="Scroll to tool"
+                  >
+                    <div class="flex items-center gap-1.5">
+                      <span class="text-[11px] font-medium text-foreground"
+                        >{sa.meta.subagentType}</span
+                      >
+                      {#if sa.meta.model}
+                        <span
+                          class="text-[10px] px-1 py-0.5 rounded bg-cyan-500/15 text-cyan-600 dark:text-cyan-400 font-medium"
+                          >{sa.meta.model}</span
+                        >
+                      {/if}
+                      <span class="ml-auto">
+                        {#if isDone}
+                          <StatusIcon status="done" size="sm" />
+                        {:else if isError}
+                          <StatusIcon status="error" size="sm" />
+                        {:else if isRunning}
+                          <StatusIcon status="running" size="sm" />
+                        {/if}
+                      </span>
+                    </div>
+                    {#if sa.meta.description}
+                      <div class="text-[10px] text-muted-foreground truncate mt-0.5">
+                        {sa.meta.description}
+                      </div>
+                    {/if}
+                    {#if sa.toolCount > 0 || sa.durationMs != null}
+                      <div class="text-[10px] text-muted-foreground/60 mt-0.5">
+                        {#if sa.toolCount > 0}{sa.toolCount} tools{/if}
+                        {#if sa.toolCount > 0 && sa.durationMs != null}
+                          ·
+                        {/if}
+                        {#if sa.durationMs != null}{formatDuration(sa.durationMs)}{/if}
+                      </div>
+                    {/if}
+                  </button>
+                {/each}
+              </div>
+            </div>
+          {/if}
+          <SessionInfoPanel info={sessionInfo} {activeTab} />
+        </div>
+      {/if}
+      {#if mountedTabs.has("tools")}
+        <div
+          class="absolute inset-0 flex flex-col"
+          style="visibility: {activeTab === 'tools'
+            ? 'visible'
+            : 'hidden'}; pointer-events: {activeTab === 'tools' ? 'auto' : 'none'};"
+        >
+          <!-- Tools panel -->
+          <!-- Summary chips -->
+          {#if toolStats.summary.length > 1}
+            <div class="flex flex-wrap gap-1 px-2.5 py-1.5 border-b border-border/50">
+              {#each toolStats.summary as [name, count]}
+                {@const style = getToolColor(name)}
+                <span
+                  class="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded {style.bg} {style.text} font-medium"
+                >
+                  {name}
+                  <span class="opacity-70">{count}</span>
+                </span>
+              {/each}
+            </div>
+          {/if}
+
+          <!-- Tool list -->
+          <div class="flex-1 overflow-y-auto py-0.5">
+            {#if toolStats.totalToolCount === 0}
+              <div class="flex items-center justify-center h-32 text-xs text-muted-foreground/50">
+                {t("toolActivity_noToolCalls")}
+              </div>
+            {:else if useTimeline}
+              <!-- Timeline mode: grouped by turn -->
+              {#each turns as turn (turn.turnIndex)}
+                {@const isCollapsed = collapsedTurns.has(turn.turnIndex)}
+                {@const tu = usageByTurn.get(turn.turnIndex)}
+                {@const hasTools = turn.tools.length > 0}
+                <!-- Turn header: div with two sibling buttons (no nesting) -->
+                <div
+                  class="flex items-center w-full px-2.5 py-1.5 hover:bg-accent/50 transition-colors border-b border-border/30"
+                >
+                  <button
+                    class="flex-1 flex items-center gap-1.5 text-left min-w-0"
+                    onclick={() => {
+                      if (hasTools) {
+                        toggleTurn(turn.turnIndex);
+                      } else if (turn.anchorId) {
+                        dbg("tool-activity", "scroll to turn (no tools)", {
+                          turnIndex: turn.turnIndex,
+                          anchorId: turn.anchorId,
+                        });
+                        onScrollToTurn?.(turn.anchorId);
+                      }
+                    }}
+                  >
+                    {#if hasTools}
+                      <svg
+                        class="h-3 w-3 text-muted-foreground/50 shrink-0 transition-transform {isCollapsed
+                          ? ''
+                          : 'rotate-90'}"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                      >
+                        <polyline points="9 18 15 12 9 6" />
+                      </svg>
+                    {/if}
+                    <span class="text-[11px] font-medium text-muted-foreground truncate">
+                      {#if turn.userPreview}
+                        {t("toolActivity_turn", { index: String(turn.turnIndex) })}
+                        <span class="text-foreground/70">{truncate(turn.userPreview, 25)}</span>
+                      {:else}
+                        <span class="text-muted-foreground/60"
+                          >{t("toolActivity_systemResume")}</span
+                        >
+                      {/if}
+                    </span>
+                    <span class="ml-auto flex items-center gap-1.5 shrink-0">
+                      {#if tu}
+                        <span class="text-[10px] text-muted-foreground"
+                          >{formatTokenCount(tu.inputTokens + tu.outputTokens)}</span
+                        >
+                      {/if}
+                      {#if hasTools}
+                        <span
+                          class="text-[10px] px-1.5 py-0.5 rounded-full bg-muted text-muted-foreground font-medium"
+                          >{countToolNodes(turn.tools)}</span
+                        >
+                      {/if}
+                    </span>
+                  </button>
+                  {#if turn.anchorId}
+                    <button
+                      class="shrink-0 ml-1 p-0.5 rounded text-muted-foreground/40 hover:text-foreground hover:bg-muted transition-colors"
+                      onclick={() => {
+                        dbg("tool-activity", "scroll to turn", {
+                          turnIndex: turn.turnIndex,
+                          anchorId: turn.anchorId,
+                        });
+                        onScrollToTurn?.(turn.anchorId!);
+                      }}
+                      title={t("toolActivity_scrollToTurn")}
+                    >
+                      <svg
+                        class="h-3 w-3"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        ><circle cx="12" cy="12" r="3" /><path
+                          d="M12 2v4m0 12v4M2 12h4m12 0h4"
+                        /></svg
+                      >
+                    </button>
+                  {/if}
+                </div>
+
+                <!-- Tools in this turn (only render if turn has tools) -->
+                {#if hasTools && !isCollapsed}
+                  <div class="py-0.5">
+                    {#each turn.tools as node (node.tool.tool_use_id)}
+                      {@render toolNodeView(node)}
+                    {/each}
+                  </div>
+                {/if}
+              {/each}
+            {:else}
+              <!-- HookEvent fallback mode (pipe/PTY) -->
+              {#each hookToolEvents as event, ei (ei)}
+                {@const style = getToolColor(event.tool_name ?? "")}
+                {@const detail = getHookDetail(event)}
+                {@const cat = categorizeHookStatus(event.status)}
+                <div class="px-2.5 py-1">
+                  <div class="flex items-center gap-1.5">
+                    {@render statusIcon(cat)}
+                    <div
+                      class="flex h-4 w-4 shrink-0 items-center justify-center rounded {style.bg}"
+                    >
+                      <svg
+                        class="h-2.5 w-2.5 {style.text}"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                      >
+                        <path d={style.icon} />
+                      </svg>
+                    </div>
+                    <span class="text-[11px] font-medium text-foreground shrink-0"
+                      >{event.tool_name ?? event.hook_type}</span
+                    >
+                    {#if detail}
+                      <span class="text-[10px] text-muted-foreground truncate min-w-0"
+                        >{detail}</span
+                      >
+                    {/if}
+                  </div>
+                </div>
+              {/each}
+            {/if}
+          </div>
+
+          <!-- Stats footer (status counts only, tools tab only) -->
+          {#if toolStats.totalToolCount > 0}
+            <div class="border-t border-border px-3 py-1.5">
+              <div class="flex items-center gap-3 text-[11px]">
+                {#if toolStats.doneCount > 0}
+                  <span class="flex items-center gap-1 text-emerald-500 dark:text-emerald-400">
+                    <StatusIcon status="done" size="sm" />
+                    {toolStats.doneCount}
+                  </span>
+                {/if}
+                {#if toolStats.runningCount > 0}
+                  <span class="flex items-center gap-1 text-muted-foreground">
+                    <StatusIcon status="running" size="sm" />
+                    {toolStats.runningCount}
+                  </span>
+                {/if}
+                {#if toolStats.errorCount > 0}
+                  <span class="flex items-center gap-1 text-destructive">
+                    <StatusIcon status="error" size="sm" />
+                    {toolStats.errorCount}
+                  </span>
+                {/if}
+              </div>
+            </div>
+          {/if}
+        </div>
+      {/if}
+    </div>
   </div>
   {#if collapsed}
     <!-- Collapsed: thin icon rail overlay (absolute, only mounted when collapsed) -->

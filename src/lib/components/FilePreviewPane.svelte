@@ -1,9 +1,10 @@
 <script lang="ts">
-  import { getGitDiff, readTextFile, readFileBase64, writeTextFile } from "$lib/api";
+  import { getGitDiff, readTextFile, readFileBase64, writeTextFile, statTextFile } from "$lib/api";
   import { dbg } from "$lib/utils/debug";
   import { fileName as pathFileName } from "$lib/utils/format";
   import { t } from "$lib/i18n/index.svelte";
   import CodeEditor from "$lib/components/CodeEditor.svelte";
+  import HighlightedCode from "$lib/components/HighlightedCode.svelte";
   import MarkdownContent from "$lib/components/MarkdownContent.svelte";
   import { classifyPath, getExtension, isImage, isPreviewable } from "$lib/utils/preview-ext";
 
@@ -15,6 +16,7 @@
     editable = false,
     isRemote = false,
     scopeKey = "",
+    active = true,
     onLoaded,
     onLoadFailed,
     onCloseDiff,
@@ -26,6 +28,8 @@
     editable?: boolean;
     isRemote?: boolean;
     scopeKey?: string;
+    /** When false (parent tab inactive), do NOT initiate new loads; existing content is preserved. */
+    active?: boolean;
     onLoaded?: (path: string) => void;
     onLoadFailed?: (path: string, err: string) => void;
     onCloseDiff?: () => void;
@@ -42,6 +46,12 @@
   let fileDirty = $state(false);
   let fileSaving = $state(false);
   let editorMode = $state<"edit" | "rendered">("edit");
+  /** True when file exceeds size threshold — show warning instead of loading into CodeMirror. */
+  let fileTooLarge = $state(false);
+  let fileSize = $state(0);
+
+  /** Files larger than this are not auto-previewed (CodeMirror init becomes very slow). */
+  const MAX_PREVIEW_SIZE = 1_000_000; // 1MB
 
   let diffContent = $state("");
   let diffLoading = $state(false);
@@ -94,6 +104,8 @@
   async function loadPreview(p: string, c: string): Promise<void> {
     const seq = ++loadSeq;
     fileError = "";
+    fileTooLarge = false;
+    fileSize = 0;
     const ext = getExtension(p);
     editorMode = isPreviewable(ext) ? "rendered" : "edit";
     fileLoading = true;
@@ -108,12 +120,42 @@
         fileContent = "";
         originalContent = "";
       } else {
-        const content = await readTextFile(p, c);
-        if (seq !== loadSeq) return;
-        fileContent = content;
-        originalContent = content;
+        // Stat first (cheap metadata) so multi-MB files don't pay readTextFile's full
+        // disk-read + IPC + JS string allocation cost just to be discarded by the size guard.
+        // Stat failures fall through to readTextFile so the existing error path stays intact.
+        let preReadSize: number | null = null;
+        try {
+          preReadSize = await statTextFile(p, c);
+          if (seq !== loadSeq) return;
+        } catch (e) {
+          dbg("preview-pane", "stat failed, falling through to read", { path: p, err: String(e) });
+        }
+        if (preReadSize !== null && preReadSize > MAX_PREVIEW_SIZE) {
+          fileSize = preReadSize;
+          fileTooLarge = true;
+          fileContent = "";
+          originalContent = "";
+        } else {
+          const content = await readTextFile(p, c);
+          if (seq !== loadSeq) return;
+          fileSize = content.length;
+          // Defense-in-depth: stat may return stale/inaccurate size on some filesystems
+          // (e.g. sparse files, network mounts). Re-check after read.
+          if (content.length > MAX_PREVIEW_SIZE) {
+            fileTooLarge = true;
+            fileContent = "";
+            originalContent = "";
+          } else {
+            fileContent = content;
+            originalContent = content;
+          }
+        }
       }
-      dbg("preview-pane", "file loaded", { path: p, size: fileContent.length });
+      dbg("preview-pane", "file loaded", {
+        path: p,
+        size: fileSize,
+        tooLarge: fileTooLarge,
+      });
       onLoaded?.(p);
     } catch (e) {
       if (seq !== loadSeq) return;
@@ -169,12 +211,17 @@
   // ── Reactive load ──
   // Svelte 5: read all reactive props inside the effect to register dependency tracking.
   $effect(() => {
-    // Establish dependencies: cwd, path, mode, scopeKey, isRemote
+    // Establish dependencies: cwd, path, mode, scopeKey, isRemote, active
     void scopeKey;
     const _cwd = cwd;
     const _path = path;
     const _mode = mode;
     const _isRemote = isRemote;
+    const _active = active;
+
+    // Inactive (parent tab hidden): keep already-loaded content visible, but don't
+    // initiate new IPC loads on cwd/path/mode/scopeKey changes.
+    if (!_active) return;
 
     // Reset on remote or empty path
     if (_isRemote || !_path) {
@@ -223,135 +270,37 @@
   let kind = $derived(classifyPath(path));
   let displayName = $derived(path ? pathFileName(path) : "");
   let canSave = $derived(editable && !isRemote && !fileSaving);
+
+  // CodeEditor visibility: only show when actually viewing a code file. CodeEditor itself
+  // remains mounted in the DOM at all times so CodeMirror's style-mod CSS injection
+  // happens ONCE at FilePreviewPane mount (during files-tab first activation), not on
+  // every file click — which previously caused a 2.5s style recalc storm in WKWebView.
+  let showCodeEditor = $derived(
+    !isRemote &&
+      !!path &&
+      mode === "preview" &&
+      !fileLoading &&
+      !fileError &&
+      !fileTooLarge &&
+      kind !== "image" &&
+      !(editorMode === "rendered" && kind === "markdown"),
+  );
 </script>
 
+<!--
+  Layout strategy:
+  - editable=false (chat right panel): uses HighlightedCode (hljs <pre>). No CodeMirror
+    in the chat context. This avoids CodeMirror's style-mod CSS injection which causes
+    ~2.5s style recalc storms in WKWebView every time langCompartment.reconfigure runs
+    (verified by replacing CodeEditor with raw <pre>: clicks went from 2s → 10ms).
+  - editable=true (explorer page): keeps CodeEditor for editing capabilities. Explorer
+    is a separate page where the one-time CodeMirror cost is acceptable.
+  All other states (loading/error/image/markdown/empty/diff/remote) render as absolute
+  overlays on top of the bottom-layer CodeEditor/HighlightedCode.
+-->
 <div class="flex h-full flex-col overflow-hidden">
-  {#if isRemote}
-    <!-- Remote unsupported -->
-    <div class="flex flex-1 items-center justify-center p-4">
-      <div class="flex flex-col items-center gap-2 text-center">
-        <svg
-          class="h-8 w-8 text-muted-foreground/40"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="1.5"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-          ><circle cx="12" cy="12" r="10" /><path d="M2 12h20" /><path
-            d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"
-          /></svg
-        >
-        <p class="text-sm text-muted-foreground">{t("preview_remoteUnsupported")}</p>
-      </div>
-    </div>
-  {:else if !path}
-    <!-- Empty state -->
-    <div class="flex flex-1 items-center justify-center p-4">
-      <div class="flex flex-col items-center gap-2 text-center">
-        <svg
-          class="h-8 w-8 text-muted-foreground/30"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="1.5"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-          ><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z" /><path
-            d="M14 2v4a2 2 0 0 0 2 2h4"
-          /></svg
-        >
-        <p class="text-sm text-muted-foreground">{t("filesPanel_noPreviewSelected")}</p>
-      </div>
-    </div>
-  {:else if mode === "diff"}
-    <!-- Diff header -->
-    <div class="flex items-center gap-2 border-b px-3 py-1.5 shrink-0">
-      {#if onCloseDiff}
-        <button
-          class="flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
-          onclick={() => onCloseDiff?.()}
-          title={t("explorer_closeDiff")}
-        >
-          <svg
-            class="h-4 w-4"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2"
-            stroke-linecap="round"
-            stroke-linejoin="round"><path d="m15 18-6-6 6-6" /></svg
-          >
-        </button>
-      {/if}
-      <span class="text-sm font-medium text-foreground flex-1 min-w-0 truncate">{path}</span>
-    </div>
-    <!-- Diff content -->
-    <div class="flex-1 overflow-auto">
-      {#if diffLoading}
-        <div class="flex items-center justify-center py-12">
-          <div
-            class="h-5 w-5 border-2 border-primary/30 border-t-primary rounded-full animate-spin"
-          ></div>
-        </div>
-      {:else if diffContent.trim()}
-        {@const diffLines = parseDiffLines(diffContent)}
-        <table class="w-full text-xs font-mono border-collapse">
-          <tbody>
-            {#each diffLines as dl}
-              <tr
-                class={dl.type === "add"
-                  ? "bg-green-500/10"
-                  : dl.type === "del"
-                    ? "bg-red-500/10"
-                    : dl.type === "hunk"
-                      ? "bg-blue-500/5"
-                      : ""}
-              >
-                <td
-                  class="select-none text-right pr-1 pl-2 text-muted-foreground/40 w-[1%] whitespace-nowrap {dl.type ===
-                    'hunk' || dl.type === 'header'
-                    ? 'border-y border-border/30'
-                    : ''}">{dl.oldNum ?? ""}</td
-                >
-                <td
-                  class="select-none text-right pr-2 text-muted-foreground/40 w-[1%] whitespace-nowrap {dl.type ===
-                    'hunk' || dl.type === 'header'
-                    ? 'border-y border-border/30'
-                    : ''}">{dl.newNum ?? ""}</td
-                >
-                <td
-                  class="whitespace-pre pr-4 {dl.type === 'add'
-                    ? 'text-green-600 dark:text-green-400'
-                    : dl.type === 'del'
-                      ? 'text-red-500 dark:text-red-400'
-                      : dl.type === 'hunk'
-                        ? 'text-blue-500 dark:text-blue-400'
-                        : dl.type === 'header'
-                          ? 'font-bold text-foreground'
-                          : ''} {dl.type === 'hunk' || dl.type === 'header'
-                    ? 'border-y border-border/30 py-1'
-                    : ''}">{dl.text}</td
-                >
-              </tr>
-            {/each}
-          </tbody>
-        </table>
-      {:else}
-        <div class="flex flex-col items-center gap-2 py-12 text-center">
-          <svg
-            class="h-8 w-8 text-muted-foreground/40"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="1.5"><path d="M20 6 9 17l-5-5" /></svg
-          >
-          <p class="text-sm text-muted-foreground">{t("explorer_noChanges")}</p>
-        </div>
-      {/if}
-    </div>
-  {:else}
-    <!-- Preview header -->
+  <!-- Preview header (only in preview mode with a real path) -->
+  {#if !isRemote && path && mode === "preview"}
     <div class="flex items-center gap-2 border-b px-3 py-1.5 shrink-0">
       <svg
         class="h-3.5 w-3.5 shrink-0 opacity-40"
@@ -406,41 +355,189 @@
         </button>
       {/if}
     </div>
-    <!-- Preview content -->
-    <div class="flex-1 overflow-hidden min-h-0">
-      {#if fileLoading}
-        <div class="flex items-center justify-center py-12">
-          <div
-            class="h-5 w-5 border-2 border-primary/30 border-t-primary rounded-full animate-spin"
-          ></div>
-        </div>
-      {:else if fileError}
-        <div class="flex flex-1 items-center justify-center p-4">
-          <p class="text-sm text-destructive">{fileError}</p>
-        </div>
-      {:else if kind === "image" && imageDataUrl}
-        <div
-          class="flex items-center justify-center h-full overflow-auto p-4 bg-black/5 dark:bg-white/5"
+  {/if}
+
+  <!-- Diff header (only in diff mode) -->
+  {#if !isRemote && path && mode === "diff"}
+    <div class="flex items-center gap-2 border-b px-3 py-1.5 shrink-0">
+      {#if onCloseDiff}
+        <button
+          class="flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+          onclick={() => onCloseDiff?.()}
+          title={t("explorer_closeDiff")}
         >
-          <img
-            src={imageDataUrl}
-            alt={displayName}
-            class="max-w-full max-h-full object-contain rounded"
-          />
-        </div>
-      {:else if editorMode === "rendered" && kind === "markdown"}
-        <div class="flex-1 overflow-y-auto p-4 h-full">
-          {#if fileContent}
-            <MarkdownContent text={fileContent} basePath={path.replace(/[/\\][^/\\]*$/, "")} />
-          {:else}
-            <p class="text-sm text-muted-foreground italic">{t("explorer_emptyFile")}</p>
-          {/if}
-        </div>
-      {:else if editable}
-        <CodeEditor bind:content={fileContent} filePath={path} onsave={saveFile} class="h-full" />
-      {:else}
-        <CodeEditor bind:content={fileContent} filePath={path} readonly class="h-full" />
+          <svg
+            class="h-4 w-4"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"><path d="m15 18-6-6 6-6" /></svg
+          >
+        </button>
       {/if}
+      <span class="text-sm font-medium text-foreground flex-1 min-w-0 truncate">{path}</span>
     </div>
   {/if}
+
+  <!-- Content area: editable path uses CodeMirror; readonly path uses hljs <pre> (fast in WKWebView) -->
+  <div class="flex-1 overflow-hidden min-h-0 relative">
+    <!-- Bottom layer: real renderer chosen by `editable`. Hidden when an overlay is active. -->
+    <div
+      class="absolute inset-0"
+      style:visibility={showCodeEditor ? "visible" : "hidden"}
+      style:pointer-events={showCodeEditor ? "auto" : "none"}
+      aria-hidden={!showCodeEditor}
+    >
+      {#if editable && !isRemote}
+        <CodeEditor
+          bind:content={fileContent}
+          filePath={path || ""}
+          onsave={saveFile}
+          class="h-full"
+        />
+      {:else}
+        <HighlightedCode content={fileContent} filePath={path || ""} class="h-full" />
+      {/if}
+    </div>
+
+    <!-- Overlays: only one rendered at a time, absolute on top of CodeEditor -->
+    {#if isRemote}
+      <div class="absolute inset-0 flex items-center justify-center p-4 bg-background">
+        <div class="flex flex-col items-center gap-2 text-center">
+          <svg
+            class="h-8 w-8 text-muted-foreground/40"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.5"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            ><circle cx="12" cy="12" r="10" /><path d="M2 12h20" /><path
+              d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"
+            /></svg
+          >
+          <p class="text-sm text-muted-foreground">{t("preview_remoteUnsupported")}</p>
+        </div>
+      </div>
+    {:else if !path}
+      <div class="absolute inset-0 flex items-center justify-center p-4 bg-background">
+        <div class="flex flex-col items-center gap-2 text-center">
+          <svg
+            class="h-8 w-8 text-muted-foreground/30"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.5"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            ><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z" /><path
+              d="M14 2v4a2 2 0 0 0 2 2h4"
+            /></svg
+          >
+          <p class="text-sm text-muted-foreground">{t("filesPanel_noPreviewSelected")}</p>
+        </div>
+      </div>
+    {:else if mode === "diff"}
+      <div class="absolute inset-0 overflow-auto bg-background">
+        {#if diffLoading}
+          <div class="flex items-center justify-center py-12">
+            <div
+              class="h-5 w-5 border-2 border-primary/30 border-t-primary rounded-full animate-spin"
+            ></div>
+          </div>
+        {:else if diffContent.trim()}
+          {@const diffLines = parseDiffLines(diffContent)}
+          <table class="w-full text-xs font-mono border-collapse">
+            <tbody>
+              {#each diffLines as dl}
+                <tr
+                  class={dl.type === "add"
+                    ? "bg-green-500/10"
+                    : dl.type === "del"
+                      ? "bg-red-500/10"
+                      : dl.type === "hunk"
+                        ? "bg-blue-500/5"
+                        : ""}
+                >
+                  <td
+                    class="select-none text-right pr-1 pl-2 text-muted-foreground/40 w-[1%] whitespace-nowrap {dl.type ===
+                      'hunk' || dl.type === 'header'
+                      ? 'border-y border-border/30'
+                      : ''}">{dl.oldNum ?? ""}</td
+                  >
+                  <td
+                    class="select-none text-right pr-2 text-muted-foreground/40 w-[1%] whitespace-nowrap {dl.type ===
+                      'hunk' || dl.type === 'header'
+                      ? 'border-y border-border/30'
+                      : ''}">{dl.newNum ?? ""}</td
+                  >
+                  <td
+                    class="whitespace-pre pr-4 {dl.type === 'add'
+                      ? 'text-green-600 dark:text-green-400'
+                      : dl.type === 'del'
+                        ? 'text-red-500 dark:text-red-400'
+                        : dl.type === 'hunk'
+                          ? 'text-blue-500 dark:text-blue-400'
+                          : dl.type === 'header'
+                            ? 'font-bold text-foreground'
+                            : ''} {dl.type === 'hunk' || dl.type === 'header'
+                      ? 'border-y border-border/30 py-1'
+                      : ''}">{dl.text}</td
+                  >
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        {:else}
+          <div class="flex flex-col items-center gap-2 py-12 text-center">
+            <svg
+              class="h-8 w-8 text-muted-foreground/40"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.5"><path d="M20 6 9 17l-5-5" /></svg
+            >
+            <p class="text-sm text-muted-foreground">{t("explorer_noChanges")}</p>
+          </div>
+        {/if}
+      </div>
+    {:else if fileLoading}
+      <div class="absolute inset-0 flex items-center justify-center bg-background">
+        <div
+          class="h-5 w-5 border-2 border-primary/30 border-t-primary rounded-full animate-spin"
+        ></div>
+      </div>
+    {:else if fileError}
+      <div class="absolute inset-0 flex items-center justify-center p-4 bg-background">
+        <p class="text-sm text-destructive">{fileError}</p>
+      </div>
+    {:else if fileTooLarge}
+      <div class="absolute inset-0 flex items-center justify-center p-4 bg-background">
+        <p class="text-xs text-muted-foreground text-center">
+          {t("preview_tooLarge")} ({Math.round(fileSize / 1024)} KB)
+        </p>
+      </div>
+    {:else if kind === "image" && imageDataUrl}
+      <div
+        class="absolute inset-0 flex items-center justify-center overflow-auto p-4 bg-black/5 dark:bg-white/5"
+      >
+        <img
+          src={imageDataUrl}
+          alt={displayName}
+          class="max-w-full max-h-full object-contain rounded"
+        />
+      </div>
+    {:else if editorMode === "rendered" && kind === "markdown"}
+      <div class="absolute inset-0 overflow-y-auto p-4 bg-background">
+        {#if fileContent}
+          <MarkdownContent text={fileContent} basePath={path.replace(/[/\\][^/\\]*$/, "")} />
+        {:else}
+          <p class="text-sm text-muted-foreground italic">{t("explorer_emptyFile")}</p>
+        {/if}
+      </div>
+    {/if}
+    <!-- No overlay branch: CodeEditor is visible (showCodeEditor === true) -->
+  </div>
 </div>

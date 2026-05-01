@@ -30,7 +30,6 @@
     TimelineEntry,
   } from "$lib/types";
   import { PLATFORM_PRESETS, findCredential } from "$lib/utils/platform-presets";
-  import { IS_WEBKIT } from "$lib/utils/platform";
   import {
     detectBatchGroups,
     detectToolBursts,
@@ -1093,6 +1092,25 @@
     };
     window.addEventListener("ocv:project-changed", handler);
     return () => window.removeEventListener("ocv:project-changed", handler);
+  });
+
+  // Warm up file IPC chain: validate_file_path's first invocation walks several
+  // canonicalize() calls (data dir, claude dir, agents' working dirs, project cwd).
+  // Firing one stat at chat-page mount primes the OS FS cache so the user's first
+  // file click doesn't pay the cold-cache cost.
+  onMount(() => {
+    const cwd = localStorage.getItem("ocv:project-cwd") || "";
+    if (!cwd) return;
+    const t0 = performance.now();
+    api
+      .statTextFile(cwd, cwd)
+      .then(() => dbg("file-ipc", "warmup done", { ms: +(performance.now() - t0).toFixed(0) }))
+      .catch((e) =>
+        dbg("file-ipc", "warmup err (still warmed)", {
+          ms: +(performance.now() - t0).toFixed(0),
+          err: String(e),
+        }),
+      );
   });
 
   // Sync run name when sidebar/history renames the current run
@@ -3019,8 +3037,19 @@
     }
     const el = document.getElementById("tool-" + toolUseId);
     if (el) {
+      // Temporarily disable content-visibility so the browser knows real heights and
+      // scrollIntoView lands at the correct offset (mirrors scrollToMessage).
+      const container = chatAreaRef;
+      const cvEls = container
+        ? Array.from(container.querySelectorAll<HTMLElement>(".cv-auto"))
+        : [];
+      for (const c of cvEls) c.style.contentVisibility = "visible";
+      el.getBoundingClientRect();
       el.scrollIntoView({ behavior: "smooth", block: "center" });
       el.classList.add("ring-2", "ring-primary/50");
+      requestAnimationFrame(() => {
+        for (const c of cvEls) c.style.contentVisibility = "";
+      });
       setTimeout(() => el.classList.remove("ring-2", "ring-primary/50"), 2000);
     }
   }
@@ -3865,7 +3894,7 @@
                 {#if !(burstHiddenIndices.has(i) && !toolBursts.has(i))}
                   <div
                     id="msg-{entry.anchorId}"
-                    class:cv-auto={!IS_WEBKIT && entry.kind !== "tool"}
+                    class:cv-auto={true}
                     class="group/msg"
                     class:opacity-40={lastClearSepId !== null &&
                       (timelineIdIndex.get(entry.id) ?? 0) <

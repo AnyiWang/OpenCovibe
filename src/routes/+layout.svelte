@@ -43,6 +43,7 @@
   import { goto, afterNavigate } from "$app/navigation";
   import { onMount, setContext, untrack } from "svelte";
   import { dbg, dbgWarn } from "$lib/utils/debug";
+  import { fpsCounter } from "$lib/utils/perf";
   import { PLATFORM_PRESETS } from "$lib/utils/platform-presets";
   import { loadAgentSettingsCache } from "$lib/stores/agent-settings-cache.svelte";
   import type { PlatformCredential } from "$lib/types";
@@ -130,7 +131,10 @@
   let searchRequestId = $state(0);
   let debounceTimer: ReturnType<typeof setTimeout> | undefined;
 
-  // ── Sidebar resize (ghost-line strategy: zero reflow during drag, single commit on release) ──
+  // ── Sidebar resize (ghost-line strategy, same as right panel) ──
+  // chat-main reflow during drag is still expensive even with cv-auto: visible tool cards
+  // contain markdown / hljs code blocks that re-measure on every width change. Ghost line
+  // gives zero-reflow drag preview and commits once on release.
   function loadSidebarWidth(): number {
     if (typeof window === "undefined") return 280;
     const raw = parseInt(localStorage.getItem("ocv:sidebar-width") ?? "", 10);
@@ -141,52 +145,56 @@
   let sidebarGhostX = $state(0);
   let resizeCleanup: (() => void) | null = null;
 
-  function startResize(e: MouseEvent) {
+  /** Ghost line DOM element — bound after sidebarResizing toggles true.
+   *  Used only for imperative DOM writes during drag, but declared as $state to satisfy
+   *  Svelte 5's bind:this reactivity contract (silences non_reactive_update warning). */
+  let sidebarGhostEl: HTMLElement | null = $state(null);
+
+  function startResize(e: PointerEvent) {
     e.preventDefault();
     const startX = e.clientX;
     const startWidth = sidebarWidth;
     let pendingWidth = startWidth;
     sidebarResizing = true;
-    sidebarGhostX = startWidth; // ghost is anchored to sidebar's right edge (= width from left)
+    sidebarGhostX = e.clientX; // initial position via Svelte (single render)
+    const handle = e.currentTarget as HTMLElement;
+    handle.setPointerCapture?.(e.pointerId);
     dbg("layout", "sidebar resize start", { startWidth });
     document.body.style.userSelect = "none";
     document.body.style.cursor = "col-resize";
+    const stopFps = fpsCounter("sidebar-drag");
 
-    let rafId: number | null = null;
-    function flush() {
-      rafId = null;
-    }
-
-    function onMove(ev: MouseEvent) {
+    function onMove(ev: PointerEvent) {
       pendingWidth = Math.min(500, Math.max(180, startWidth + (ev.clientX - startX)));
-      // Ghost line follows the cursor's clamped X so the user sees exactly where the
-      // boundary will land. (Aside's left edge varies with left rail width — this avoids
-      // having to query the aside's getBoundingClientRect every frame.)
-      sidebarGhostX = startX + (pendingWidth - startWidth);
-      if (rafId === null) rafId = window.requestAnimationFrame(flush);
+      const x = startX + (pendingWidth - startWidth);
+      // BYPASS Svelte: write DOM directly. Svelte's reactive batching + WKWebView's pointer
+      // capture don't cooperate during drag — updates pile up until pointerup. Direct DOM
+      // write is synchronous and the browser repaints on the next frame regardless.
+      if (sidebarGhostEl) {
+        sidebarGhostEl.style.left = x - 1 + "px";
+      }
     }
     function cleanup() {
-      document.removeEventListener("mousemove", onMove);
-      document.removeEventListener("mouseup", onUp);
+      handle.removeEventListener("pointermove", onMove);
+      handle.removeEventListener("pointerup", onUp);
+      handle.removeEventListener("pointercancel", onUp);
       document.body.style.userSelect = "";
       document.body.style.cursor = "";
-      if (rafId !== null) {
-        window.cancelAnimationFrame(rafId);
-        rafId = null;
-      }
-      // Commit ONCE on release → single layout reflow.
       sidebarWidth = pendingWidth;
       sidebarResizing = false;
+      sidebarGhostEl = null;
       resizeCleanup = null;
       localStorage.setItem("ocv:sidebar-width", String(sidebarWidth));
       dbg("layout", "sidebar resize end", { width: sidebarWidth });
+      stopFps();
     }
     function onUp() {
       cleanup();
     }
 
-    document.addEventListener("mousemove", onMove);
-    document.addEventListener("mouseup", onUp);
+    handle.addEventListener("pointermove", onMove);
+    handle.addEventListener("pointerup", onUp);
+    handle.addEventListener("pointercancel", onUp);
     resizeCleanup = cleanup;
   }
 
@@ -2243,7 +2251,7 @@
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <div
           class="absolute right-0 top-0 bottom-0 w-1 cursor-col-resize hover:bg-primary/20 active:bg-primary/30 transition-colors z-10"
-          onmousedown={startResize}
+          onpointerdown={startResize}
         ></div>
       </div>
     </aside>
@@ -2252,8 +2260,10 @@
   <!-- Ghost line during sidebar drag (zero-reflow preview) -->
   {#if sidebarResizing}
     <div
-      class="fixed top-0 bottom-0 w-0.5 bg-primary/60 z-[9999] pointer-events-none"
-      style="left: {sidebarGhostX}px;"
+      bind:this={sidebarGhostEl}
+      class="fixed top-0 bottom-0 z-[9999] pointer-events-none bg-primary"
+      style="left: {sidebarGhostX -
+        1}px; width: 3px; box-shadow: 0 0 8px hsl(var(--primary) / 0.6);"
     ></div>
   {/if}
 

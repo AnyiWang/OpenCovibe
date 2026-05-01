@@ -20,8 +20,13 @@
   import { languages } from "@codemirror/language-data";
   import { oneDark } from "@codemirror/theme-one-dark";
   import { dbg, dbgWarn } from "$lib/utils/debug";
+  import { perfMark, perfMarkAsync } from "$lib/utils/perf";
   import { fileName } from "$lib/utils/format";
-  import { resolveStaticLanguage, resolveByFirstLine } from "$lib/utils/codemirror-languages";
+  import {
+    resolveStaticExtensionInfo,
+    resolveStaticFilenameInfo,
+    resolveByFirstLine,
+  } from "$lib/utils/codemirror-languages";
 
   let {
     content = $bindable(""),
@@ -50,18 +55,40 @@
   /**
    * Resolve language extensions for a file path.
    *
-   * 1. Static mapping (sync) — covers ~20 common languages
-   * 2. Dynamic fallback via @codemirror/language-data (async, with try/catch)
-   * 3. Returns [] on failure (plain text, never throws)
+   * 1a. Filename match (Containerfile, Makefile, Cargo.lock, .gitignore,
+   *     Dockerfile.dev, ...) — must run BEFORE extension match because
+   *     Dockerfile.dev would otherwise miss EXT_MAP for "dev" and fall
+   *     through pointlessly. Note: exact "Dockerfile" / "Component.vue" /
+   *     "snippet.liquid" are intentionally NOT in static maps so the
+   *     dynamic loader can supply their real parsers.
+   * 1b. Extension static mapping (sync) — covers ~30 common languages
+   * 2.  Dynamic fallback via @codemirror/language-data (async, with try/catch)
+   * 3.  First-line detection (shebang, XML declaration, JSON brace)
+   * 4.  Returns [] on failure (plain text, never throws)
    */
   async function resolveLanguage(path: string): Promise<Extension[]> {
     const name = fileName(path);
 
-    // 1. Static mapping (sync — no dynamic chunk loading)
-    const staticResult = resolveStaticLanguage(name);
-    if (staticResult) {
-      dbg("code-editor", "static-hit", { name });
-      return staticResult;
+    // 1a. Filename match
+    const filenameInfo = resolveStaticFilenameInfo(name);
+    if (filenameInfo) {
+      dbg("code-editor", "filename-hit", {
+        name,
+        kind: filenameInfo.kind,
+        approx: filenameInfo.approx,
+      });
+      return filenameInfo.extensions;
+    }
+
+    // 1b. Extension static mapping (sync — no dynamic chunk loading)
+    const extInfo = resolveStaticExtensionInfo(name);
+    if (extInfo) {
+      dbg("code-editor", "static-hit", {
+        name,
+        kind: extInfo.kind,
+        approx: extInfo.approx,
+      });
+      return extInfo.extensions;
     }
 
     // 2. Dynamic fallback: language-data auto-detection
@@ -124,60 +151,63 @@
     return typeof document !== "undefined" && document.documentElement.classList.contains("dark");
   }
 
+  /** Build the full extensions array. Used both at initial mount and on file-swap setState. */
+  function buildExtensions(dark: boolean, langExt: Extension[]): Extension[] {
+    return [
+      lineNumbers(),
+      highlightActiveLineGutter(),
+      highlightActiveLine(),
+      drawSelection(), // Renders CM6 cursor (native caret is hidden via caret-color: transparent in app.css)
+      bracketMatching(),
+      history(),
+      keymap.of([
+        {
+          key: "Mod-s",
+          run: () => {
+            onsave?.();
+            return true;
+          },
+        },
+        ...defaultKeymap,
+        ...historyKeymap,
+      ]),
+      syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
+      // Static tok-* class fallback: if style-mod CSS injection fails
+      // (observed on Intel Mac WKWebView), the static CSS in <style> below
+      // provides baseline syntax highlighting via classHighlighter.
+      syntaxHighlighting(classHighlighter),
+      EditorView.editable.of(!readonly),
+      EditorState.readOnly.of(readonly),
+      themeCompartment.of(dark ? oneDark : []),
+      langCompartment.of(langExt),
+      EditorView.updateListener.of((update) => {
+        if (update.docChanged && !updating) {
+          updating = true;
+          content = update.state.doc.toString();
+          updating = false;
+        }
+      }),
+    ];
+  }
+
   onMount(() => {
     if (!editorEl) return;
 
     const dark = isDarkMode();
     dbg("code-editor", "mount", { filePath, readonly, dark });
 
-    const state = EditorState.create({
-      doc: content,
-      extensions: [
-        lineNumbers(),
-        highlightActiveLineGutter(),
-        highlightActiveLine(),
-        drawSelection(), // Renders CM6 cursor (native caret is hidden via caret-color: transparent in app.css)
-        bracketMatching(),
-        history(),
-        keymap.of([
-          {
-            key: "Mod-s",
-            run: () => {
-              onsave?.();
-              return true;
-            },
-          },
-          ...defaultKeymap,
-          ...historyKeymap,
-        ]),
-        syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
-        // Static tok-* class fallback: if style-mod CSS injection fails
-        // (observed on Intel Mac WKWebView), the static CSS in <style> below
-        // provides baseline syntax highlighting via classHighlighter.
-        syntaxHighlighting(classHighlighter),
-        EditorView.editable.of(!readonly),
-        EditorState.readOnly.of(readonly),
-        themeCompartment.of(dark ? oneDark : []),
-        langCompartment.of([]),
-        EditorView.updateListener.of((update) => {
-          if (update.docChanged && !updating) {
-            updating = true;
-            content = update.state.doc.toString();
-            updating = false;
-          }
-        }),
-      ],
-    });
-
-    view = new EditorView({ state, parent: editorEl });
-
-    // Load language support
-    const seq = ++langSeq;
-    resolveLanguage(filePath).then((lang) => {
-      if (seq !== langSeq || !view) return; // stale — user already switched files
-      view.dispatch({ effects: langCompartment.reconfigure(lang) });
-      if (lang.length > 0) verifySyntaxStyles(view);
-    });
+    // Initial view: empty doc + empty language compartment. Cheap (no tokenize on empty).
+    // The $effect below immediately swaps in real content + resolved language via setState
+    // — single tokenize pass for the actual file. This avoids the previous double-tokenize
+    // (one for content dispatch, one for language reconfigure) on every file load.
+    perfMark(
+      "cm-create-view",
+      () => {
+        const state = EditorState.create({ doc: "", extensions: buildExtensions(dark, []) });
+        view = new EditorView({ state, parent: editorEl });
+      },
+      { chars: 0 },
+    );
 
     // Watch dark mode changes via MutationObserver on <html> class
     const observer = new MutationObserver(() => {
@@ -199,27 +229,52 @@
     };
   });
 
-  // Sync external content changes into CM6
+  /**
+   * Combined sync effect: handles both file-switch (filePath change) and content-only
+   * external sync (typing/save). Splitting these into two effects caused two separate
+   * dispatches per file load → two full-document tokenize passes. Now a file switch
+   * uses `view.setState(newState)` to apply new content + new language in a single
+   * tokenize pass; content-only sync still uses dispatch.
+   */
+  let lastFilePath: string | null = null;
+
   $effect(() => {
-    if (view && !updating && content !== view.state.doc.toString()) {
+    if (!view) return;
+    const _path = filePath; // track dep
+    const _content = content; // track dep
+    const pathChanged = _path !== lastFilePath;
+    lastFilePath = _path;
+
+    if (pathChanged) {
+      const seq = ++langSeq;
+      perfMarkAsync(
+        "cm-swap-file",
+        async () => {
+          const lang = await resolveLanguage(_path);
+          if (seq !== langSeq || !view) return; // stale — user already switched again
+          // Single state replace: new doc + new language in one operation. CodeMirror
+          // tokenizes the new doc once with the new language. Compare to dispatch+reconfigure
+          // which tokenizes twice (once for content replace, once for language reconfigure).
+          const dark = isDarkMode();
+          const newState = EditorState.create({
+            doc: _content,
+            extensions: buildExtensions(dark, lang),
+          });
+          view.setState(newState);
+          if (lang.length > 0) verifySyntaxStyles(view);
+        },
+        { filePath: _path, chars: _content.length },
+      );
+    } else if (!updating && _content !== view.state.doc.toString()) {
+      // Same file, content drifted from doc (external save / external write) — full replace.
+      // Typed updates are already echoed back via the updateListener and won't hit this
+      // branch (content === doc by then).
       updating = true;
       view.dispatch({
-        changes: { from: 0, to: view.state.doc.length, insert: content },
+        changes: { from: 0, to: view.state.doc.length, insert: _content },
       });
       updating = false;
     }
-  });
-
-  // Reconfigure language when filePath changes
-  $effect(() => {
-    if (!view) return;
-    const _path = filePath; // track dependency
-    const seq = ++langSeq;
-    resolveLanguage(_path).then((lang) => {
-      if (seq !== langSeq || !view) return; // stale — user already switched files
-      view.dispatch({ effects: langCompartment.reconfigure(lang) });
-      if (lang.length > 0) verifySyntaxStyles(view);
-    });
   });
 </script>
 
