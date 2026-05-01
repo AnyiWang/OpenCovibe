@@ -822,6 +822,18 @@ export async function toggleCodexSkill(
   return invoke<void>("toggle_codex_skill", { skillPath, enabled, cwd: cwd ?? null });
 }
 
+// ── Codex Plugins ──
+
+export async function listCodexInstalledPlugins(): Promise<InstalledPlugin[]> {
+  dbg("api", "listCodexInstalledPlugins");
+  return invoke<InstalledPlugin[]>("list_codex_installed_plugins");
+}
+
+export async function toggleCodexPlugin(pluginId: string, enabled: boolean): Promise<void> {
+  dbg("api", "toggleCodexPlugin", { pluginId, enabled });
+  return invoke<void>("toggle_codex_plugin", { pluginId, enabled });
+}
+
 export async function listInstalledPlugins(): Promise<InstalledPlugin[]> {
   dbg("api", "listInstalledPlugins");
   return invoke<InstalledPlugin[]>("list_installed_plugins");

@@ -691,6 +691,7 @@ export interface InstalledPlugin {
   enabled?: boolean;
   marketplace?: string;
   pluginId?: string;
+  agent?: "claude" | "codex";
   /** Project directory this plugin was installed in (project/local scope only). */
   projectPath?: string;
   [key: string]: unknown;

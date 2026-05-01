@@ -284,6 +284,20 @@ pub async fn install_community_skill(
         .await
 }
 
+// ── Codex plugins commands ──
+
+#[tauri::command]
+pub fn list_codex_installed_plugins() -> Result<Vec<InstalledPlugin>, String> {
+    log::debug!("[plugins] list_codex_installed_plugins");
+    Ok(crate::storage::plugins::list_codex_installed_plugins())
+}
+
+#[tauri::command]
+pub fn toggle_codex_plugin(plugin_id: String, enabled: bool) -> Result<(), String> {
+    log::debug!("[plugins] toggle_codex_plugin: {}={}", plugin_id, enabled);
+    crate::storage::plugins::toggle_codex_plugin(&plugin_id, enabled)
+}
+
 // ── Codex skills commands ──
 
 #[tauri::command]

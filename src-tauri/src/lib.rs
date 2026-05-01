@@ -235,6 +235,8 @@ pub fn run() {
             commands::plugins::create_codex_skill,
             commands::plugins::delete_codex_skill,
             commands::plugins::toggle_codex_skill,
+            commands::plugins::list_codex_installed_plugins,
+            commands::plugins::toggle_codex_plugin,
             commands::plugins::check_community_health,
             commands::plugins::search_community_skills,
             commands::plugins::get_community_skill_detail,

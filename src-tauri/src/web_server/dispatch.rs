@@ -415,6 +415,19 @@ pub async fn dispatch_command(
             crate::commands::plugins::toggle_codex_skill(skill_path, enabled, cwd)?;
             Ok(json!(true))
         }
+        "list_codex_installed_plugins" => {
+            let result = crate::commands::plugins::list_codex_installed_plugins()?;
+            serde_json::to_value(result).map_err(|e| e.to_string())
+        }
+        "toggle_codex_plugin" => {
+            let plugin_id = extract_str(&params, "plugin_id")?;
+            let enabled = params
+                .get("enabled")
+                .and_then(|v| v.as_bool())
+                .ok_or_else(|| "enabled (bool) is required".to_string())?;
+            crate::commands::plugins::toggle_codex_plugin(plugin_id, enabled)?;
+            Ok(json!(true))
+        }
         "install_plugin" => {
             let name = extract_str(&params, "name")?;
             let scope = extract_str(&params, "scope")?;

@@ -26,6 +26,8 @@
     createCodexSkill,
     deleteCodexSkill,
     toggleCodexSkill,
+    listCodexInstalledPlugins,
+    toggleCodexPlugin,
   } from "$lib/api";
   import { formatInstallCount, relativeTime } from "$lib/utils/format";
   import { renderMarkdown } from "$lib/utils/markdown";
@@ -65,6 +67,7 @@
 
   let plugins = $state<MarketplacePlugin[]>([]);
   let installedPlugins = $state<InstalledPlugin[]>([]);
+  let codexInstalledPlugins = $state<InstalledPlugin[]>([]);
   let skills = $state<StandaloneSkill[]>([]);
   let marketplaces = $state<MarketplaceInfo[]>([]);
   let loading = $state(true);
@@ -202,6 +205,14 @@
     ];
   }
 
+  // ── Plugin key for unique operation tracking (avoids same-name Claude+Codex collisions) ──
+
+  function pluginOpKey(p: InstalledPlugin): string {
+    return `${p.agent ?? "claude"}:${p.pluginId ?? p.name}:${p.scope ?? "user"}`;
+  }
+
+  let allInstalledPlugins = $derived([...installedPlugins, ...codexInstalledPlugins]);
+
   // ── Derived values ──
 
   let categories = $derived([
@@ -278,6 +289,7 @@
         listStandaloneSkills(projectCwd || undefined),
         listMarketplaces(),
         listCodexSkills(projectCwd || undefined),
+        listCodexInstalledPlugins(),
       ]);
 
       if (results[0].status === "fulfilled") {
@@ -315,8 +327,15 @@
         warnings.push("codex skills");
       }
 
+      if (results[5].status === "fulfilled") {
+        codexInstalledPlugins = results[5].value;
+      } else {
+        dbgWarn("plugins", "codex installed plugins load error", results[5].reason);
+        warnings.push("codex plugins");
+      }
+
       loadWarnings = warnings;
-      loadError = warnings.length === 5;
+      loadError = warnings.length === 6;
 
       dbg("plugins", "loaded", {
         marketplace: plugins.length,
@@ -654,11 +673,17 @@
   }
 
   async function refreshPluginData() {
-    const results = await Promise.allSettled([listMarketplacePlugins(), listInstalledPlugins()]);
+    const results = await Promise.allSettled([
+      listMarketplacePlugins(),
+      listInstalledPlugins(),
+      listCodexInstalledPlugins(),
+    ]);
     if (results[0].status === "fulfilled") plugins = results[0].value;
     else dbgWarn("plugins", "refresh marketplace error", results[0].reason);
     if (results[1].status === "fulfilled") installedPlugins = results[1].value;
     else dbgWarn("plugins", "refresh installed error", results[1].reason);
+    if (results[2].status === "fulfilled") codexInstalledPlugins = results[2].value;
+    else dbgWarn("plugins", "refresh codex plugins error", results[2].reason);
   }
 
   // ── Plugin operation handlers ──
@@ -707,7 +732,7 @@
       title: t("plugin_uninstallTitle"),
       message: t("plugin_uninstallMsg", { name: plugin.name }),
       onConfirm: async () => {
-        operationLoading = plugin.name;
+        operationLoading = pluginOpKey(plugin);
         dbg("plugins", "uninstall", { name: plugin.name, scope, cwd });
         try {
           const result = await uninstallPlugin(plugin.name, scope, cwd);
@@ -729,24 +754,35 @@
   }
 
   async function handleToggleEnabled(plugin: InstalledPlugin) {
-    const action = plugin.enabled !== false ? "disable" : "enable";
-    const scope = (plugin.scope as string) ?? "user";
-    const cwd = resolvePluginCwd(plugin);
-    operationLoading = plugin.name;
-    dbg("plugins", action, { name: plugin.name, scope, cwd });
+    operationLoading = pluginOpKey(plugin);
     try {
-      const fn = plugin.enabled !== false ? disablePlugin : enablePlugin;
-      const result = await fn(plugin.name, scope, cwd);
-      dbg("plugins", `${action} result`, result);
-      showToast(
-        result.success
-          ? plugin.enabled !== false
-            ? t("plugin_disabledPlugin", { name: plugin.name })
-            : t("plugin_enabledPlugin", { name: plugin.name })
-          : t("plugin_failedOp", { error: result.message }),
-        result.success ? "success" : "error",
-      );
-      if (result.success) await refreshPluginData();
+      if (plugin.agent === "codex") {
+        if (!plugin.pluginId) {
+          showToast("Missing plugin ID — cannot toggle", "error");
+          return;
+        }
+        const newEnabled = plugin.enabled === false;
+        await toggleCodexPlugin(plugin.pluginId, newEnabled);
+        showToast(t(newEnabled ? "plugins_enabled" : "plugins_disabled"), "success");
+        await refreshPluginData();
+      } else {
+        const action = plugin.enabled !== false ? "disable" : "enable";
+        const scope = (plugin.scope as string) ?? "user";
+        const cwd = resolvePluginCwd(plugin);
+        dbg("plugins", action, { name: plugin.name, scope, cwd });
+        const fn = plugin.enabled !== false ? disablePlugin : enablePlugin;
+        const result = await fn(plugin.name, scope, cwd);
+        dbg("plugins", `${action} result`, result);
+        showToast(
+          result.success
+            ? plugin.enabled !== false
+              ? t("plugin_disabledPlugin", { name: plugin.name })
+              : t("plugin_enabledPlugin", { name: plugin.name })
+            : t("plugin_failedOp", { error: result.message }),
+          result.success ? "success" : "error",
+        );
+        if (result.success) await refreshPluginData();
+      }
     } catch (e) {
       showToast(t("plugin_errorGeneric", { error: String(e) }), "error");
     } finally {
@@ -757,7 +793,7 @@
   async function handleUpdate(plugin: InstalledPlugin) {
     const scope = (plugin.scope as string) ?? "user";
     const cwd = resolvePluginCwd(plugin);
-    operationLoading = plugin.name;
+    operationLoading = pluginOpKey(plugin);
     dbg("plugins", "update", { name: plugin.name, scope, cwd });
     try {
       const result = await updatePlugin(plugin.name, scope, cwd);
@@ -1740,7 +1776,7 @@
           onclick={() => {
             pluginsSource = "installed";
             syncUrl();
-          }}>{t("plugin_installedCount", { count: String(installedPlugins.length) })}</button
+          }}>{t("plugin_installedCount", { count: String(allInstalledPlugins.length) })}</button
         >
       </div>
 
@@ -1944,7 +1980,7 @@
 
       <!-- Installed sub-view -->
       <div class:hidden={pluginsSource !== "installed"}>
-        {#if installedPlugins.length === 0}
+        {#if allInstalledPlugins.length === 0}
           <div class="flex flex-col items-center justify-center py-16 text-center">
             <div
               class="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-2xl border border-border bg-muted"
@@ -1971,7 +2007,7 @@
           </div>
         {:else}
           <div class="space-y-2">
-            {#each installedPlugins as plugin}
+            {#each allInstalledPlugins as plugin}
               <div
                 class="rounded-lg border border-border/50 bg-muted/30 px-4 py-3 flex items-center justify-between gap-4"
               >
@@ -1987,14 +2023,19 @@
                         >{plugin.scope}</span
                       >
                     {/if}
+                    {#if plugin.agent === "codex"}
+                      <span class="rounded-full px-1.5 py-0.5 text-[10px] font-medium bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
+                        {t("extend_agentBadge_codex")}
+                      </span>
+                    {/if}
                   </div>
                   {#if plugin.description}
                     <p class="text-xs text-muted-foreground mt-0.5 line-clamp-1">
                       {plugin.description}
                     </p>
                   {/if}
-                  <!-- Component badges for installed plugins -->
-                  {#if plugins.find((p) => p.name === plugin.name)}
+                  <!-- Component badges for installed plugins (Claude only) -->
+                  {#if plugin.agent !== "codex" && plugins.find((p) => p.name === plugin.name)}
                     {@const mpMatch = plugins.find((p) => p.name === plugin.name)}
                     {#if mpMatch}
                       <div class="flex flex-wrap gap-1 mt-1">
@@ -2019,29 +2060,31 @@
                       ? 'text-green-600 dark:text-green-400 border-green-500/30'
                       : 'text-muted-foreground'} hover:bg-muted transition-colors disabled:opacity-50"
                     onclick={() => handleToggleEnabled(plugin)}
-                    disabled={operationLoading === plugin.name}
+                    disabled={operationLoading === pluginOpKey(plugin)}
                   >
                     {plugin.enabled !== false ? t("plugin_enabled") : t("plugin_disabled")}
                   </button>
-                  <!-- Update button -->
-                  <button
-                    class="rounded-md border border-border px-2 py-1 text-xs text-muted-foreground hover:text-foreground hover:bg-muted transition-colors disabled:opacity-50"
-                    onclick={() => handleUpdate(plugin)}
-                    disabled={operationLoading === plugin.name}
-                    title="Update plugin"
-                  >
-                    {t("plugin_update")}
-                  </button>
-                  <!-- Uninstall button -->
-                  <button
-                    class="rounded-md border border-destructive/30 px-2 py-1 text-xs text-destructive hover:bg-destructive/10 transition-colors disabled:opacity-50"
-                    onclick={() => handleUninstall(plugin)}
-                    disabled={operationLoading === plugin.name}
-                  >
-                    {t("plugin_uninstall")}
-                  </button>
+                  {#if plugin.agent !== "codex"}
+                    <!-- Update button (Claude only) -->
+                    <button
+                      class="rounded-md border border-border px-2 py-1 text-xs text-muted-foreground hover:text-foreground hover:bg-muted transition-colors disabled:opacity-50"
+                      onclick={() => handleUpdate(plugin)}
+                      disabled={operationLoading === pluginOpKey(plugin)}
+                      title="Update plugin"
+                    >
+                      {t("plugin_update")}
+                    </button>
+                    <!-- Uninstall button (Claude only) -->
+                    <button
+                      class="rounded-md border border-destructive/30 px-2 py-1 text-xs text-destructive hover:bg-destructive/10 transition-colors disabled:opacity-50"
+                      onclick={() => handleUninstall(plugin)}
+                      disabled={operationLoading === pluginOpKey(plugin)}
+                    >
+                      {t("plugin_uninstall")}
+                    </button>
+                  {/if}
                   <!-- Loading spinner -->
-                  {#if operationLoading === plugin.name}
+                  {#if operationLoading === pluginOpKey(plugin)}
                     <div
                       class="h-3.5 w-3.5 border-2 border-primary/30 border-t-primary rounded-full animate-spin"
                     ></div>

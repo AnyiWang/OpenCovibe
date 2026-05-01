@@ -1,6 +1,6 @@
 use crate::models::{
-    MarketplaceInfo, MarketplacePlugin, PluginComponents, SkillDisabledBy, SkillSourceKind,
-    StandaloneSkill,
+    InstalledPlugin, MarketplaceInfo, MarketplacePlugin, PluginComponents, SkillDisabledBy,
+    SkillSourceKind, StandaloneSkill,
 };
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -1705,6 +1705,288 @@ fn append_skill_config_entry(doc: &mut toml_edit::DocumentMut, path: &str, enabl
         entry.insert("enabled", toml_edit::value(enabled));
         arr.push(entry);
     }
+}
+
+// ── Codex installed plugins ──
+
+/// Deserialization helper for `.codex-plugin/plugin.json` manifests.
+#[derive(Deserialize)]
+struct CodexPluginManifest {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    version: Option<String>,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    interface: Option<CodexPluginInterface>,
+}
+
+#[derive(Deserialize)]
+struct CodexPluginInterface {
+    #[serde(default, rename = "displayName")]
+    display_name: Option<String>,
+    #[serde(default, rename = "shortDescription")]
+    short_description: Option<String>,
+}
+
+/// List installed Codex plugins from `$CODEX_HOME/plugins/cache/`.
+///
+/// Scans the two-level directory structure: `{marketplace}/{plugin_name}/{version}/`.
+/// For each plugin selects the active version ("local" if present, otherwise the
+/// lexicographically last entry).  Reads `.codex-plugin/plugin.json` for metadata.
+/// Enable/disable state comes from `$CODEX_HOME/config.toml` `[plugins."id@marketplace"]`.
+pub fn list_codex_installed_plugins() -> Vec<InstalledPlugin> {
+    let codex_home = match crate::storage::cli_config::codex_home_dir() {
+        Ok(d) => d,
+        Err(e) => {
+            log::warn!("[plugins] codex_home_dir error: {}", e);
+            return Vec::new();
+        }
+    };
+
+    let cache_root = codex_home.join("plugins").join("cache");
+    if !cache_root.is_dir() {
+        log::debug!(
+            "[plugins] codex plugin cache not found: {}",
+            cache_root.display()
+        );
+        return Vec::new();
+    }
+
+    // Load config.toml once to extract [plugins.*] enabled state
+    let (config, config_warning) = crate::storage::cli_config::load_codex_config();
+    let plugins_config = config
+        .get("plugins")
+        .and_then(|v| v.as_object())
+        .cloned()
+        .unwrap_or_default();
+
+    let mut result = Vec::new();
+
+    // Iterate marketplace directories
+    let mp_entries = match std::fs::read_dir(&cache_root) {
+        Ok(e) => e,
+        Err(e) => {
+            log::warn!("[plugins] cannot read cache dir: {}", e);
+            return Vec::new();
+        }
+    };
+
+    for mp_entry in mp_entries.flatten() {
+        if !mp_entry.path().is_dir() {
+            continue;
+        }
+        let marketplace = mp_entry.file_name().to_string_lossy().to_string();
+
+        // Iterate plugin directories within this marketplace
+        let plugin_entries = match std::fs::read_dir(mp_entry.path()) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+
+        for plugin_entry in plugin_entries.flatten() {
+            if !plugin_entry.path().is_dir() {
+                continue;
+            }
+            let plugin_dir_name = plugin_entry.file_name().to_string_lossy().to_string();
+
+            // Select active version
+            let version_entries: Vec<String> = match std::fs::read_dir(plugin_entry.path()) {
+                Ok(e) => e
+                    .flatten()
+                    .filter(|de| de.path().is_dir())
+                    .map(|de| de.file_name().to_string_lossy().to_string())
+                    .collect(),
+                Err(_) => continue,
+            };
+
+            if version_entries.is_empty() {
+                continue;
+            }
+
+            let active_version = if version_entries.iter().any(|v| v == "local") {
+                "local".to_string()
+            } else {
+                let mut sorted = version_entries;
+                sorted.sort();
+                sorted.last().unwrap().clone()
+            };
+
+            log::debug!(
+                "[plugins] codex plugin {}/{}: active version={}",
+                marketplace,
+                plugin_dir_name,
+                active_version
+            );
+
+            let version_path = plugin_entry.path().join(&active_version);
+            let manifest_path = version_path.join(".codex-plugin").join("plugin.json");
+
+            // Parse manifest
+            let manifest: Option<CodexPluginManifest> =
+                match std::fs::read_to_string(&manifest_path) {
+                    Ok(s) => match serde_json::from_str(&s) {
+                        Ok(m) => Some(m),
+                        Err(e) => {
+                            log::warn!("[plugins] bad manifest {}: {}", manifest_path.display(), e);
+                            None
+                        }
+                    },
+                    Err(e) => {
+                        log::warn!(
+                            "[plugins] cannot read manifest {}: {}",
+                            manifest_path.display(),
+                            e
+                        );
+                        None
+                    }
+                };
+
+            // Skip plugins with unreadable manifests
+            let manifest = match manifest {
+                Some(m) => m,
+                None => continue,
+            };
+
+            // Construct plugin_id: "{plugin_dir_name}@{marketplace}"
+            let plugin_id = format!("{}@{}", plugin_dir_name, marketplace);
+
+            // Determine display name / description from manifest
+            let display_name = manifest
+                .interface
+                .as_ref()
+                .and_then(|i| i.display_name.as_deref())
+                .unwrap_or_else(|| {
+                    if manifest.name.is_empty() {
+                        &plugin_dir_name
+                    } else {
+                        &manifest.name
+                    }
+                })
+                .to_string();
+
+            let description = manifest
+                .interface
+                .as_ref()
+                .and_then(|i| i.short_description.clone())
+                .or(manifest.description)
+                .unwrap_or_default();
+
+            let version = manifest.version.unwrap_or_else(|| active_version.clone());
+
+            // Check enabled state from config.toml [plugins."plugin_id"]
+            let enabled = plugins_config
+                .get(&plugin_id)
+                .and_then(|v| v.get("enabled"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true); // default to enabled (matches Codex behavior)
+
+            let mut extra = serde_json::Map::new();
+            if let Some(ref warning) = config_warning {
+                log::warn!(
+                    "[plugins] config.toml warning — plugin {} defaulting to enabled=true",
+                    plugin_id
+                );
+                extra.insert(
+                    "configWarning".to_string(),
+                    serde_json::Value::String(warning.clone()),
+                );
+            }
+
+            result.push(InstalledPlugin {
+                name: display_name,
+                description,
+                version: Some(version),
+                scope: Some("user".to_string()),
+                enabled: Some(enabled),
+                marketplace: Some(marketplace.clone()),
+                plugin_id: Some(plugin_id),
+                agent: Some("codex".to_string()),
+                project_path: None,
+                extra,
+            });
+        }
+    }
+
+    log::debug!(
+        "[plugins] list_codex_installed_plugins: found {} plugins",
+        result.len()
+    );
+    result
+}
+
+/// Toggle a Codex plugin's enabled state in `$CODEX_HOME/config.toml`.
+///
+/// Sets `[plugins."plugin_id"] enabled = true/false` using `toml_edit` to
+/// preserve existing formatting and other fields.
+pub fn toggle_codex_plugin(plugin_id: &str, enabled: bool) -> Result<(), String> {
+    // Validate plugin_id format: must contain @, both sides non-empty,
+    // only ASCII alphanumeric + - _
+    if !plugin_id.contains('@') {
+        return Err("Invalid plugin_id: must contain '@'".to_string());
+    }
+    let parts: Vec<&str> = plugin_id.splitn(2, '@').collect();
+    if parts.len() != 2 || parts[0].is_empty() || parts[1].is_empty() {
+        return Err("Invalid plugin_id: name and marketplace must be non-empty".to_string());
+    }
+    for segment in &parts {
+        if segment
+            .chars()
+            .any(|c| !c.is_ascii_alphanumeric() && c != '-' && c != '_')
+        {
+            return Err(format!(
+                "Invalid plugin_id segment '{}': only ASCII alphanumeric, '-', '_' allowed",
+                segment
+            ));
+        }
+    }
+
+    let config_path = crate::storage::cli_config::codex_config_path()?;
+
+    // Read or create the TOML document
+    let mut doc: toml_edit::DocumentMut = match std::fs::read_to_string(&config_path) {
+        Ok(s) => s
+            .parse::<toml_edit::DocumentMut>()
+            .map_err(|e| format!("config.toml parse error: {}", e))?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => toml_edit::DocumentMut::new(),
+        Err(e) => return Err(format!("Failed to read config.toml: {}", e)),
+    };
+
+    // Ensure [plugins] table exists
+    if doc.get("plugins").is_none() || !doc["plugins"].is_table() {
+        doc["plugins"] = toml_edit::Item::Table(toml_edit::Table::new());
+    }
+
+    let plugins_table = doc["plugins"]
+        .as_table_mut()
+        .ok_or_else(|| "plugins is not a table".to_string())?;
+
+    // Ensure [plugins."plugin_id"] sub-table exists
+    if plugins_table.get(plugin_id).is_none() || !plugins_table[plugin_id].is_table() {
+        plugins_table[plugin_id] = toml_edit::Item::Table(toml_edit::Table::new());
+    }
+
+    // Set enabled value
+    plugins_table[plugin_id]["enabled"] = toml_edit::value(enabled);
+
+    // Write back
+    if let Some(parent) = config_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create config directory: {}", e))?;
+    }
+    std::fs::write(&config_path, doc.to_string())
+        .map_err(|e| format!("Failed to write config.toml: {}", e))?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&config_path, std::fs::Permissions::from_mode(0o600));
+    }
+
+    log::debug!("[plugins] toggle_codex_plugin: {}={}", plugin_id, enabled);
+
+    Ok(())
 }
 
 #[cfg(test)]

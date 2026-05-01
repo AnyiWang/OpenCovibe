@@ -1572,6 +1572,8 @@ pub struct InstalledPlugin {
     pub marketplace: Option<String>,
     #[serde(default, rename = "pluginId")]
     pub plugin_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
     /// Project directory this plugin was installed in (project/local scope only).
     #[serde(
         default,
