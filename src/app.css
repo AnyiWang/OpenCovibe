@@ -631,10 +631,16 @@
   border-bottom: 1px solid hsl(var(--border) / 0.5);
 }
 
-/* Content-visibility optimization (disabled on WebKit via IS_WEBKIT) */
+/* Content-visibility optimization: skip layout/paint for off-screen entries.
+ * - content-visibility: auto → off-screen elements skip layout/paint entirely
+ * - contain: layout style paint → visible elements have bounded reflow scope
+ *   (their internal layout changes don't bubble up to ancestors, and ancestor
+ *   width changes don't force unbounded re-measurement of internal text)
+ * - contain-intrinsic-size auto 300px → representative placeholder for off-screen */
 .cv-auto {
   content-visibility: auto;
-  contain-intrinsic-size: auto 100px;
+  contain: layout style paint;
+  contain-intrinsic-size: auto 300px;
 }
 
 /* Scrollbar-hide utility (for horizontal pill rows) */

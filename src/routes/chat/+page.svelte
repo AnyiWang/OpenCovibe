@@ -30,7 +30,6 @@
     TimelineEntry,
   } from "$lib/types";
   import { PLATFORM_PRESETS, findCredential } from "$lib/utils/platform-presets";
-  import { IS_WEBKIT } from "$lib/utils/platform";
   import {
     detectBatchGroups,
     detectToolBursts,
@@ -3019,8 +3018,19 @@
     }
     const el = document.getElementById("tool-" + toolUseId);
     if (el) {
+      // Temporarily disable content-visibility so the browser knows real heights and
+      // scrollIntoView lands at the correct offset (mirrors scrollToMessage).
+      const container = chatAreaRef;
+      const cvEls = container
+        ? Array.from(container.querySelectorAll<HTMLElement>(".cv-auto"))
+        : [];
+      for (const c of cvEls) c.style.contentVisibility = "visible";
+      el.getBoundingClientRect();
       el.scrollIntoView({ behavior: "smooth", block: "center" });
       el.classList.add("ring-2", "ring-primary/50");
+      requestAnimationFrame(() => {
+        for (const c of cvEls) c.style.contentVisibility = "";
+      });
       setTimeout(() => el.classList.remove("ring-2", "ring-primary/50"), 2000);
     }
   }
@@ -3865,7 +3875,7 @@
                 {#if !(burstHiddenIndices.has(i) && !toolBursts.has(i))}
                   <div
                     id="msg-{entry.anchorId}"
-                    class:cv-auto={!IS_WEBKIT && entry.kind !== "tool"}
+                    class:cv-auto={true}
                     class="group/msg"
                     class:opacity-40={lastClearSepId !== null &&
                       (timelineIdIndex.get(entry.id) ?? 0) <
