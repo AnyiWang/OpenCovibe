@@ -22,7 +22,11 @@
   import { dbg, dbgWarn } from "$lib/utils/debug";
   import { perfMark, perfMarkAsync } from "$lib/utils/perf";
   import { fileName } from "$lib/utils/format";
-  import { resolveStaticLanguage, resolveByFirstLine } from "$lib/utils/codemirror-languages";
+  import {
+    resolveStaticExtensionInfo,
+    resolveStaticFilenameInfo,
+    resolveByFirstLine,
+  } from "$lib/utils/codemirror-languages";
 
   let {
     content = $bindable(""),
@@ -51,18 +55,40 @@
   /**
    * Resolve language extensions for a file path.
    *
-   * 1. Static mapping (sync) — covers ~20 common languages
-   * 2. Dynamic fallback via @codemirror/language-data (async, with try/catch)
-   * 3. Returns [] on failure (plain text, never throws)
+   * 1a. Filename match (Containerfile, Makefile, Cargo.lock, .gitignore,
+   *     Dockerfile.dev, ...) — must run BEFORE extension match because
+   *     Dockerfile.dev would otherwise miss EXT_MAP for "dev" and fall
+   *     through pointlessly. Note: exact "Dockerfile" / "Component.vue" /
+   *     "snippet.liquid" are intentionally NOT in static maps so the
+   *     dynamic loader can supply their real parsers.
+   * 1b. Extension static mapping (sync) — covers ~30 common languages
+   * 2.  Dynamic fallback via @codemirror/language-data (async, with try/catch)
+   * 3.  First-line detection (shebang, XML declaration, JSON brace)
+   * 4.  Returns [] on failure (plain text, never throws)
    */
   async function resolveLanguage(path: string): Promise<Extension[]> {
     const name = fileName(path);
 
-    // 1. Static mapping (sync — no dynamic chunk loading)
-    const staticResult = resolveStaticLanguage(name);
-    if (staticResult) {
-      dbg("code-editor", "static-hit", { name });
-      return staticResult;
+    // 1a. Filename match
+    const filenameInfo = resolveStaticFilenameInfo(name);
+    if (filenameInfo) {
+      dbg("code-editor", "filename-hit", {
+        name,
+        kind: filenameInfo.kind,
+        approx: filenameInfo.approx,
+      });
+      return filenameInfo.extensions;
+    }
+
+    // 1b. Extension static mapping (sync — no dynamic chunk loading)
+    const extInfo = resolveStaticExtensionInfo(name);
+    if (extInfo) {
+      dbg("code-editor", "static-hit", {
+        name,
+        kind: extInfo.kind,
+        approx: extInfo.approx,
+      });
+      return extInfo.extensions;
     }
 
     // 2. Dynamic fallback: language-data auto-detection
