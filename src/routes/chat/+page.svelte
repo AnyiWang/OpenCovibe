@@ -247,6 +247,24 @@
   let statusBarRef: SessionStatusBar | undefined = $state();
   let stashedInput: PromptInputSnapshot | null = $state(null);
   let sidebarRequestedTab = $state<"tools" | "context" | "files" | "info" | "tasks" | null>(null);
+  let requestedPreviewPath = $state<string | null>(null);
+
+  function openPreviewForPath(path: string) {
+    if (!path) return;
+    requestedPreviewPath = path;
+    sidebarRequestedTab = "files";
+    if (sidebarCollapsed) sidebarCollapsed = false;
+  }
+
+  // Clear preview when run changes (defense-in-depth; ToolActivity also clears via its runId effect)
+  let _lastPreviewClearRunId = "__unset__";
+  $effect(() => {
+    const id = store.run?.id ?? "";
+    if (id !== _lastPreviewClearRunId) {
+      _lastPreviewClearRunId = id;
+      requestedPreviewPath = null;
+    }
+  });
 
   // ── Verbose state (chat page level) ──
   let verboseEnabled = $state(false);
@@ -3953,6 +3971,7 @@
                               latestPlanTool={entry.kind === "tool" &&
                                 entry.tool.tool_use_id === latestPlanToolId}
                               showPermissionInPanel={showPermissionPanel}
+                              onPreviewFile={openPreviewForPath}
                             />
                           </div>
                         </div>
@@ -4643,6 +4662,10 @@
       bind:requestedTab={sidebarRequestedTab}
       backgroundTasks={store.taskNotifications}
       activeBackgroundTasks={store.activeBackgroundTasks}
+      cwd={store.effectiveCwd}
+      runId={store.run?.id ?? ""}
+      isRemote={store.isRemote}
+      bind:requestedPreviewPath
     />
   {/if}
 

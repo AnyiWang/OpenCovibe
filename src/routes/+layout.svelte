@@ -130,31 +130,53 @@
   let searchRequestId = $state(0);
   let debounceTimer: ReturnType<typeof setTimeout> | undefined;
 
-  // ── Sidebar resize ──
+  // ── Sidebar resize (ghost-line strategy: zero reflow during drag, single commit on release) ──
   function loadSidebarWidth(): number {
     if (typeof window === "undefined") return 280;
     const raw = parseInt(localStorage.getItem("ocv:sidebar-width") ?? "", 10);
     return Number.isFinite(raw) ? Math.min(500, Math.max(180, raw)) : 280;
   }
   let sidebarWidth = $state(loadSidebarWidth());
+  let sidebarResizing = $state(false);
+  let sidebarGhostX = $state(0);
   let resizeCleanup: (() => void) | null = null;
 
   function startResize(e: MouseEvent) {
     e.preventDefault();
     const startX = e.clientX;
     const startWidth = sidebarWidth;
+    let pendingWidth = startWidth;
+    sidebarResizing = true;
+    sidebarGhostX = startWidth; // ghost is anchored to sidebar's right edge (= width from left)
     dbg("layout", "sidebar resize start", { startWidth });
     document.body.style.userSelect = "none";
     document.body.style.cursor = "col-resize";
 
+    let rafId: number | null = null;
+    function flush() {
+      rafId = null;
+    }
+
     function onMove(ev: MouseEvent) {
-      sidebarWidth = Math.min(500, Math.max(180, startWidth + (ev.clientX - startX)));
+      pendingWidth = Math.min(500, Math.max(180, startWidth + (ev.clientX - startX)));
+      // Ghost line follows the cursor's clamped X so the user sees exactly where the
+      // boundary will land. (Aside's left edge varies with left rail width — this avoids
+      // having to query the aside's getBoundingClientRect every frame.)
+      sidebarGhostX = startX + (pendingWidth - startWidth);
+      if (rafId === null) rafId = window.requestAnimationFrame(flush);
     }
     function cleanup() {
       document.removeEventListener("mousemove", onMove);
       document.removeEventListener("mouseup", onUp);
       document.body.style.userSelect = "";
       document.body.style.cursor = "";
+      if (rafId !== null) {
+        window.cancelAnimationFrame(rafId);
+        rafId = null;
+      }
+      // Commit ONCE on release → single layout reflow.
+      sidebarWidth = pendingWidth;
+      sidebarResizing = false;
       resizeCleanup = null;
       localStorage.setItem("ocv:sidebar-width", String(sidebarWidth));
       dbg("layout", "sidebar resize end", { width: sidebarWidth });
@@ -2225,6 +2247,14 @@
         ></div>
       </div>
     </aside>
+  {/if}
+
+  <!-- Ghost line during sidebar drag (zero-reflow preview) -->
+  {#if sidebarResizing}
+    <div
+      class="fixed top-0 bottom-0 w-0.5 bg-primary/60 z-[9999] pointer-events-none"
+      style="left: {sidebarGhostX}px;"
+    ></div>
   {/if}
 
   <!-- Main content -->

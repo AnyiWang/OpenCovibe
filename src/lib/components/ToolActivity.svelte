@@ -8,6 +8,8 @@
   import { t } from "$lib/i18n/index.svelte";
   import ContextHistoryPanel from "$lib/components/ContextHistoryPanel.svelte";
   import FilesPanel from "$lib/components/FilesPanel.svelte";
+  import FilePreviewPane from "$lib/components/FilePreviewPane.svelte";
+  import { onMount } from "svelte";
   import SessionInfoPanel from "$lib/components/SessionInfoPanel.svelte";
   import StatusIcon from "$lib/components/StatusIcon.svelte";
   import {
@@ -33,6 +35,10 @@
     requestedTab = $bindable(null as "tools" | "context" | "files" | "info" | "tasks" | null),
     backgroundTasks = new Map(),
     activeBackgroundTasks = [],
+    cwd = "",
+    runId = "",
+    isRemote = false,
+    requestedPreviewPath = $bindable(null as string | null),
   }: {
     timeline: TimelineEntry[];
     tools: HookEvent[];
@@ -47,6 +53,14 @@
     requestedTab?: "tools" | "context" | "files" | "info" | "tasks" | null;
     backgroundTasks?: Map<string, TaskNotificationItem>;
     activeBackgroundTasks?: TaskNotificationItem[];
+    /** Working directory for file preview (typically store.effectiveCwd). */
+    cwd?: string;
+    /** Run id — when it changes the preview is cleared. */
+    runId?: string;
+    /** Remote run flag — disables file preview (file APIs are local-only). */
+    isRemote?: boolean;
+    /** External request to open preview for a path (auto-switches to files tab). */
+    requestedPreviewPath?: string | null;
   } = $props();
 
   // ── Tab state ──
@@ -60,6 +74,135 @@
       requestedTab = null;
     }
   });
+
+  // ── Preview state ──
+  let previewPath = $state<string | null>(null);
+
+  // External preview request → set path + switch tab; consume by setting $bindable to null
+  $effect(() => {
+    if (requestedPreviewPath) {
+      previewPath = requestedPreviewPath;
+      activeTab = "files";
+      requestedPreviewPath = null;
+    }
+  });
+
+  // Clear preview when run changes (different session — paths from previous run no longer relevant)
+  $effect(() => {
+    void runId;
+    previewPath = null;
+  });
+
+  // ── Width state (browser-safe initialization) ──
+  const WIDTH_MIN = 280;
+  const WIDTH_MAX = 720;
+  const WIDTH_DEFAULT = 320;
+  const WIDTH_AUTO_PREVIEW = 560;
+
+  function clampWidth(v: number): number {
+    return Math.max(WIDTH_MIN, Math.min(WIDTH_MAX, v));
+  }
+
+  let savedWidth = $state(WIDTH_DEFAULT);
+  let viewportWidth = $state(1200);
+  /** True once the user has explicitly resized (or loaded a persisted resize). Disables auto-floor. */
+  let userHasResized = $state(false);
+
+  onMount(() => {
+    if (typeof window === "undefined") return;
+    const stored = window.localStorage.getItem("ocv:toolactivity-width");
+    if (stored) {
+      const n = parseInt(stored, 10);
+      if (Number.isFinite(n)) {
+        savedWidth = clampWidth(n);
+        userHasResized = true;
+      }
+    }
+    viewportWidth = window.innerWidth;
+    const onResize = () => {
+      viewportWidth = window.innerWidth;
+    };
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  });
+
+  /**
+   * Effective width displayed:
+   * - If user has explicitly resized (or has a persisted preference) → always respect savedWidth.
+   * - Else if a preview is open → temporarily widen to accommodate code, but DO NOT persist.
+   * - Else → savedWidth (compact default).
+   *
+   * This keeps the auto-widening transient: closing the preview returns to savedWidth, and
+   * once the user drags the handle their preference is honored regardless of preview state.
+   */
+  let effectiveWidth = $derived.by(() => {
+    if (userHasResized) return clampWidth(savedWidth);
+    if (previewPath) {
+      const autoFloor = Math.min(WIDTH_AUTO_PREVIEW, 0.45 * viewportWidth);
+      return clampWidth(Math.max(savedWidth, autoFloor));
+    }
+    return clampWidth(savedWidth);
+  });
+
+  // ── Resize handle (VS Code-style: ghost line during drag, single commit on release) ──
+  // Why this approach: in-place live resize forces chat-main reflow on every pointermove,
+  // which is too expensive with thousands of chat DOM nodes. Instead, during drag we DON'T
+  // move any panel — only render a fixed-position vertical line at the cursor that previews
+  // the new boundary. On release we commit savedWidth ONCE → single reflow.
+  let resizing = $state(false);
+  let ghostX = $state(0);
+  let resizeStartX = 0;
+  let resizeStartWidth = 0;
+  let pendingWidth: number | null = null;
+  let rafId: number | null = null;
+  let asideEl: HTMLElement | undefined = $state();
+
+  function onResizeStart(e: PointerEvent) {
+    resizing = true;
+    resizeStartX = e.clientX;
+    resizeStartWidth = effectiveWidth;
+    pendingWidth = resizeStartWidth;
+    ghostX = e.clientX;
+    (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
+    e.preventDefault();
+  }
+
+  function flushGhostFrame() {
+    rafId = null;
+    // ghostX state already updated; this is just a frame-aligned re-render gate.
+  }
+
+  function onResizeMove(e: PointerEvent) {
+    if (!resizing) return;
+    const delta = resizeStartX - e.clientX; // dragging left grows the panel
+    pendingWidth = clampWidth(resizeStartWidth + delta);
+    // Snap ghost line to the new panel boundary (clamped). Aside is on the right side of
+    // the viewport, so its left edge after commit = window.innerWidth - pendingWidth.
+    const wantedX = typeof window !== "undefined" ? window.innerWidth - pendingWidth : e.clientX;
+    if (rafId === null && typeof window !== "undefined") {
+      rafId = window.requestAnimationFrame(flushGhostFrame);
+    }
+    ghostX = wantedX;
+  }
+
+  function onResizeEnd(e: PointerEvent) {
+    if (!resizing) return;
+    resizing = false;
+    if (rafId !== null && typeof window !== "undefined") {
+      window.cancelAnimationFrame(rafId);
+      rafId = null;
+    }
+    (e.target as HTMLElement).releasePointerCapture?.(e.pointerId);
+
+    if (pendingWidth !== null && pendingWidth !== savedWidth) {
+      savedWidth = pendingWidth;
+      userHasResized = true;
+      if (typeof window !== "undefined") {
+        window.localStorage.setItem("ocv:toolactivity-width", String(savedWidth));
+      }
+    }
+    pendingWidth = null;
+  }
 
   // ── Helpers ──
 
@@ -416,8 +559,45 @@
   {/if}
 {/snippet}
 
-{#if !collapsed}
-  <div class="flex h-full flex-col border-l border-border bg-muted/30" style="width: 280px;">
+<!--
+  Outer wrapper is ALWAYS mounted: width animates between 32px (collapsed) and effectiveWidth.
+  The expanded panel inside stays in the DOM at full width but is visually clipped + hidden when
+  collapsed, so CodeMirror (FilePreviewPane) is never torn down on collapse toggle. This is the
+  fix for "files tab + click expand briefly hangs".
+-->
+{#if resizing}
+  <!-- Ghost line during drag: zero-cost preview, no layout reflow elsewhere -->
+  <div
+    class="fixed top-0 bottom-0 w-0.5 bg-primary/60 z-[9999] pointer-events-none"
+    style="left: {ghostX}px;"
+  ></div>
+{/if}
+<aside
+  bind:this={asideEl}
+  class="relative h-full border-l border-border bg-muted/30 overflow-hidden"
+  style="width: {collapsed ? '32px' : effectiveWidth + 'px'}; contain: layout style;"
+>
+  <!-- Always-mounted expanded panel (visibility-hidden when collapsed) -->
+  <div
+    class="absolute top-0 left-0 h-full flex flex-col"
+    style="width: {effectiveWidth}px; visibility: {collapsed
+      ? 'hidden'
+      : 'visible'}; pointer-events: {collapsed ? 'none' : 'auto'};"
+    aria-hidden={collapsed}
+  >
+    <!-- Resize handle on the left edge -->
+    <div
+      role="separator"
+      aria-orientation="vertical"
+      tabindex="-1"
+      class="absolute left-0 top-0 h-full w-1 cursor-col-resize hover:bg-primary/30 active:bg-primary/50 z-20 {resizing
+        ? 'bg-primary/50'
+        : ''}"
+      onpointerdown={onResizeStart}
+      onpointermove={onResizeMove}
+      onpointerup={onResizeEnd}
+      onpointercancel={onResizeEnd}
+    ></div>
     <!-- Header: 4 icon tabs -->
     <div class="px-2 py-1.5 border-b border-border">
       <div class="flex items-center justify-between">
@@ -625,7 +805,26 @@
     {:else if activeTab === "context"}
       <ContextHistoryPanel history={contextHistory} {turnUsages} {sessionInfo} />
     {:else if activeTab === "files"}
-      <FilesPanel {fileEntries} {onScrollToTool} />
+      <div class="flex flex-1 flex-col min-h-0">
+        <div class="flex-shrink-0 max-h-[40vh] overflow-y-auto border-b border-border/50">
+          <FilesPanel
+            {fileEntries}
+            {onScrollToTool}
+            onPreview={(p) => (previewPath = p)}
+            selectedPath={previewPath ?? undefined}
+          />
+        </div>
+        <div class="flex-1 min-h-0 overflow-hidden">
+          <FilePreviewPane
+            {cwd}
+            path={previewPath ?? ""}
+            mode="preview"
+            editable={false}
+            {isRemote}
+            scopeKey={runId}
+          />
+        </div>
+      </div>
     {:else if activeTab === "info"}
       <!-- Subagents section (shown above session info when Task tools exist) -->
       {#if subagents.length > 0}
@@ -864,155 +1063,156 @@
       {/if}
     {/if}
   </div>
-{:else}
-  <!-- Collapsed: thin bar with 4 icon buttons vertically -->
-  <div
-    class="flex flex-col items-center border-l border-border bg-muted/30 py-2 px-1 gap-1"
-    style="width: 32px;"
-  >
-    <button
-      class="text-muted-foreground hover:text-foreground transition-colors p-1 rounded hover:bg-accent"
-      onclick={onToggle}
-      title={t("toolActivity_show")}
+  {#if collapsed}
+    <!-- Collapsed: thin icon rail overlay (absolute, only mounted when collapsed) -->
+    <div
+      class="absolute top-0 left-0 h-full flex flex-col items-center py-2 px-1 gap-1"
+      style="width: 32px;"
     >
-      <svg
-        class="h-4 w-4"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="2"
-        stroke-linecap="round"
-        stroke-linejoin="round"
+      <button
+        class="text-muted-foreground hover:text-foreground transition-colors p-1 rounded hover:bg-accent"
+        onclick={onToggle}
+        title={t("toolActivity_show")}
       >
-        <polyline points="9 18 15 12 9 6" />
-      </svg>
-    </button>
-    <!-- Collapsed icon buttons -->
-    <button
-      class="p-1 rounded transition-colors {activeTab === 'tools'
-        ? 'text-foreground bg-accent'
-        : 'text-muted-foreground/50 hover:text-muted-foreground'}"
-      onclick={() => {
-        activeTab = "tools";
-        onToggle();
-      }}
-      title={t("toolActivity_tabTools")}
-    >
-      <svg
-        class="h-3.5 w-3.5"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="2"
-        stroke-linecap="round"
-        stroke-linejoin="round"
+        <svg
+          class="h-4 w-4"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <polyline points="9 18 15 12 9 6" />
+        </svg>
+      </button>
+      <!-- Collapsed icon buttons -->
+      <button
+        class="p-1 rounded transition-colors {activeTab === 'tools'
+          ? 'text-foreground bg-accent'
+          : 'text-muted-foreground/50 hover:text-muted-foreground'}"
+        onclick={() => {
+          activeTab = "tools";
+          onToggle();
+        }}
+        title={t("toolActivity_tabTools")}
       >
-        <path
-          d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"
-        />
-      </svg>
-    </button>
-    <button
-      class="p-1 rounded transition-colors {activeTab === 'context'
-        ? 'text-foreground bg-accent'
-        : 'text-muted-foreground/50 hover:text-muted-foreground'}"
-      onclick={() => {
-        activeTab = "context";
-        onToggle();
-      }}
-      title={t("toolActivity_tabContext")}
-    >
-      <svg
-        class="h-3.5 w-3.5"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="2"
-        stroke-linecap="round"
-        stroke-linejoin="round"
+        <svg
+          class="h-3.5 w-3.5"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <path
+            d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"
+          />
+        </svg>
+      </button>
+      <button
+        class="p-1 rounded transition-colors {activeTab === 'context'
+          ? 'text-foreground bg-accent'
+          : 'text-muted-foreground/50 hover:text-muted-foreground'}"
+        onclick={() => {
+          activeTab = "context";
+          onToggle();
+        }}
+        title={t("toolActivity_tabContext")}
       >
-        <circle cx="12" cy="12" r="10" />
-        <polyline points="12 6 12 12 16 14" />
-      </svg>
-    </button>
-    <button
-      class="p-1 rounded transition-colors {activeTab === 'files'
-        ? 'text-foreground bg-accent'
-        : 'text-muted-foreground/50 hover:text-muted-foreground'}"
-      onclick={() => {
-        activeTab = "files";
-        onToggle();
-      }}
-      title={t("toolActivity_tabFiles")}
-    >
-      <svg
-        class="h-3.5 w-3.5"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="2"
-        stroke-linecap="round"
-        stroke-linejoin="round"
+        <svg
+          class="h-3.5 w-3.5"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <circle cx="12" cy="12" r="10" />
+          <polyline points="12 6 12 12 16 14" />
+        </svg>
+      </button>
+      <button
+        class="p-1 rounded transition-colors {activeTab === 'files'
+          ? 'text-foreground bg-accent'
+          : 'text-muted-foreground/50 hover:text-muted-foreground'}"
+        onclick={() => {
+          activeTab = "files";
+          onToggle();
+        }}
+        title={t("toolActivity_tabFiles")}
       >
-        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-        <polyline points="14 2 14 8 20 8" />
-      </svg>
-    </button>
-    <button
-      class="p-1 rounded transition-colors {activeTab === 'info'
-        ? 'text-foreground bg-accent'
-        : 'text-muted-foreground/50 hover:text-muted-foreground'}"
-      onclick={() => {
-        activeTab = "info";
-        onToggle();
-      }}
-      title={t("toolActivity_tabInfo")}
-    >
-      <svg
-        class="h-3.5 w-3.5"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="2"
-        stroke-linecap="round"
-        stroke-linejoin="round"
+        <svg
+          class="h-3.5 w-3.5"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+          <polyline points="14 2 14 8 20 8" />
+        </svg>
+      </button>
+      <button
+        class="p-1 rounded transition-colors {activeTab === 'info'
+          ? 'text-foreground bg-accent'
+          : 'text-muted-foreground/50 hover:text-muted-foreground'}"
+        onclick={() => {
+          activeTab = "info";
+          onToggle();
+        }}
+        title={t("toolActivity_tabInfo")}
       >
-        <circle cx="12" cy="12" r="10" />
-        <line x1="12" y1="16" x2="12" y2="12" />
-        <line x1="12" y1="8" x2="12.01" y2="8" />
-      </svg>
-    </button>
-    <button
-      class="p-1 rounded transition-colors relative {activeTab === 'tasks'
-        ? 'text-foreground bg-accent'
-        : 'text-muted-foreground/50 hover:text-muted-foreground'}"
-      onclick={() => {
-        activeTab = "tasks";
-        onToggle();
-      }}
-      title={t("toolActivity_tabTasks")}
-    >
-      <svg
-        class="h-3.5 w-3.5"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="2"
-        stroke-linecap="round"
-        stroke-linejoin="round"
+        <svg
+          class="h-3.5 w-3.5"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <circle cx="12" cy="12" r="10" />
+          <line x1="12" y1="16" x2="12" y2="12" />
+          <line x1="12" y1="8" x2="12.01" y2="8" />
+        </svg>
+      </button>
+      <button
+        class="p-1 rounded transition-colors relative {activeTab === 'tasks'
+          ? 'text-foreground bg-accent'
+          : 'text-muted-foreground/50 hover:text-muted-foreground'}"
+        onclick={() => {
+          activeTab = "tasks";
+          onToggle();
+        }}
+        title={t("toolActivity_tabTasks")}
       >
-        <rect x="3" y="3" width="18" height="18" rx="2" />
-        <path d="M9 12l2 2 4-4" />
-      </svg>
-      {#if activeBackgroundTasks.length > 0}
-        <span class="absolute top-0 right-0 h-1.5 w-1.5 rounded-full bg-blue-400 animate-pulse"
-        ></span>
+        <svg
+          class="h-3.5 w-3.5"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <rect x="3" y="3" width="18" height="18" rx="2" />
+          <path d="M9 12l2 2 4-4" />
+        </svg>
+        {#if activeBackgroundTasks.length > 0}
+          <span class="absolute top-0 right-0 h-1.5 w-1.5 rounded-full bg-blue-400 animate-pulse"
+          ></span>
+        {/if}
+      </button>
+      {#if toolStats.totalToolCount > 0}
+        <span class="mt-1 text-[10px] text-muted-foreground" style="writing-mode: vertical-rl;"
+          >{toolStats.totalToolCount}</span
+        >
       {/if}
-    </button>
-    {#if toolStats.totalToolCount > 0}
-      <span class="mt-1 text-[10px] text-muted-foreground" style="writing-mode: vertical-rl;"
-        >{toolStats.totalToolCount}</span
-      >
-    {/if}
-  </div>
-{/if}
+    </div>
+  {/if}
+</aside>

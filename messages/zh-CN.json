@@ -955,6 +955,9 @@
   "bgTask_empty": "暂无后台任务",
   "filesPanel_noFiles": "暂无文件操作",
   "filesPanel_notLocatable": "无法定位到对应工具调用",
+  "filesPanel_noPreviewSelected": "选择上方文件以预览",
+  "preview_remoteUnsupported": "远程会话暂不支持文件预览",
+  "toolDetail_previewFile": "在预览栏中打开",
 
   "infoPanel_noInfo": "会话启动后将显示会话信息。",
   "infoPanel_session": "会话",
