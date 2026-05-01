@@ -1,8 +1,10 @@
 <script lang="ts">
-  import hljs from "highlight.js/lib/core";
-  // Side-effect: ensure hljs language registrations from markdown.ts have run.
-  // markdown.ts registers js/ts/py/rust/go/cpp/yaml/json/sql/bash/etc at module load.
-  import "$lib/utils/markdown";
+  // Use centralized hljs init: registers all supported languages on module load.
+  // (Side-effect import via "$lib/utils/markdown" was unreliable across module
+  // evaluation orders — getLanguage("rust") returned null at runtime, falling back
+  // to highlightAuto and 10x slowdown for .rs files.)
+  import { hljs } from "$lib/utils/hljs-init";
+  import "highlight.js/styles/github-dark.min.css";
   import { getExtension } from "$lib/utils/preview-ext";
   import { perfMark } from "$lib/utils/perf";
 
