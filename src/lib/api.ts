@@ -298,6 +298,12 @@ export async function readTextFile(path: string, cwd?: string): Promise<string> 
   return invoke<string>("read_text_file", { path, cwd: cwd ?? null });
 }
 
+/** Cheap file size lookup — used by FilePreviewPane to skip readTextFile for huge files. */
+export async function statTextFile(path: string, cwd?: string): Promise<number> {
+  dbg("api", "statTextFile", path, { cwd });
+  return invoke<number>("stat_text_file", { path, cwd: cwd ?? null });
+}
+
 export async function writeTextFile(path: string, content: string, cwd?: string): Promise<void> {
   dbg("api", "writeTextFile", path, { cwd });
   return invoke("write_text_file", { path, content, cwd: cwd ?? null });

@@ -957,6 +957,7 @@
   "filesPanel_notLocatable": "无法定位到对应工具调用",
   "filesPanel_noPreviewSelected": "选择上方文件以预览",
   "preview_remoteUnsupported": "远程会话暂不支持文件预览",
+  "preview_tooLarge": "文件太大，请用 Explorer 打开预览",
   "toolDetail_previewFile": "在预览栏中打开",
 
   "infoPanel_noInfo": "会话启动后将显示会话信息。",

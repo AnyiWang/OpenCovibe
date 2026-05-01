@@ -957,6 +957,7 @@
   "filesPanel_notLocatable": "Cannot locate the corresponding tool call",
   "filesPanel_noPreviewSelected": "Select a file above to preview",
   "preview_remoteUnsupported": "File preview is not supported for remote sessions",
+  "preview_tooLarge": "File too large to preview inline. Open in Explorer.",
   "toolDetail_previewFile": "Open in preview pane",
 
   "infoPanel_noInfo": "Session info will appear after the session starts.",

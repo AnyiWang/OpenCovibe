@@ -162,6 +162,25 @@ pub fn read_text_file(path: String, cwd: Option<String>) -> Result<String, Strin
         .map_err(|e| format!("Failed to read {}: {}", validated.display(), e))
 }
 
+/// Cheap file size lookup. Lets the frontend gate `read_text_file` for very large files
+/// without paying the full read + IPC + JS string allocation cost first.
+/// Returns size in bytes on success; returns Err on validation failure or stat failure
+/// (caller should fall back to read_text_file in that case — Err does NOT mean size 0).
+#[tauri::command]
+pub fn stat_text_file(path: String, cwd: Option<String>) -> Result<u64, String> {
+    log::debug!("[files] stat_text_file: path={}, cwd={:?}", path, cwd);
+    let validated = validate_file_path(&path, cwd.as_deref())?;
+    let size = fs::metadata(&validated)
+        .map(|m| m.len())
+        .map_err(|e| format!("Failed to stat {}: {}", validated.display(), e))?;
+    log::debug!(
+        "[files] stat_text_file: result path={} size={}",
+        validated.display(),
+        size
+    );
+    Ok(size)
+}
+
 const MAX_TASK_OUTPUT_BYTES: u64 = 512 * 1024; // 512KB
 
 #[tauri::command]
