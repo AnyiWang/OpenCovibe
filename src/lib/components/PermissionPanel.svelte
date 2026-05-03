@@ -9,6 +9,7 @@
   let {
     pendingTools,
     onPermissionRespond,
+    agentDisplayName = "Claude",
   }: {
     pendingTools: Array<{ tool: BusToolItem; requestId: string }>;
     onPermissionRespond: (
@@ -19,6 +20,7 @@
       denyMessage?: string,
       interrupt?: boolean,
     ) => void | Promise<void>;
+    agentDisplayName?: string;
   } = $props();
 
   // ── Submitting state (竞态防护) ──
@@ -141,7 +143,7 @@
             </div>
           </div>
           <p class="text-sm text-foreground mb-1">
-            {t("inline_claudeWantsToUse")} <strong>{item.tool.tool_name}</strong>
+            {t("inline_agentWantsToUse", { agent: agentDisplayName })} <strong>{item.tool.tool_name}</strong>
           </p>
           {#if detail}
             <p

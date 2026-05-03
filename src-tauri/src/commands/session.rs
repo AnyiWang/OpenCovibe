@@ -958,6 +958,15 @@ pub(crate) async fn fork_session_impl(
     // 1. Read source run metadata
     let source =
         storage::runs::get_run(&run_id).ok_or_else(|| format!("Run {} not found", run_id))?;
+
+    // Guard: fork is only supported for Claude sessions (Codex CLI lacks fork/session semantics)
+    if source.agent != "claude" {
+        return Err(format!(
+            "Fork is not supported for {} sessions",
+            source.agent
+        ));
+    }
+
     let session_id = source
         .session_id
         .clone()
@@ -1832,6 +1841,15 @@ pub async fn side_question(
     // 1. Read source run metadata
     let source =
         storage::runs::get_run(&run_id).ok_or_else(|| format!("Run {} not found", run_id))?;
+
+    // Guard: side questions are only supported for Claude sessions (Codex CLI lacks fork semantics)
+    if source.agent != "claude" {
+        return Err(format!(
+            "Side questions are not supported for {} sessions",
+            source.agent
+        ));
+    }
+
     let session_id = source
         .session_id
         .clone()

@@ -39,6 +39,7 @@
     planContent,
     latestPlanTool,
     showPermissionInPanel,
+    agentDisplayName,
   }: {
     tool: BusToolItem;
     subTimeline?: TimelineEntry[];
@@ -67,6 +68,8 @@
     latestPlanTool?: boolean;
     /** Whether generic tool permissions are handled by the floating PermissionPanel. */
     showPermissionInPanel?: boolean;
+    /** Display name for the agent (e.g. "Claude" or "Codex"). */
+    agentDisplayName?: string;
   } = $props();
 
   // Look up the task notification for this specific Task tool
@@ -1430,7 +1433,7 @@
             </div>
           </div>
           <p class="text-sm text-foreground mb-1">
-            {t("inline_claudeWantsToUse")} <strong>{tool.tool_name}</strong>
+            {t("inline_agentWantsToUse", { agent: agentDisplayName ?? "Claude" })} <strong>{tool.tool_name}</strong>
           </p>
           {#if detail}
             <p
@@ -1758,6 +1761,7 @@
             {onPermissionRespond}
             {taskNotifications}
             {showPermissionInPanel}
+            {agentDisplayName}
           />
         {/if}
       {/each}

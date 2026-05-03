@@ -206,6 +206,66 @@ describe("buildDoctorReport", () => {
     expect(text).toContain("doctor_serviceMcpUnknown");
   });
 
+  it("shows Codex installed and logged in", async () => {
+    mockRunDiagnostics.mockResolvedValue(
+      makeReport({
+        codex: {
+          installed: true,
+          version: "0.117.0",
+          logged_in: true,
+          auth_method: "api_key",
+          status_text: null,
+        },
+      }),
+    );
+    const text = await buildDoctorReport("/tmp/project");
+    expect(text).toContain("doctor_sectionCodex");
+    expect(text).toContain("doctor_codexInstalled");
+    expect(text).toContain("0.117.0");
+    expect(text).toContain("doctor_codexLoggedIn");
+    expect(text).toContain("api_key");
+  });
+
+  it("shows Codex installed but not logged in", async () => {
+    mockRunDiagnostics.mockResolvedValue(
+      makeReport({
+        codex: {
+          installed: true,
+          version: "0.117.0",
+          logged_in: false,
+          auth_method: null,
+          status_text: null,
+        },
+      }),
+    );
+    const text = await buildDoctorReport("/tmp/project");
+    expect(text).toContain("doctor_sectionCodex");
+    expect(text).toContain("doctor_codexInstalled");
+    expect(text).toContain("⚠️");
+    expect(text).toContain("doctor_codexNotLoggedIn");
+  });
+
+  it("shows Codex not installed", async () => {
+    mockRunDiagnostics.mockResolvedValue(
+      makeReport({
+        codex: {
+          installed: false,
+          logged_in: false,
+          status_text: null,
+        },
+      }),
+    );
+    const text = await buildDoctorReport("/tmp/project");
+    expect(text).toContain("doctor_sectionCodex");
+    expect(text).toContain("doctor_codexNotInstalled");
+  });
+
+  it("omits Codex section when field is absent", async () => {
+    mockRunDiagnostics.mockResolvedValue(makeReport());
+    const text = await buildDoctorReport("/tmp/project");
+    expect(text).not.toContain("doctor_sectionCodex");
+  });
+
   it("shows lock files when present", async () => {
     mockRunDiagnostics.mockResolvedValue(
       makeReport({

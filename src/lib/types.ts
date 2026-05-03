@@ -468,10 +468,10 @@ export interface McpServerInfo {
 
 export interface CodexAuthResult {
   installed: boolean;
-  version?: string;
+  version?: string | null;
   logged_in: boolean;
-  auth_method?: "chatgpt" | "api_key" | "unknown";
-  status_text?: string;
+  auth_method?: "chatgpt" | "api_key" | "unknown" | null;
+  status_text?: string | null;
 }
 
 // ── Diagnostics report (run_diagnostics command) ──
@@ -483,6 +483,7 @@ export interface DiagnosticsReport {
   configs: ConfigDiagnostics;
   services: ServicesDiagnostics;
   system: SystemDiagnostics;
+  codex?: CodexAuthResult;
 }
 
 export interface CliDiagnostics {

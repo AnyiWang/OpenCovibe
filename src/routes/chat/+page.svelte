@@ -493,6 +493,7 @@
 
   // ── Agent-aware display helpers ──
   let effectiveAgent = $derived(store.run?.agent ?? store.agent);
+  let agentDisplayName = $derived(effectiveAgent === "codex" ? "Codex" : "Claude");
 
   // ── Session info for InfoPanel ──
   let currentSessionInfo: SessionInfoData | null = $derived.by(() => {
@@ -2253,6 +2254,7 @@
   }
 
   async function handleBtwSend(question: string) {
+    if (effectiveAgent === "codex") return;
     if (!store.run?.id) return;
     dbg("chat", "btwSend", { runId: store.run.id, question: question.slice(0, 50) });
     btwState = { active: true, btwId: null, question, answer: "", error: null, loading: true };
@@ -3610,7 +3612,7 @@
       cacheWriteTokens={cumulativeTokens.cacheWrite}
       parentRunId={store.run?.parent_run_id}
       onEndSession={handleStop}
-      onFork={forkOverlay ? undefined : () => handleResume("fork")}
+      onFork={effectiveAgent === "codex" || forkOverlay ? undefined : () => handleResume("fork")}
       onModelChange={effectiveAgent === "codex" ? undefined : handleModelChange}
       effort={store.features.effortSelector ? currentEffort : undefined}
       onEffortChange={store.features.effortSelector ? handleEffortChange : undefined}
@@ -4027,6 +4029,7 @@
                               latestPlanTool={entry.kind === "tool" &&
                                 entry.tool.tool_use_id === latestPlanToolId}
                               showPermissionInPanel={showPermissionPanel}
+                              {agentDisplayName}
                             />
                           </div>
                         </div>
@@ -4533,7 +4536,7 @@
                   onclick={() => handleResume("continue")}>{t("common_retry")}</button
                 >
               {/if}
-              {#if classified.canFork && store.run?.session_id}
+              {#if classified.canFork && store.run?.session_id && effectiveAgent !== "codex"}
                 <button
                   class="rounded px-2.5 py-1 text-xs bg-blue-500/20 hover:bg-blue-500/30 text-blue-400 transition-colors"
                   onclick={() => handleResume("fork")}>{t("statusbar_fork")}</button
@@ -4565,6 +4568,7 @@
       <PermissionPanel
         pendingTools={pendingToolPermissions}
         onPermissionRespond={handlePermissionRespond}
+        {agentDisplayName}
       />
     {/if}
 
@@ -4677,7 +4681,7 @@
         platformId={store.platformId ?? "anthropic"}
         platformCredentials={settings?.platform_credentials ?? []}
         onSend={sendMessage}
-        onBtwSend={handleBtwSend}
+        onBtwSend={effectiveAgent === "codex" ? undefined : handleBtwSend}
         onAgentChange={handleAgentChange}
         onInterrupt={() => store.interrupt()}
         onModelSwitch={effectiveAgent === "codex" ? undefined : handleModelChange}

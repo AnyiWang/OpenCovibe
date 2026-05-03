@@ -666,6 +666,8 @@ pub struct DiagnosticsReport {
     pub configs: ConfigDiagnostics,
     pub services: ServicesDiagnostics,
     pub system: SystemDiagnostics,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub codex: Option<CodexAuthResult>,
 }
 
 #[derive(Debug, Clone, Serialize)]

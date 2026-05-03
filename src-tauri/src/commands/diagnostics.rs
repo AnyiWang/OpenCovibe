@@ -84,16 +84,20 @@ pub async fn check_codex_auth() -> Result<CodexAuthResult, String> {
         cli_check.version
     );
 
-    // Run `codex login status` to check auth
-    let output = Command::new("codex")
-        .args(["login", "status"])
+    // Run `codex login status` to check auth (12s timeout — matches Claude OAuth check)
+    use tokio::process::Command as TokioCommand;
+    let mut cmd = TokioCommand::new("codex");
+    cmd.args(["login", "status"])
         .env("PATH", &aug_path)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
         .hide_console()
-        .output();
+        .kill_on_drop(true);
 
-    let output = match output {
-        Ok(o) => o,
-        Err(e) => {
+    let output = match tokio::time::timeout(std::time::Duration::from_secs(12), cmd.output()).await
+    {
+        Ok(Ok(o)) => o,
+        Ok(Err(e)) => {
             log::debug!(
                 "[diagnostics] check_codex_auth: failed to execute 'codex login status': {}",
                 e
@@ -104,6 +108,16 @@ pub async fn check_codex_auth() -> Result<CodexAuthResult, String> {
                 logged_in: false,
                 auth_method: None,
                 status_text: Some(format!("exec error: {}", e)),
+            });
+        }
+        Err(_) => {
+            log::debug!("[diagnostics] check_codex_auth: 'codex login status' timed out (12s)");
+            return Ok(CodexAuthResult {
+                installed: true,
+                version: cli_check.version,
+                logged_in: false,
+                auth_method: None,
+                status_text: Some("timed out (12s)".into()),
             });
         }
     };
@@ -651,12 +665,13 @@ pub async fn run_diagnostics(cwd: String) -> Result<DiagnosticsReport, String> {
     );
 
     // Async checks in parallel
-    let (cli, dist, auth, community, mcp_reg) = tokio::join!(
+    let (cli, dist, auth, community, mcp_reg, codex_auth) = tokio::join!(
         check_cli_inner(),
         fetch_dist_tags_inner(),
         check_auth_inner(),
         check_community_inner(),
         check_mcp_reg_inner(),
+        async { check_codex_auth().await.ok() },
     );
 
     // Merge CLI + dist tags
@@ -723,6 +738,7 @@ pub async fn run_diagnostics(cwd: String) -> Result<DiagnosticsReport, String> {
             sandbox_available: sandbox,
             lock_files: locks,
         },
+        codex: codex_auth,
     })
 }
 
