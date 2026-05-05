@@ -1,4 +1,4 @@
-import { Marked } from "marked";
+import { Marked, type Token } from "marked";
 import { escapeHtml } from "$lib/utils/ansi";
 import hljs from "highlight.js/lib/core";
 import javascript from "highlight.js/lib/languages/javascript";
@@ -55,8 +55,8 @@ marked.use({
   renderer: {
     // marked v15: table(token) receives a Token with header[] and rows[][]
     table(token: {
-      header: Array<{ tokens: unknown[]; align: string | null; header: boolean }>;
-      rows: Array<Array<{ tokens: unknown[]; align: string | null; header: boolean }>>;
+      header: Array<{ tokens: Token[]; align: string | null; header: boolean }>;
+      rows: Array<Array<{ tokens: Token[]; align: string | null; header: boolean }>>;
     }) {
       // Build header cells
       let headerCells = "";

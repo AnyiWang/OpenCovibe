@@ -132,7 +132,7 @@
       <div class="border-t border-border"></div>
     {/if}
 
-    {#snippet commandItem(cmd: import("$lib/types").SlashCommand, idx: number, py: string)}
+    {#snippet commandItem(cmd: import("$lib/types").CliCommand, idx: number, py: string)}
       {@const interaction = getCommandInteraction(cmd)}
       {@const hint = getArgumentHint(cmd)}
       <button
@@ -154,7 +154,7 @@
         {#if interaction === "enum"}
           <span class="shrink-0 text-xs text-muted-foreground/40">&rarr;</span>
         {/if}
-        {#if cmd.aliases?.length > 0}
+        {#if (cmd.aliases?.length ?? 0) > 0}
           <span class="flex shrink-0 gap-1">
             {#each cmd.aliases ?? [] as alias}
               <span class="rounded bg-muted px-1 py-0.5 text-[10px] font-mono text-muted-foreground"

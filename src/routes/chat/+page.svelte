@@ -1597,7 +1597,10 @@
 
       const isThirdParty = store.platformId && store.platformId !== "anthropic";
       if (isThirdParty) {
-        const restoreCred = findCredential(settings?.platform_credentials ?? [], store.platformId);
+        const restoreCred = findCredential(
+          settings?.platform_credentials ?? [],
+          store.platformId ?? "",
+        );
         const restorePreset = PLATFORM_PRESETS.find((p) => p.id === store.platformId);
         const restoreModels = restoreCred?.models?.length
           ? restoreCred.models

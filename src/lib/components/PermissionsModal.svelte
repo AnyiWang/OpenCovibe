@@ -246,7 +246,7 @@
             : 'text-muted-foreground hover:bg-accent/50'}"
           onclick={() => (activeTab = tab.id)}
         >
-          {t(tab.labelKey)}
+          {(t as (key: string) => string)(tab.labelKey)}
           {#if tab.count > 0}
             <span class="ml-1 text-[10px] opacity-60">{tab.count}</span>
           {/if}

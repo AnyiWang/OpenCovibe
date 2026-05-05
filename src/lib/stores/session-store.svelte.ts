@@ -2377,7 +2377,7 @@ export class SessionStore {
           }
         }
         if (subChanged) {
-          u[i] = { ...u[i], subTimeline: newSub };
+          u[i] = { ...u[i], subTimeline: newSub } as TimelineEntry;
           changed = true;
         }
       }

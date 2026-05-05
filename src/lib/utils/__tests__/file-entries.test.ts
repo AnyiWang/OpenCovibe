@@ -14,9 +14,11 @@ function toolEntry(
   input: Record<string, unknown>,
   opts?: { id?: string; sub?: TimelineEntry[] },
 ): TimelineEntry {
+  const id = opts?.id ?? `t-${name}-${Math.random().toString(36).slice(2, 6)}`;
   return {
     kind: "tool",
-    id: opts?.id ?? `t-${name}-${Math.random().toString(36).slice(2, 6)}`,
+    id,
+    anchorId: id,
     ts: new Date().toISOString(),
     tool: {
       tool_use_id: opts?.id ?? `tuid-${name}-${Math.random().toString(36).slice(2, 6)}`,

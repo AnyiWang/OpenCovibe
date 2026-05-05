@@ -178,7 +178,10 @@
           {#if item.tool.suggestions && item.tool.suggestions.length > 0}
             <div class="flex flex-wrap gap-2 mt-2 pt-2 border-t border-amber-500/20">
               {#each item.tool.suggestions as suggestion}
-                {@const label = formatSuggestionLabel(suggestion, t)}
+                {@const label = formatSuggestionLabel(
+                  suggestion,
+                  t as (key: string, params?: Record<string, string>) => string,
+                )}
                 <button
                   class="rounded-md border border-blue-500/30 bg-blue-500/5 px-3 py-1.5 text-xs font-medium text-blue-600 dark:text-blue-400 hover:bg-blue-500/10 transition-all disabled:opacity-50"
                   disabled={busy}
@@ -259,7 +262,10 @@
               {#if item.tool.suggestions && item.tool.suggestions.length > 0}
                 <div class="flex flex-wrap gap-1.5 ml-8 mb-1">
                   {#each item.tool.suggestions as suggestion}
-                    {@const label = formatSuggestionLabel(suggestion, t)}
+                    {@const label = formatSuggestionLabel(
+                      suggestion,
+                      t as (key: string, params?: Record<string, string>) => string,
+                    )}
                     <button
                       class="rounded border border-blue-500/30 bg-blue-500/5 px-2 py-0.5 text-[10px] font-medium text-blue-600 dark:text-blue-400 hover:bg-blue-500/10 transition-all disabled:opacity-50"
                       disabled={busy}

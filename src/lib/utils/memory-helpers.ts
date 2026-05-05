@@ -1,3 +1,5 @@
+import type { MemoryFileCandidate } from "$lib/types";
+
 /**
  * Filter memory file candidates for sidebar display.
  *
@@ -6,9 +8,9 @@
  *   OR when the file is currently selected (to keep highlight visible).
  */
 export function filterVisibleCandidates(
-  files: { path: string; exists: boolean }[],
+  files: MemoryFileCandidate[],
   showCreate: boolean,
   selectedPath: string,
-): { path: string; exists: boolean }[] {
+): MemoryFileCandidate[] {
   return files.filter((f) => f.exists || showCreate || f.path === selectedPath);
 }

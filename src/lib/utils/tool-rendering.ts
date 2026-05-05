@@ -563,11 +563,8 @@ const LEVEL_2_TOOLS = new Set(["Bash", "bash", "Edit", "edit_file", "Write", "wr
 export function getToolRenderLevel(toolName: string, status: BusToolItem["status"]): 1 | 2 | 3 {
   // AskUserQuestion is always Level 3 (all states: active, done, denied)
   if (toolName === "AskUserQuestion") return 3;
-  // Interactive statuses: user must approve/deny
+  // Interactive statuses: user must approve/deny (also covers ExitPlanMode plan approval)
   if (status === "permission_prompt") return 3;
-  // ExitPlanMode only needs Level 3 when it's a permission_prompt (plan approval card)
-  // Other states (running, success, error) use Level 1 one-liner
-  if (toolName === "ExitPlanMode" && status === "permission_prompt") return 3;
   // Output-focused tools (including cross-provider aliases)
   if (LEVEL_2_TOOLS.has(toolName)) return 2;
   // Everything else

@@ -360,7 +360,7 @@
           {#if hasFiles}
             {t("rewind_selectedCount", {
               selected: String(selectedFiles.size),
-              total: String(dryRunResult.filesChanged.length),
+              total: String(dryRunResult.filesChanged!.length),
             })}
           {/if}
         </span>

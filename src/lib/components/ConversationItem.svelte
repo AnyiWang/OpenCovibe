@@ -214,16 +214,17 @@
       {#if run.remote_host_name}
         <svg
           class="h-3 w-3 shrink-0 text-blue-400"
-          title={t("statusbar_sshTitle", { name: run.remote_host_name })}
           viewBox="0 0 24 24"
           fill="none"
           stroke="currentColor"
           stroke-width="2"
           stroke-linecap="round"
           stroke-linejoin="round"
-          ><circle cx="12" cy="12" r="10" /><path
-            d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"
-          /><path d="M2 12h20" /></svg
+          ><title>{t("statusbar_sshTitle", { name: run.remote_host_name })}</title><circle
+            cx="12"
+            cy="12"
+            r="10"
+          /><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20" /><path d="M2 12h20" /></svg
         >
       {/if}
       {#if run.agent !== "codex" && run.platform_id && run.platform_id !== "anthropic"}

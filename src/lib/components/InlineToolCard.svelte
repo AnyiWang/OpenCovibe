@@ -571,7 +571,7 @@
   }
 
   function formatSuggestionLabel(s: PermissionSuggestion): string {
-    return _fmtSuggestion(s, t);
+    return _fmtSuggestion(s, t as (key: string, params?: Record<string, string>) => string);
   }
 </script>
 

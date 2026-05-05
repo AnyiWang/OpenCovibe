@@ -19,9 +19,11 @@ describe("serializeAgentFile", () => {
       disallowedTools: ["Write"],
       permissionMode: "plan",
       maxTurns: 10,
+      effort: "high",
       memory: "MEMORY.md",
       background: true,
       isolation: "worktree",
+      initialPrompt: "",
       systemPrompt: "You are a code reviewer.",
     };
     const result = serializeAgentFile(data);
@@ -84,9 +86,11 @@ describe("parseAgentFile", () => {
       disallowedTools: ["Write"],
       permissionMode: "plan",
       maxTurns: 5,
+      effort: "medium",
       memory: "MEMORY.md",
       background: true,
       isolation: "worktree",
+      initialPrompt: "Start reviewing",
       systemPrompt: "You are a test agent.",
     };
     const serialized = serializeAgentFile(original);

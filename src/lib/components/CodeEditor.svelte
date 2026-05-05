@@ -152,7 +152,7 @@
         ]),
         syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
         // Static tok-* class fallback: if style-mod CSS injection fails
-        // (observed on Intel Mac WKWebView), the static CSS in <style> below
+        // (observed on Intel Mac WKWebView), the static CSS in the style block below
         // provides baseline syntax highlighting via classHighlighter.
         syntaxHighlighting(classHighlighter),
         EditorView.editable.of(!readonly),

@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { HookEvent, ContextSnapshot, SessionInfoData, FileEntry } from "$lib/types";
-  import type { TimelineEntry, BusToolItem, TurnUsage } from "$lib/stores/types";
+  import type { TimelineEntry, BusToolItem } from "$lib/types";
+  import type { TurnUsage } from "$lib/stores/types";
   import { getToolColor } from "$lib/utils/tool-colors";
   import { truncate, formatTokenCount, formatDuration } from "$lib/utils/format";
   import { getToolDetail as getToolDetailRaw } from "$lib/utils/tool-rendering";

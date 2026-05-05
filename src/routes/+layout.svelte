@@ -1367,7 +1367,7 @@
                   >
                     <span class="w-5 text-center font-medium">{entry.shortLabel}</span>
                     <span>{entry.nativeName}</span>
-                    {#if entry.status === "beta"}
+                    {#if (entry.status as string) === "beta"}
                       <span
                         class="ml-auto text-[10px] text-muted-foreground/60 border border-muted-foreground/20 rounded px-1"
                         >Beta</span
