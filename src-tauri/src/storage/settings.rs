@@ -179,6 +179,16 @@ fn known_provider_defaults(pid: &str) -> Option<ProviderDefaults> {
             key_optional: false,
             auth_env_var: None,
         }),
+        "hunyuan" => Some(ProviderDefaults {
+            base_url: Some("https://api.hunyuan.cloud.tencent.com/anthropic"),
+            models: Some(vec![
+                "hunyuan-2.0-thinking-20251109".to_string(),
+                "hunyuan-2.0-instruct-20251111".to_string(),
+            ]),
+            extra_env: None,
+            key_optional: false,
+            auth_env_var: None,
+        }),
         "openrouter" => Some(ProviderDefaults {
             base_url: Some("https://openrouter.ai/api"),
             models: None,

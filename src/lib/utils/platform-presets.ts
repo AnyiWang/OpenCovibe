@@ -143,6 +143,17 @@ export const PLATFORM_PRESETS: PlatformPreset[] = [
     docs_url: "https://platform.xiaomimimo.com/docs/zh-CN/integration/claudecode",
   },
   {
+    id: "hunyuan",
+    name: "Tencent Hunyuan (\u6df7\u5143)",
+    base_url: "https://api.hunyuan.cloud.tencent.com/anthropic",
+    auth_env_var: "ANTHROPIC_AUTH_TOKEN",
+    description: "Tencent AI",
+    key_placeholder: "sk-xxxxxxxx",
+    category: "provider",
+    models: ["hunyuan-2.0-thinking-20251109", "hunyuan-2.0-instruct-20251111"],
+    docs_url: "https://cloud.tencent.com/document/product/1729/127293",
+  },
+  {
     id: "siliconflow",
     name: "SiliconFlow (\u7845\u57fa\u6d41\u52a8)",
     base_url: "https://api.siliconflow.com/",
