@@ -5126,16 +5126,17 @@ describe("SessionStore reducer", () => {
       });
       freshStore._useChatTimelineForRun = true;
       freshStore.phase = "running";
-      freshStore.applyEventBatch([
-        {
-          type: "user_message",
-          run_id: "codex-att-1",
-          text: "Check this image",
-          attachments: [
-            { name: "screenshot.png", mime_type: "image/png", size: 12345 },
-          ],
-        },
-      ] as BusEvent[], { replayOnly: true });
+      freshStore.applyEventBatch(
+        [
+          {
+            type: "user_message",
+            run_id: "codex-att-1",
+            text: "Check this image",
+            attachments: [{ name: "screenshot.png", mime_type: "image/png", size: 12345 }],
+          },
+        ] as BusEvent[],
+        { replayOnly: true },
+      );
       const user = freshStore.timeline[0];
       expect(user.kind).toBe("user");
       if (user.kind === "user") {
@@ -5216,12 +5217,15 @@ describe("SessionStore reducer", () => {
       s._useChatTimelineForRun = true;
       s.phase = "running";
       // Two identical user messages in history — both must survive replay
-      s.applyEventBatch([
-        { type: "user_message", run_id: "codex-dup-1", text: "same prompt" },
-        { type: "message_complete", run_id: "codex-dup-1", message_id: "m1", text: "reply 1" },
-        { type: "user_message", run_id: "codex-dup-1", text: "same prompt" },
-        { type: "message_complete", run_id: "codex-dup-1", message_id: "m2", text: "reply 2" },
-      ] as BusEvent[], { replayOnly: true });
+      s.applyEventBatch(
+        [
+          { type: "user_message", run_id: "codex-dup-1", text: "same prompt" },
+          { type: "message_complete", run_id: "codex-dup-1", message_id: "m1", text: "reply 1" },
+          { type: "user_message", run_id: "codex-dup-1", text: "same prompt" },
+          { type: "message_complete", run_id: "codex-dup-1", message_id: "m2", text: "reply 2" },
+        ] as BusEvent[],
+        { replayOnly: true },
+      );
       const users = s.timeline.filter((e) => e.kind === "user");
       expect(users).toHaveLength(2);
     });

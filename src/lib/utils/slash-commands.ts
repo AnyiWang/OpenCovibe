@@ -71,7 +71,7 @@ export const VIRTUAL_COMMANDS: CliCommand[] = [
     _virtual: true,
     _enum: true,
     argumentHint: "",
-    _excludeAgents: ["codex"], // Codex model via config, no hot-switch
+    // No hot-switch for Codex — model change takes effect on next turn
   },
   {
     name: "config",
@@ -101,7 +101,7 @@ export const VIRTUAL_COMMANDS: CliCommand[] = [
     _virtual: true,
     _action: "toggle-plan",
     argumentHint: "[instructions]",
-    _excludeAgents: ["codex"], // handler persists permissionMode + syncs plan_mode
+    // Codex: mode takes effect next turn (--sandbox read-only / default / bypass)
   },
   {
     name: "rename",
@@ -160,7 +160,7 @@ export const VIRTUAL_COMMANDS: CliCommand[] = [
     aliases: [],
     _virtual: true,
     _action: "add-dir",
-    _excludeAgents: ["codex"], // needs session_init addDir
+    // Codex: saves to settings, takes effect next turn (--add-dir flag)
   },
   {
     name: "fast",
@@ -185,7 +185,7 @@ export const VIRTUAL_COMMANDS: CliCommand[] = [
     aliases: [],
     _virtual: true,
     _action: "clear-context",
-    _excludeAgents: ["codex"], // handler checks useStreamSession
+    // Codex: navigates to fresh chat (new thread on next message)
   },
   {
     name: "permissions",
@@ -209,7 +209,7 @@ export const VIRTUAL_COMMANDS: CliCommand[] = [
     _virtual: true,
     _action: "side-question",
     argumentHint: "<question>",
-    _excludeAgents: ["codex"], // needs bidirectional stream
+    // Codex: ephemeral single-shot (no fork, read-only sandbox)
   },
   {
     name: "stickers",
@@ -332,7 +332,10 @@ export function mergeProjectCommands(
  * (CLI fields take priority for name/desc/aliases). Append remaining virtuals.
  * Commands with empty descriptions get a fallback from KNOWN_COMMAND_DESCRIPTIONS.
  */
-export function mergeWithVirtual(cliCommands: CliCommand[], agent: string = "claude"): CliCommand[] {
+export function mergeWithVirtual(
+  cliCommands: CliCommand[],
+  agent: string = "claude",
+): CliCommand[] {
   const applicableVirtuals = VIRTUAL_COMMANDS.filter((v) => !isExcludedForAgent(v, agent));
   const cliMap = new Map(cliCommands.map((c) => [c.name, c]));
   const result = cliCommands.map((c) => {

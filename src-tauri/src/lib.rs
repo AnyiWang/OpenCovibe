@@ -273,6 +273,7 @@ pub fn run() {
             commands::onboarding::check_auth_status,
             commands::onboarding::detect_install_methods,
             commands::onboarding::run_claude_login,
+            commands::onboarding::run_codex_login,
             commands::onboarding::get_auth_overview,
             commands::onboarding::set_cli_api_key,
             commands::onboarding::remove_cli_api_key,

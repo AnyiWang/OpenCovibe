@@ -40,6 +40,23 @@ export async function loadCliInfo(force = false): Promise<CliInfo | null> {
   return _info;
 }
 
+// ── Codex Models ──
+
+// Source: pricing.rs GPT-5.x / Codex entries. Only models with explicit pricing included.
+// When adding new models, ensure matching pricing entry exists in pricing.rs.
+const CODEX_MODELS: CliModelInfo[] = [
+  { value: "gpt-5.4", displayName: "GPT-5.4", description: "Balanced" },
+  { value: "gpt-5.4-mini", displayName: "GPT-5.4 Mini", description: "Compact" },
+  { value: "gpt-5.4-nano", displayName: "GPT-5.4 Nano", description: "Lightweight" },
+  { value: "gpt-5.3-codex", displayName: "GPT-5.3 Codex", description: "Coding optimized" },
+  { value: "gpt-5.1-codex", displayName: "GPT-5.1 Codex", description: "Coding optimized" },
+  { value: "gpt-5-codex-mini", displayName: "GPT-5 Codex Mini", description: "Affordable" },
+];
+
+export function getCodexModels(): CliModelInfo[] {
+  return CODEX_MODELS;
+}
+
 // ── CLI Version Info ──
 
 export interface CliVersionInfo {
@@ -83,7 +100,7 @@ export async function loadCliVersionInfo(): Promise<void> {
       api.checkAgentCli("claude").catch(() => null),
       api.checkAgentCli("codex").catch(() => null),
       api.getCliDistTags().catch(() => ({ latest: undefined, stable: undefined })),
-      api.getCliConfig().catch(() => ({})),
+      api.getCliConfig().catch((): Record<string, unknown> => ({})),
     ]);
 
     // Cache Codex version before Claude early return

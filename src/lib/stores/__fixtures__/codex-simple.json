@@ -17,7 +17,9 @@
     "run_id": "codex-run-1",
     "tool_use_id": "codex-1-1-cmd_0",
     "tool_name": "Bash",
-    "output": { "content": "total 16\ndrwxr-xr-x  4 user  staff  128 Apr  1 12:00 .\ndrwxr-xr-x  3 user  staff   96 Apr  1 12:00 ..\n-rw-r--r--  1 user  staff  100 Apr  1 12:00 README.md\n-rw-r--r--  1 user  staff   50 Apr  1 12:00 main.rs" },
+    "output": {
+      "content": "total 16\ndrwxr-xr-x  4 user  staff  128 Apr  1 12:00 .\ndrwxr-xr-x  3 user  staff   96 Apr  1 12:00 ..\n-rw-r--r--  1 user  staff  100 Apr  1 12:00 README.md\n-rw-r--r--  1 user  staff   50 Apr  1 12:00 main.rs"
+    },
     "status": "success",
     "duration_ms": 120
   },

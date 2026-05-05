@@ -4,10 +4,10 @@
  * UI feature gates (AgentFeatures), or resume logic (canResumeStructurally).
  */
 export interface AgentCapabilities {
-  supportsBusEvents: boolean;    // CLI produces structured bus-events
-  supportsSessionInit: boolean;  // CLI sends session_init
-  supportsPermissions: boolean;  // CLI supports can_use_tool
-  supportsSnapshots: boolean;    // CLI supports snapshot restore
+  supportsBusEvents: boolean; // CLI produces structured bus-events
+  supportsSessionInit: boolean; // CLI sends session_init
+  supportsPermissions: boolean; // CLI supports can_use_tool
+  supportsSnapshots: boolean; // CLI supports snapshot restore
 }
 
 const CLAUDE_CAPS: AgentCapabilities = {

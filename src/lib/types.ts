@@ -5,7 +5,7 @@ export interface MemoryFileCandidate {
   exists: boolean;
 }
 
-export type RunStatus = "pending" | "running" | "completed" | "failed" | "stopped";
+export type RunStatus = "pending" | "running" | "completed" | "failed" | "stopped" | "idle";
 
 export type RunEventType = "system" | "stdout" | "stderr" | "command" | "user" | "assistant";
 
@@ -221,6 +221,8 @@ export interface HookEvent {
   model?: string;
   session_id?: string;
   worktree?: { name: string; path: string; branch: string; originalRepoDir: string };
+  /** Allow index access for dynamic field lookup (e.g. tool_use_id from hooks). */
+  [key: string]: unknown;
 }
 
 export interface TokenUsage {
@@ -250,6 +252,7 @@ export interface AgentSettings {
   effort?: string;
   betas?: string[];
   agents_json?: string;
+  permission_mode?: string;
   updated_at: string;
 }
 
@@ -1105,6 +1108,8 @@ export interface BusToolItem {
   suggestions?: PermissionSuggestion[];
   /** Structured tool result metadata from CLI verbose mode (e.g. file info for Read). */
   tool_use_result?: Record<string, unknown>;
+  /** Allow index access for dynamic field lookup (e.g. _inputJsonAccum, _seq). */
+  [key: string]: unknown;
 }
 
 export type TimelineEntry =

@@ -90,7 +90,9 @@
         <span class="text-sm font-semibold text-foreground">{t("chat_roleYou")}</span>
       {:else}
         <div
-          class="flex h-5 w-5 items-center justify-center rounded-sm {isCodex ? 'bg-emerald-500/10 text-emerald-500' : 'bg-orange-500/10 text-orange-500'}"
+          class="flex h-5 w-5 items-center justify-center rounded-sm {isCodex
+            ? 'bg-emerald-500/10 text-emerald-500'
+            : 'bg-orange-500/10 text-orange-500'}"
         >
           <svg
             class="h-3 w-3"

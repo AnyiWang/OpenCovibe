@@ -75,6 +75,11 @@
   "settings_codex_authGeneric": "已认证",
   "settings_codex_notLoggedIn": "未登录",
   "settings_codex_loginHint": "在终端中运行 {command}",
+  "settings_codex_loginBtn": "登录",
+  "settings_codex_loggingIn": "登录中...",
+  "settings_codexHooks_label": "钩子",
+  "settings_codexHooks_count": "已配置 {count} 个",
+  "settings_codexHooks_manage": "管理",
 
   "settings_general_setupWizard": "设置向导",
   "settings_general_setupWizardDesc": "重新运行初始设置向导以重新配置 CLI 和认证。",
@@ -1287,6 +1292,7 @@
   "toast_permissionFailed": "权限模式切换失败",
   "toast_permissionPersistFailed": "模式仅当前会话生效 — 保存失败",
   "toast_permissionChangeFailed": "权限模式切换失败 — 保存错误",
+  "toast_permissionModeNextTurn": "{mode} — 下条消息生效",
   "toast_rewindSuccess": "文件已回退",
   "error_rewindNoCheckpoint": "没有可回退的文件检查点",
   "error_rewindFailed": "文件回退失败",
@@ -1440,6 +1446,7 @@
   "chat_addDirFailed": "添加目录失败：{error}",
   "chat_addDirTitle": "添加目录到工作区",
   "chat_addDirUnsupported": "add-dir 仅支持 Claude agent",
+  "chat_addDirNextTurn": "已添加 {path} — 下条消息生效",
   "chat_addDirInvalidPath": "路径包含无效字符",
 
   "skillSelector_label": "技能",

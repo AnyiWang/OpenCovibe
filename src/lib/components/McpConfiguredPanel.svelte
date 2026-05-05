@@ -1,5 +1,10 @@
 <script lang="ts">
-  import { listConfiguredMcpServers, removeMcpServer, listCodexMcpServers, removeCodexMcpServer } from "$lib/api";
+  import {
+    listConfiguredMcpServers,
+    removeMcpServer,
+    listCodexMcpServers,
+    removeCodexMcpServer,
+  } from "$lib/api";
   import { dbg, dbgWarn } from "$lib/utils/debug";
   import { t } from "$lib/i18n/index.svelte";
   import type { ConfiguredMcpServer } from "$lib/types";
@@ -181,7 +186,7 @@
       {#each servers as server}
         <div
           class="w-full text-left rounded-lg border px-3 py-2 transition-colors cursor-pointer {selectedServer &&
-            serverKey(selectedServer) === serverKey(server)
+          serverKey(selectedServer) === serverKey(server)
             ? 'border-primary/50 bg-primary/5'
             : 'border-border/50 bg-muted/30 hover:bg-muted/50'}"
           onclick={() => (selectedServer = server)}
@@ -206,12 +211,16 @@
                   class="rounded-full px-1.5 py-0.5 text-[10px] font-medium {scopeBadgeColor(
                     server.scope,
                   )}"
-                  title={server.agent === "codex" && server.scope === "project" ? "Project config (approx.)" : ""}
+                  title={server.agent === "codex" && server.scope === "project"
+                    ? "Project config (approx.)"
+                    : ""}
                 >
                   {server.scope}
                 </span>
                 {#if server.agent === "codex"}
-                  <span class="rounded-full px-1.5 py-0.5 text-[10px] font-medium bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
+                  <span
+                    class="rounded-full px-1.5 py-0.5 text-[10px] font-medium bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+                  >
                     {t("extend_agentBadge_codex")}
                   </span>
                 {/if}
@@ -272,12 +281,16 @@
                   class="rounded-full px-1.5 py-0.5 text-[10px] font-medium {scopeBadgeColor(
                     selectedServer.scope,
                   )}"
-                  title={selectedServer.agent === "codex" && selectedServer.scope === "project" ? "Project config (approx.)" : ""}
+                  title={selectedServer.agent === "codex" && selectedServer.scope === "project"
+                    ? "Project config (approx.)"
+                    : ""}
                 >
                   {selectedServer.scope}
                 </span>
                 {#if selectedServer.agent === "codex"}
-                  <span class="rounded-full px-1.5 py-0.5 text-[10px] font-medium bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
+                  <span
+                    class="rounded-full px-1.5 py-0.5 text-[10px] font-medium bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+                  >
                     {t("extend_agentBadge_codex")}
                   </span>
                 {/if}
@@ -367,7 +380,9 @@
                 onclick={() => handleRemove(selectedServer!)}
                 disabled={operationLoading === serverKey(selectedServer)}
               >
-                {operationLoading === serverKey(selectedServer) ? t("mcp_removing") : t("mcp_removeServer")}
+                {operationLoading === serverKey(selectedServer)
+                  ? t("mcp_removing")
+                  : t("mcp_removeServer")}
               </button>
             </div>
           {/if}

@@ -1,25 +1,25 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { getCliModels } from "$lib/stores/cli-info.svelte";
+  import { getCliModels, getCodexModels } from "$lib/stores/cli-info.svelte";
   import { t } from "$lib/i18n/index.svelte";
 
   let {
     value = $bindable(""),
-    _agent = "claude",
+    agent = "claude",
     onchange,
   }: {
     value: string;
-    _agent?: string;
+    agent?: string;
     onchange?: (model: string) => void;
   } = $props();
 
   let showCustom = $state(false);
   let customModel = $state("");
 
-  let models = $derived(getCliModels());
+  let models = $derived(agent === "codex" ? getCodexModels() : getCliModels());
 
   let displayValue = $derived.by(() => {
-    const found = getCliModels().find((mdl) => mdl.value === value);
+    const found = models.find((mdl) => mdl.value === value);
     return found?.displayName ?? (value || "Default");
   });
 

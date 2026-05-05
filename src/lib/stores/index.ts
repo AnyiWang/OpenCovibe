@@ -2,7 +2,7 @@ export { SessionStore } from "./session-store.svelte";
 export { TeamStore } from "./team-store.svelte";
 export { KeybindingStore } from "./keybindings.svelte";
 export { getEventMiddleware, EventMiddleware } from "./event-middleware";
-export type { PtyHandler, PipeHandler, RunEventHandler } from "./event-middleware";
+export type { PipeHandler, RunEventHandler } from "./event-middleware";
 export type { SessionPhase, UsageState } from "./types";
 export {
   ACTIVE_PHASES,
@@ -23,5 +23,6 @@ export {
   isCliVersionLoading,
   updateInstalledVersion,
   getCodexVersion,
+  getCodexModels,
 } from "./cli-info.svelte";
 export type { CliVersionInfo } from "./cli-info.svelte";

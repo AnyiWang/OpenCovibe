@@ -12,6 +12,7 @@
     getCliCurrentModel,
     getCliCommands,
     getCliModels,
+    getCodexModels,
     canResumeNow,
     TERMINAL_PHASES,
     getResumeWarning,
@@ -31,7 +32,6 @@
     TimelineEntry,
   } from "$lib/types";
   import { PLATFORM_PRESETS, findCredential } from "$lib/utils/platform-presets";
-  import { getAgentCaps } from "$lib/utils/agent-caps";
   import { isKnownAgent, getAgentFeatures } from "$lib/utils/agent-features";
   import { IS_WEBKIT } from "$lib/utils/platform";
   import {
@@ -509,9 +509,10 @@
       endedAt: store.run.ended_at ?? null,
       lastTurnDurationMs: store.durationMs,
       tokensEstimated: !store.usage.modelUsage || Object.keys(store.usage.modelUsage).length === 0,
-      model: effectiveAgent === "codex"
-        ? codexDisplayModel(store.run.model)
-        : (store.run.model ?? store.model),
+      model:
+        effectiveAgent === "codex"
+          ? codexDisplayModel(store.run.model)
+          : (store.run.model ?? store.model),
       agent: store.run.agent ?? store.agent,
       cliVersion: effectiveAgent === "codex" ? (getCodexVersion() ?? "") : store.cliVersion,
       permissionMode: store.permissionMode,
@@ -583,7 +584,13 @@
     }));
   });
 
-  let effectiveModels = $derived(platformModels.length > 0 ? platformModels : getCliModels());
+  let effectiveModels = $derived(
+    effectiveAgent === "codex"
+      ? getCodexModels()
+      : platformModels.length > 0
+        ? platformModels
+        : getCliModels(),
+  );
   let currentEffort = $state("");
   let isCodexAgent = $derived(store.agent === "codex");
   let assistantDisplayName = $derived(isCodexAgent ? "Codex" : t("chat_claude"));
@@ -1080,7 +1087,14 @@
         lastKnownGoodAnthropicModel = cliModel;
       }
       // Only for genuinely new chats: no run loaded/loading, no URL run param
-      if (cliModel && !store.run && !runId && store.phase !== "loading" && !isThirdParty && store.useStreamSession) {
+      if (
+        cliModel &&
+        !store.run &&
+        !runId &&
+        store.phase !== "loading" &&
+        !isThirdParty &&
+        store.useStreamSession
+      ) {
         dbg("chat", "set model from CLI after loadCliInfo", { cliModel, prev: store.model });
         store.model = cliModel;
       }
@@ -1869,12 +1883,13 @@
    * Does NOT set permissionModeSetByUser — that flag is only set by
    * handlePermissionModeChange() (user manual action).
    */
-  function syncPermissionModeFromSettings(
-    as: AgentSettings | null,
-    us: UserSettings | null,
-  ) {
+  function syncPermissionModeFromSettings(as: AgentSettings | null, us: UserSettings | null) {
     if (store.permissionModeSetByUser) return;
-    if (as?.plan_mode) {
+    // Priority: agent.permission_mode > agent.plan_mode > user.permission_mode
+    if (as?.permission_mode) {
+      const cliName = APP_TO_CLI_MODE[as.permission_mode] ?? as.permission_mode;
+      store.permissionMode = cliName;
+    } else if (as?.plan_mode) {
       store.permissionMode = "plan";
     } else if (us?.permission_mode) {
       const cliName = APP_TO_CLI_MODE[us.permission_mode] ?? us.permission_mode;
@@ -1928,16 +1943,19 @@
     // Auth detection banner (Codex only)
     if (newAgent === "codex") {
       codexWarning = null;
-      api.checkCodexAuth().then((status) => {
-        if (seq !== agentChangeSeq) return;
-        if (!status.installed) {
-          codexWarning = t("codex_notInstalled");
-        } else if (!status.logged_in) {
-          codexWarning = t("codex_notLoggedIn");
-        } else {
-          codexWarning = null;
-        }
-      }).catch(() => {});
+      api
+        .checkCodexAuth()
+        .then((status) => {
+          if (seq !== agentChangeSeq) return;
+          if (!status.installed) {
+            codexWarning = t("codex_notInstalled");
+          } else if (!status.logged_in) {
+            codexWarning = t("codex_notLoggedIn");
+          } else {
+            codexWarning = null;
+          }
+        })
+        .catch(() => {});
     } else {
       codexWarning = null;
     }
@@ -1995,8 +2013,33 @@
     store.permissionModeSetByUser = true;
     store.permissionModePersistFailed = false;
 
+    const appName = CLI_TO_APP_MODE[newMode] ?? newMode;
+
+    if (effectiveAgent === "codex") {
+      // Codex: no control protocol. Persist to agent-scoped settings → takes effect on next spawn.
+      try {
+        await api.updateAgentSettings("codex", { permission_mode: appName });
+        dbg("chat", "codex permission_mode persisted", { appName });
+      } catch (e) {
+        if (seq !== permissionModeChangeSeq) return false;
+        // Rollback
+        store.permissionMode = oldMode;
+        store.permissionModeSetByUser = oldFlag;
+        store.permissionModePersistFailed = oldPersistFailed;
+        dbgWarn("chat", "codex permission_mode persist failed:", e);
+        store.error = t("chat_permModeFailed", { mode: newMode, error: String(e) });
+        if (opts?.toast !== false) showChatToast(t("toast_permissionChangeFailed"));
+        return false;
+      }
+      if (seq !== permissionModeChangeSeq) return false;
+      if (opts?.toast !== false) {
+        showChatToast(t("toast_permissionModeNextTurn", { mode: getPermModeLabel(newMode) }));
+      }
+      return true;
+    }
+
+    // Claude path: hot-switch via control protocol if active session
     if (hadActiveSession && store.run) {
-      // Active session: hot-switch via control protocol (CLI expects CLI names)
       try {
         await api.setPermissionMode(store.run.id, newMode);
         dbg("chat", "permission mode changed via control protocol", { newMode });
@@ -2024,7 +2067,6 @@
     // Persist — serialized to prevent concurrent writes overwriting each other.
     // persistFailed flag signals whether the no-active-session branch reverted.
     let persistFailed = false;
-    const appName = CLI_TO_APP_MODE[newMode] ?? newMode;
 
     pendingPersist = pendingPersist
       .then(async () => {
@@ -2070,10 +2112,36 @@
   }
 
   async function handleModelChange(newModel: string) {
-    dbg("chat", "model change", { from: store.model, to: newModel });
+    dbg("chat", "model change", { agent: effectiveAgent, from: store.model, to: newModel });
     store.model = newModel;
 
+    // Thunk — deferred execution, called explicitly per branch
+    const persistRunModel = () =>
+      store.run ? api.updateRunModel(store.run.id, newModel) : Promise.resolve();
+
+    if (effectiveAgent === "codex") {
+      // Codex: no control protocol, no default_model.
+      // No hot-switch — model change takes effect on the NEXT turn/spawn.
+      const [settingsResult, runResult] = await Promise.allSettled([
+        api.updateAgentSettings("codex", { model: newModel }),
+        persistRunModel(),
+      ]);
+      if (settingsResult.status === "rejected") {
+        dbgWarn("chat", "failed to persist codex agent settings", settingsResult.reason);
+      }
+      if (runResult.status === "rejected") {
+        dbgWarn("chat", "failed to persist codex run model", runResult.reason);
+      }
+      return;
+    }
+
+    // Claude path:
     const isThirdParty = store.platformId && store.platformId !== "anthropic";
+
+    // Persist model to run meta (fire-and-forget)
+    persistRunModel().catch((e) => {
+      dbgWarn("chat", "failed to persist run model", e);
+    });
 
     // Hot-switch model if session is alive (only for Anthropic — third-party models
     // are set via ANTHROPIC_MODEL env var at spawn time, not via control protocol)
@@ -2084,13 +2152,6 @@
       } catch (e) {
         dbgWarn("chat", "model hot-switch failed, will use new model on next session", e);
       }
-    }
-
-    // Persist model to run meta (per-run model memory)
-    if (store.run) {
-      api.updateRunModel(store.run.id, newModel).catch((e) => {
-        dbgWarn("chat", "failed to persist run model", e);
-      });
     }
 
     // Only persist default_model for Anthropic — third-party models managed per-credential
@@ -2254,7 +2315,6 @@
   }
 
   async function handleBtwSend(question: string) {
-    if (effectiveAgent === "codex") return;
     if (!store.run?.id) return;
     dbg("chat", "btwSend", { runId: store.run.id, question: question.slice(0, 50) });
     btwState = { active: true, btwId: null, question, answer: "", error: null, loading: true };
@@ -2419,11 +2479,12 @@
       }
       // On failure, handlePermissionModeChange already sets store.error
     } else if (action === "show-help") {
-      const baseCmds = store.sessionInitReceived && store.sessionCommands.length > 0
-        ? store.sessionCommands
-        : effectiveAgent === "codex"
-          ? []
-          : mergeProjectCommands(getCliCommands(), projectCommands);
+      const baseCmds =
+        store.sessionInitReceived && store.sessionCommands.length > 0
+          ? store.sessionCommands
+          : effectiveAgent === "codex"
+            ? []
+            : mergeProjectCommands(getCliCommands(), projectCommands);
       const allCmds = mergeWithVirtual(baseCmds, effectiveAgent);
       const skillSet = effectiveAgent === "codex" ? undefined : new Set(store.availableSkills);
       appendCommandOutput(buildHelpText(allCmds, skillSet));
@@ -2686,7 +2747,7 @@
             getAgentSettings: api.getAgentSettings,
             updateAgentSettings: api.updateAgentSettings,
             appendOutput: appendCommandOutput,
-            t,
+            t: t as (key: string, params?: Record<string, string>) => string,
           },
         );
       } catch (err) {
@@ -2698,28 +2759,32 @@
         );
       }
     } else if (action === "clear-context") {
-      if (!store.run || !store.sessionAlive) {
+      if (!store.run) {
         appendCommandOutput(t("chat_noActiveSession"));
-        return;
-      }
-      if (!store.useStreamSession) {
-        appendCommandOutput(t("chat_clearNotSupported"));
         return;
       }
       if (store.isRunning) {
         appendCommandOutput(t("chat_clearSessionBusy"));
         return;
       }
-      dbg("chat", "clear-context: stopping session", { runId: store.run.id });
-      try {
-        await store.stop();
-        dbg("chat", "clear-context: navigating to fresh chat");
-        goto("/chat", { replaceState: true });
-        window.dispatchEvent(new Event("ocv:runs-changed"));
-      } catch (e) {
-        dbgWarn("chat", "clear-context failed", e);
-        store.error = String(e);
+
+      if (store.useStreamSession) {
+        // Claude: stop active session actor
+        dbg("chat", "clear-context: stopping Claude session", { runId: store.run.id });
+        try {
+          await store.stop();
+        } catch (e) {
+          dbgWarn("chat", "clear-context stop failed", e);
+          store.error = String(e);
+          return;
+        }
+      } else {
+        // Codex: current run retains its thread. Navigate to fresh chat → new thread on next msg.
+        dbg("chat", "clear-context: leaving Codex run", { runId: store.run.id });
       }
+
+      goto("/chat", { replaceState: true });
+      window.dispatchEvent(new Event("ocv:runs-changed"));
     } else if (action === "rewind") {
       if (!store.run) {
         appendCommandOutput(t("rewind_noSession"));
@@ -3613,7 +3678,7 @@
       parentRunId={store.run?.parent_run_id}
       onEndSession={handleStop}
       onFork={effectiveAgent === "codex" || forkOverlay ? undefined : () => handleResume("fork")}
-      onModelChange={effectiveAgent === "codex" ? undefined : handleModelChange}
+      onModelChange={handleModelChange}
       effort={store.features.effortSelector ? currentEffort : undefined}
       onEffortChange={store.features.effortSelector ? handleEffortChange : undefined}
       onNavigateParent={store.run?.parent_run_id
@@ -3986,7 +4051,12 @@
                         }}
                         attachments={entry.attachments}
                         onRewind={entry.cliUuid && store.sessionAlive && !store.isRunning
-                          ? () => handleRewindToMessage(entry)
+                          ? () =>
+                              handleRewindToMessage({
+                                cliUuid: entry.cliUuid!,
+                                content: entry.content,
+                                ts: entry.ts,
+                              })
                           : undefined}
                       />
                     {:else if entry.kind === "assistant"}
@@ -4227,7 +4297,9 @@
                   <div class="chat-content-width py-4">
                     <div class="mb-1.5 flex items-center gap-2">
                       <div
-                        class="flex h-5 w-5 items-center justify-center rounded-sm {isCodexAgent ? 'bg-emerald-500/10 text-emerald-500' : 'bg-orange-500/10 text-orange-500'}"
+                        class="flex h-5 w-5 items-center justify-center rounded-sm {isCodexAgent
+                          ? 'bg-emerald-500/10 text-emerald-500'
+                          : 'bg-orange-500/10 text-orange-500'}"
                       >
                         <svg
                           class="h-3 w-3"
@@ -4239,7 +4311,12 @@
                           stroke-linejoin="round"
                         >
                           {#if isCodexAgent}
-                            <polyline points="4 17 10 11 4 5" /><line x1="12" x2="20" y1="19" y2="19" />
+                            <polyline points="4 17 10 11 4 5" /><line
+                              x1="12"
+                              x2="20"
+                              y1="19"
+                              y2="19"
+                            />
                           {:else}
                             <path
                               d="M12 3l1.912 5.813a2 2 0 0 0 1.275 1.275L21 12l-5.813 1.912a2 2 0 0 0-1.275 1.275L12 21l-1.912-5.813a2 2 0 0 0-1.275-1.275L3 12l5.813-1.912a2 2 0 0 0 1.275-1.275L12 3z"
@@ -4247,7 +4324,9 @@
                           {/if}
                         </svg>
                       </div>
-                      <span class="text-sm font-semibold text-foreground">{assistantDisplayName}</span>
+                      <span class="text-sm font-semibold text-foreground"
+                        >{assistantDisplayName}</span
+                      >
                     </div>
                     <div class="pl-7 prose-chat">
                       <MarkdownContent text={store.streamingText} streaming={true} />
@@ -4276,7 +4355,9 @@
                   <div class="chat-content-width py-4">
                     <div class="mb-1.5 flex items-center gap-2">
                       <div
-                        class="flex h-5 w-5 items-center justify-center rounded-sm {isCodexAgent ? 'bg-emerald-500/10 text-emerald-500' : 'bg-orange-500/10 text-orange-500'}"
+                        class="flex h-5 w-5 items-center justify-center rounded-sm {isCodexAgent
+                          ? 'bg-emerald-500/10 text-emerald-500'
+                          : 'bg-orange-500/10 text-orange-500'}"
                       >
                         <svg
                           class="h-3 w-3"
@@ -4288,7 +4369,12 @@
                           stroke-linejoin="round"
                         >
                           {#if isCodexAgent}
-                            <polyline points="4 17 10 11 4 5" /><line x1="12" x2="20" y1="19" y2="19" />
+                            <polyline points="4 17 10 11 4 5" /><line
+                              x1="12"
+                              x2="20"
+                              y1="19"
+                              y2="19"
+                            />
                           {:else}
                             <path
                               d="M12 3l1.912 5.813a2 2 0 0 0 1.275 1.275L21 12l-5.813 1.912a2 2 0 0 0-1.275 1.275L12 21l-1.912-5.813a2 2 0 0 0-1.275-1.275L3 12l5.813-1.912a2 2 0 0 0 1.275-1.275L12 3z"
@@ -4296,7 +4382,9 @@
                           {/if}
                         </svg>
                       </div>
-                      <span class="text-sm font-semibold text-foreground">{assistantDisplayName}</span>
+                      <span class="text-sm font-semibold text-foreground"
+                        >{assistantDisplayName}</span
+                      >
                       {#if thinkingElapsed > 0}
                         <span class="ml-auto text-[10px] tabular-nums text-muted-foreground"
                           >{formatElapsed(thinkingElapsed)}</span
@@ -4670,7 +4758,7 @@
           : effectiveAgent === "codex"
             ? []
             : mergeProjectCommands(getCliCommands(), projectCommands)}
-        models={store.useStreamSession ? effectiveModels : []}
+        models={store.useStreamSession || effectiveAgent === "codex" ? effectiveModels : []}
         currentModel={store.model}
         permissionMode={store.features.permissionModeSwitch ? store.permissionMode : "default"}
         cwd={store.effectiveCwd ||
@@ -4681,10 +4769,10 @@
         platformId={store.platformId ?? "anthropic"}
         platformCredentials={settings?.platform_credentials ?? []}
         onSend={sendMessage}
-        onBtwSend={effectiveAgent === "codex" ? undefined : handleBtwSend}
+        onBtwSend={handleBtwSend}
         onAgentChange={handleAgentChange}
         onInterrupt={() => store.interrupt()}
-        onModelSwitch={effectiveAgent === "codex" ? undefined : handleModelChange}
+        onModelSwitch={handleModelChange}
         onPermissionModeChange={store.features.permissionModeSwitch
           ? handlePermissionModeChange
           : undefined}

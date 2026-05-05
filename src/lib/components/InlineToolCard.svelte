@@ -143,6 +143,7 @@
   });
 
   let isAgentLike = $derived(tool.tool_name === "Agent" || tool.tool_name === "Task");
+  let isAsk = $derived(tool.tool_name === "AskUserQuestion");
 
   // Auto-expand when input is streaming in (running + has input data)
   // Skip Agent/Task — their input (full prompt) is too large to auto-expand.
@@ -232,8 +233,6 @@
           : "running",
   );
 
-  // AskUserQuestion detection
-  let isAsk = $derived(tool.tool_name === "AskUserQuestion");
   // Denied detection: explicit permission_denied status, OR error with no selected option
   // (handles old snapshots where finalizer overwrote permission_denied → error)
   let isAskDenied = $derived.by(() => {
@@ -1433,7 +1432,8 @@
             </div>
           </div>
           <p class="text-sm text-foreground mb-1">
-            {t("inline_agentWantsToUse", { agent: agentDisplayName ?? "Claude" })} <strong>{tool.tool_name}</strong>
+            {t("inline_agentWantsToUse", { agent: agentDisplayName ?? "Claude" })}
+            <strong>{tool.tool_name}</strong>
           </p>
           {#if detail}
             <p

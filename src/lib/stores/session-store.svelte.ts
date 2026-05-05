@@ -7,6 +7,7 @@
 import * as api from "$lib/api";
 import type {
   TaskRun,
+  RunStatus,
   HookEvent,
   BusEvent,
   BusToolItem,
@@ -115,7 +116,7 @@ interface ReduceCtx {
   seenMessageIds: Set<string>;
   seenToolIds: Set<string>;
   /** Track run.status changes from non-terminal run_state events (running/idle). */
-  runStatus: string | null;
+  runStatus: RunStatus | null;
   /** New session_id from session_init (e.g. fork generates a new CLI session). */
   sessionId: string | null;
   /** Whether this run uses stream-json mode (skip tools mirror writes). */
@@ -1124,10 +1125,7 @@ export class SessionStore {
     // (running, ask_pending, permission_prompt — these will never receive results)
     const runStatus = this.run?.status;
     const sessionDead =
-      runStatus === "stopped" ||
-      runStatus === "completed" ||
-      runStatus === "failed" ||
-      runStatus === "error";
+      runStatus === "stopped" || runStatus === "completed" || runStatus === "failed";
     if (sessionDead) {
       const staleStatuses = new Set(["running", "ask_pending", "permission_prompt"]);
       const finalizeTools = (tl: TimelineEntry[]): TimelineEntry[] => {
@@ -1579,8 +1577,7 @@ export class SessionStore {
       // active Phase 2 (has conversation_ref). Overridden by bus-events branch below.
       this._useChatTimelineForRun =
         this.run!.execution_path === "session_actor" ||
-        (this.run!.execution_path === "pipe_exec" && !isTerminal
-          && !!this.run!.conversation_ref);
+        (this.run!.execution_path === "pipe_exec" && !isTerminal && !!this.run!.conversation_ref);
 
       if (this.useStreamSession) {
         let reducerMs = 0;
@@ -1788,7 +1785,9 @@ export class SessionStore {
           try {
             const as = await api.getAgentSettings(this.agent);
             agentPlanMode = !!as?.plan_mode;
-          } catch { /* non-fatal */ }
+          } catch {
+            /* non-fatal */
+          }
 
           if (agentPlanMode) {
             if (this.permissionMode !== "plan") {
@@ -1816,7 +1815,7 @@ export class SessionStore {
       // Explicitly pass execution_path — source of truth for run mode
       const executionPath = this.useStreamSession ? "session_actor" : "pipe_exec";
       // Only pass model for stream-session (Claude); pipe-exec (Codex) doesn't use it
-      const runModel = this.useStreamSession ? (this.model || undefined) : undefined;
+      const runModel = this.useStreamSession ? this.model || undefined : undefined;
       const run = await api.startRun(
         prompt,
         cwd,
@@ -2750,15 +2749,11 @@ export class SessionStore {
           let match: TimelineEntry | undefined;
           // Priority 1: exact match by client_uuid (Codex pipe path)
           if (ev.client_uuid) {
-            match = tl.findLast(
-              (e) => e.kind === "user" && e.id === ev.client_uuid,
-            );
+            match = tl.findLast((e) => e.kind === "user" && e.id === ev.client_uuid);
           }
           // Priority 2: content-based match (Claude path / legacy compat)
           if (!match) {
-            match = tl.findLast(
-              (e) => e.kind === "user" && e.content === ev.text && !e.cliUuid,
-            );
+            match = tl.findLast((e) => e.kind === "user" && e.content === ev.text && !e.cliUuid);
           }
           if (match && match.kind === "user") {
             // Merge cliUuid + anchorId from the confirmed backend event into the optimistic entry

@@ -35,9 +35,7 @@
     keybindingStore.resolved.filter((b) => b.context === "prompt" && b.source === "app"),
   );
   let cliBindings = $derived(keybindingStore.resolved.filter((b) => b.source === "cli"));
-  let codexCliBindings = $derived(
-    keybindingStore.resolved.filter((b) => b.source === "codex"),
-  );
+  let codexCliBindings = $derived(keybindingStore.resolved.filter((b) => b.source === "codex"));
 
   let cliExpanded = $state(false);
   let codexCliExpanded = $state(false);

@@ -143,7 +143,8 @@
             </div>
           </div>
           <p class="text-sm text-foreground mb-1">
-            {t("inline_agentWantsToUse", { agent: agentDisplayName })} <strong>{item.tool.tool_name}</strong>
+            {t("inline_agentWantsToUse", { agent: agentDisplayName })}
+            <strong>{item.tool.tool_name}</strong>
           </p>
           {#if detail}
             <p

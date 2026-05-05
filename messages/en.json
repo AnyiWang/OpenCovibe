@@ -75,6 +75,11 @@
   "settings_codex_authGeneric": "Authenticated",
   "settings_codex_notLoggedIn": "Not logged in",
   "settings_codex_loginHint": "Run {command} in your terminal",
+  "settings_codex_loginBtn": "Log in",
+  "settings_codex_loggingIn": "Logging in...",
+  "settings_codexHooks_label": "Hooks",
+  "settings_codexHooks_count": "{count} configured",
+  "settings_codexHooks_manage": "Manage",
 
   "settings_general_setupWizard": "Setup Wizard",
   "settings_general_setupWizardDesc": "Re-run the initial setup wizard to reconfigure CLI and authentication.",
@@ -1287,6 +1292,7 @@
   "toast_permissionFailed": "Permission mode change failed",
   "toast_permissionPersistFailed": "Mode active for this session only — save failed",
   "toast_permissionChangeFailed": "Permission mode change failed — save error",
+  "toast_permissionModeNextTurn": "{mode} — takes effect next message",
   "toast_rewindSuccess": "Changes reverted",
   "error_rewindNoCheckpoint": "No file checkpoint found to rewind to",
   "error_rewindFailed": "Failed to rewind files",
@@ -1440,6 +1446,7 @@
   "chat_addDirFailed": "Failed to add directory: {error}",
   "chat_addDirTitle": "Add directory to workspace",
   "chat_addDirUnsupported": "add-dir is only supported for Claude agent",
+  "chat_addDirNextTurn": "Added {path} — takes effect next message",
   "chat_addDirInvalidPath": "Path contains invalid characters",
 
   "skillSelector_label": "Skills",

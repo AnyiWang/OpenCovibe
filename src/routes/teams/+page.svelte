@@ -222,6 +222,18 @@
     if (model.includes("haiku")) return "Haiku";
     return model.split("-").slice(0, 2).join("-");
   }
+
+  /** Cosmetic badge for agent backend type. */
+  function agentBadge(backendType: string): { label: string; cls: string } | null {
+    switch (backendType) {
+      case "codex":
+        return { label: "Codex", cls: "bg-green-500/10 text-green-400" };
+      case "claude-code":
+        return { label: "Claude", cls: "bg-blue-500/10 text-blue-400" };
+      default:
+        return null;
+    }
+  }
 </script>
 
 <div class="h-full overflow-hidden">
@@ -360,6 +372,14 @@
                     >{member.agentType}</span
                   >
                 {/if}
+                {#if member.backendType}
+                  {@const badge = agentBadge(member.backendType)}
+                  {#if badge}
+                    <span class="text-[10px] px-1.5 py-0.5 rounded-full {badge.cls}">
+                      {badge.label}
+                    </span>
+                  {/if}
+                {/if}
                 {#if member.model}
                   <span class="text-muted-foreground">{shortModel(member.model)}</span>
                 {/if}
@@ -410,7 +430,13 @@
                   {#if member.backendType && member.backendType !== "in-process"}
                     <div class="flex items-center gap-1">
                       <span class="text-muted-foreground/50">{t("team_labelBackend")}</span>
-                      <span class="text-foreground/70">{member.backendType}</span>
+                      <span class="text-foreground/70"
+                        >{member.backendType === "codex"
+                          ? "Codex CLI"
+                          : member.backendType === "claude-code"
+                            ? "Claude Code"
+                            : member.backendType}</span
+                      >
                     </div>
                   {/if}
                   {#if member.joinedAt}
@@ -626,7 +652,7 @@
                           {:else if parsed.type === "permission_request"}
                             <div class="text-[11px] text-amber-600 dark:text-amber-400">
                               {t("team_msgPermission", {
-                                tool: parsed.data.tool_name ?? "tool",
+                                tool: String(parsed.data.tool_name ?? "tool"),
                               })}{parsed.data.description ? ` — ${parsed.data.description}` : ""}
                               {#if isExpMsg && parsed.data.input}
                                 <pre

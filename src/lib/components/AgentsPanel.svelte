@@ -1,5 +1,11 @@
 <script lang="ts">
-  import { listAgents, readAgentFile, deleteAgentFile, createAgentFile, listCodexAgents } from "$lib/api";
+  import {
+    listAgents,
+    readAgentFile,
+    deleteAgentFile,
+    createAgentFile,
+    listCodexAgents,
+  } from "$lib/api";
   import { t } from "$lib/i18n/index.svelte";
   import { dbgWarn } from "$lib/utils/debug";
   import type { AgentDefinitionSummary } from "$lib/types";
@@ -436,7 +442,9 @@
                   {scopeLabel(agent)}
                 </span>
                 {#if agent.agent === "codex"}
-                  <span class="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
+                  <span
+                    class="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+                  >
                     {t("extend_agentBadge_codex")}
                   </span>
                 {/if}
@@ -484,7 +492,9 @@
                   {scopeLabel(selectedAgent)}
                 </span>
                 {#if selectedAgent.agent === "codex"}
-                  <span class="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
+                  <span
+                    class="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+                  >
                     {t("extend_agentBadge_codex")}
                   </span>
                 {/if}

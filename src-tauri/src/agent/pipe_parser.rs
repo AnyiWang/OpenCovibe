@@ -368,7 +368,23 @@ impl PipeStdoutParser for CodexStdoutParser {
             }
             "item.started" => self.map_item_started(run_id, raw),
             "item.completed" => self.map_item_completed(run_id, raw),
-            "item.updated" => vec![], // Only todo_list triggers this — skip
+            "item.updated" => {
+                // item.updated is only emitted for todo_list items (plan updates)
+                let item = raw.get("item");
+                let item_type = item
+                    .and_then(|i| i.get("type").and_then(|v| v.as_str()))
+                    .unwrap_or("");
+                if item_type == "todo_list" {
+                    if let Some(item) = item {
+                        return vec![BusEvent::Raw {
+                            run_id: run_id.to_string(),
+                            source: "codex_todo_list".to_string(),
+                            data: item.clone(),
+                        }];
+                    }
+                }
+                vec![]
+            }
             "turn.completed" => self.map_turn_completed(run_id, raw),
             "turn.failed" => self.map_turn_failed(run_id, raw),
             "error" => self.map_error(run_id, raw),
@@ -688,13 +704,40 @@ mod tests {
         }
     }
 
-    // ── item.updated → empty ──
+    // ── item.updated ──
 
     #[test]
-    fn item_updated_returns_empty() {
+    fn item_updated_todo_list_emits_raw() {
         let mut p = parser();
-        let raw = json!({"type": "item.updated", "item": {"type": "todo_list"}});
-        assert!(p.parse_line("run-1", &raw).is_empty());
+        let events = p.parse_line(
+            "run-1",
+            &json!({
+                "type": "item.updated",
+                "item": {
+                    "type": "todo_list",
+                    "id": "tl-1",
+                    "items": [{"text": "step 1", "done": true}]
+                }
+            }),
+        );
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            BusEvent::Raw { source, .. } => assert_eq!(source, "codex_todo_list"),
+            _ => panic!("expected Raw"),
+        }
+    }
+
+    #[test]
+    fn item_updated_non_todo_is_ignored() {
+        let mut p = parser();
+        let events = p.parse_line(
+            "run-1",
+            &json!({
+                "type": "item.updated",
+                "item": { "type": "agent_message", "id": "m1", "text": "hello" }
+            }),
+        );
+        assert!(events.is_empty());
     }
 
     // ── reasoning → ThinkingDelta ──

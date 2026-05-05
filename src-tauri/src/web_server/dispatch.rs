@@ -1242,6 +1242,7 @@ pub async fn dispatch_command(
         | "update_screenshot_hotkey"
         | "get_clipboard_files"
         | "run_claude_login"
+        | "run_codex_login"
         | "check_for_updates"
         | "send_chat_message" => Err("desktop only".to_string()),
 

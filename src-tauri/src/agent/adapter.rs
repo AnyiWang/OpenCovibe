@@ -44,6 +44,9 @@ fn map_permission_mode(mode: &str) -> String {
         "auto" => "auto".to_string(),
         "delegate" => "acceptEdits".to_string(), // CLI v2.1.81+ alias for acceptEdits
         "dont_ask" => "dontAsk".to_string(),
+        "plan" => "plan".to_string(),
+        // CLI names passed through unchanged
+        "default" | "acceptEdits" | "bypassPermissions" | "dontAsk" => mode.to_string(),
         other => {
             log::warn!(
                 "[adapter] unknown permission_mode '{}', passing through to CLI",
@@ -99,8 +102,14 @@ pub fn build_adapter_settings(
 
     let disallowed_tools = agent.disallowed_tools.clone().unwrap_or_default();
 
-    // Permission mode: plan_mode=true is a UI shortcut for "plan"
-    let permission_mode = if agent.plan_mode.unwrap_or(false) {
+    // Permission mode priority: agent.permission_mode > agent.plan_mode > user.permission_mode
+    let has_agent_perm = agent
+        .permission_mode
+        .as_ref()
+        .is_some_and(|pm| !pm.is_empty());
+    let permission_mode = if has_agent_perm {
+        Some(map_permission_mode(agent.permission_mode.as_ref().unwrap()))
+    } else if agent.plan_mode.unwrap_or(false) {
         Some("plan".to_string())
     } else {
         let raw = &user.permission_mode;
@@ -572,5 +581,114 @@ mod tests {
         s.agents_json = Some("".into());
         let args = build_settings_args(&s, false);
         assert!(!args.contains(&"--agents".to_string()));
+    }
+
+    // ── map_permission_mode tests ──
+
+    #[test]
+    fn test_map_permission_mode_plan() {
+        assert_eq!(map_permission_mode("plan"), "plan");
+    }
+
+    #[test]
+    fn test_map_permission_mode_all_known() {
+        assert_eq!(map_permission_mode("ask"), "default");
+        assert_eq!(map_permission_mode("auto_read"), "acceptEdits");
+        assert_eq!(map_permission_mode("auto_all"), "bypassPermissions");
+        assert_eq!(map_permission_mode("auto"), "auto");
+        assert_eq!(map_permission_mode("delegate"), "acceptEdits");
+        assert_eq!(map_permission_mode("dont_ask"), "dontAsk");
+        assert_eq!(map_permission_mode("plan"), "plan");
+        // CLI names pass through
+        assert_eq!(map_permission_mode("default"), "default");
+        assert_eq!(map_permission_mode("acceptEdits"), "acceptEdits");
+        assert_eq!(
+            map_permission_mode("bypassPermissions"),
+            "bypassPermissions"
+        );
+        assert_eq!(map_permission_mode("dontAsk"), "dontAsk");
+    }
+
+    // ── build_adapter_settings priority tests ──
+
+    fn make_user_settings() -> UserSettings {
+        UserSettings {
+            default_agent: "claude".to_string(),
+            default_model: None,
+            allowed_tools: vec![],
+            working_directory: None,
+            provider_mode: "cli".to_string(),
+            auth_mode: "cli".to_string(),
+            anthropic_api_key: None,
+            anthropic_base_url: None,
+            auth_env_var: None,
+            permission_mode: String::new(),
+            max_budget_usd: None,
+            fallback_model: None,
+            keybinding_overrides: vec![],
+            remote_hosts: vec![],
+            platform_credentials: vec![],
+            active_platform_id: None,
+            ui_zoom: None,
+            onboarding_completed: false,
+            web_server_enabled: None,
+            web_server_token: None,
+            web_server_port: None,
+            web_server_bind: None,
+            web_server_allowed_origins: None,
+            web_server_tunnel_url: None,
+            updated_at: String::new(),
+        }
+    }
+
+    #[test]
+    fn test_adapter_agent_permission_mode_takes_priority() {
+        let mut agent = AgentSettings::default_for("codex");
+        agent.permission_mode = Some("auto_all".to_string());
+        agent.plan_mode = Some(true); // plan_mode should be overridden
+        let mut user = make_user_settings();
+        user.permission_mode = "ask".to_string(); // user perm should be overridden
+
+        let adapter = build_adapter_settings(&agent, &user, None);
+        assert_eq!(
+            adapter.permission_mode.as_deref(),
+            Some("bypassPermissions")
+        );
+    }
+
+    #[test]
+    fn test_adapter_plan_mode_takes_priority_over_user() {
+        let mut agent = AgentSettings::default_for("codex");
+        agent.plan_mode = Some(true);
+        let mut user = make_user_settings();
+        user.permission_mode = "auto_all".to_string();
+
+        let adapter = build_adapter_settings(&agent, &user, None);
+        assert_eq!(adapter.permission_mode.as_deref(), Some("plan"));
+    }
+
+    #[test]
+    fn test_adapter_user_permission_mode_fallback() {
+        let agent = AgentSettings::default_for("codex");
+        let mut user = make_user_settings();
+        user.permission_mode = "auto_all".to_string();
+
+        let adapter = build_adapter_settings(&agent, &user, None);
+        assert_eq!(
+            adapter.permission_mode.as_deref(),
+            Some("bypassPermissions")
+        );
+    }
+
+    #[test]
+    fn test_adapter_empty_agent_permission_mode_falls_through() {
+        let mut agent = AgentSettings::default_for("codex");
+        agent.permission_mode = Some(String::new()); // empty → falls through
+        let mut user = make_user_settings();
+        user.permission_mode = "ask".to_string();
+
+        let adapter = build_adapter_settings(&agent, &user, None);
+        // Empty agent.permission_mode → None → falls through to user
+        assert_eq!(adapter.permission_mode.as_deref(), Some("default"));
     }
 }

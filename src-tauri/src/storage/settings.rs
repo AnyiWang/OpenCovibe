@@ -633,6 +633,13 @@ fn apply_agent_patch(settings: &mut AgentSettings, patch: &serde_json::Value) {
             v.as_str().filter(|s| !s.is_empty()).map(|s| s.to_string())
         };
     }
+    if let Some(v) = patch.get("permission_mode") {
+        settings.permission_mode = if v.is_null() {
+            None
+        } else {
+            v.as_str().filter(|s| !s.is_empty()).map(|s| s.to_string())
+        };
+    }
 }
 
 pub fn update_agent_settings(
@@ -765,5 +772,33 @@ mod tests {
         assert!(is_key_optional_platform("ollama"));
         assert!(!is_key_optional_platform("deepseek"));
         assert!(!is_key_optional_platform("unknown-platform"));
+    }
+
+    #[test]
+    fn apply_agent_patch_permission_mode_set_and_clear() {
+        let mut s = AgentSettings::default_for("codex");
+        assert_eq!(s.permission_mode, None);
+
+        // Set permission_mode to "plan"
+        apply_agent_patch(&mut s, &serde_json::json!({ "permission_mode": "plan" }));
+        assert_eq!(s.permission_mode, Some("plan".to_string()));
+
+        // Clear with empty string
+        apply_agent_patch(&mut s, &serde_json::json!({ "permission_mode": "" }));
+        assert_eq!(s.permission_mode, None);
+
+        // Set then clear with null
+        apply_agent_patch(
+            &mut s,
+            &serde_json::json!({ "permission_mode": "auto_all" }),
+        );
+        assert_eq!(s.permission_mode, Some("auto_all".to_string()));
+        apply_agent_patch(&mut s, &serde_json::json!({ "permission_mode": null }));
+        assert_eq!(s.permission_mode, None);
+
+        // Absent key doesn't touch existing value
+        apply_agent_patch(&mut s, &serde_json::json!({ "permission_mode": "ask" }));
+        apply_agent_patch(&mut s, &serde_json::json!({ "model": "opus" }));
+        assert_eq!(s.permission_mode, Some("ask".to_string()));
     }
 }

@@ -21,13 +21,9 @@ vi.mock("$lib/utils/debug", () => ({
 
 // Minimal DOM stubs for <html> attribute tests
 function setupDocument() {
-  // @ts-expect-error - test stub
   globalThis.document = {
-    documentElement: {
-      lang: "",
-      dir: "",
-    },
-  };
+    documentElement: { lang: "", dir: "" },
+  } as unknown as Document;
 }
 
 function setupLocalStorage() {

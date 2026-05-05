@@ -400,6 +400,10 @@ pub struct AgentSettings {
     /// Custom agent definitions JSON string (passed to --agents flag).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agents_json: Option<String>,
+    /// Agent-scoped permission mode override (app names: "ask", "auto_all", "plan", etc.).
+    /// Takes priority over plan_mode and user.permission_mode in adapter resolution.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_mode: Option<String>,
     pub updated_at: String,
 }
 
@@ -426,6 +430,7 @@ impl AgentSettings {
             effort: None,
             betas: None,
             agents_json: None,
+            permission_mode: None,
             updated_at: now_iso(),
         }
     }

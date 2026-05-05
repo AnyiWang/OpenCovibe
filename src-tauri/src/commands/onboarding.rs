@@ -206,6 +206,61 @@ pub async fn run_claude_login(app: AppHandle) -> Result<bool, String> {
     Ok(success)
 }
 
+/// Run `codex login` to start the OAuth flow. The CLI opens a browser automatically.
+#[tauri::command]
+pub async fn run_codex_login(app: AppHandle) -> Result<bool, String> {
+    let aug_path = claude_stream::augmented_path();
+    let codex_bin = claude_stream::which_binary("codex").unwrap_or_else(|| "codex".into());
+    log::debug!("[onboarding] run_codex_login: binary={}", codex_bin);
+
+    let mut child = Command::new(&codex_bin)
+        .arg("login")
+        .env("PATH", &aug_path)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .hide_console()
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|e| format!("Failed to spawn codex login: {}", e))?;
+
+    log::debug!("[onboarding] run_codex_login: spawned");
+
+    if let Some(stdout) = child.stdout.take() {
+        let app_clone = app.clone();
+        tokio::spawn(async move {
+            stream_pipe_to_events(stdout, app_clone, "codex login stdout").await
+        });
+    }
+    if let Some(stderr) = child.stderr.take() {
+        let app_clone = app.clone();
+        tokio::spawn(async move {
+            stream_pipe_to_events(stderr, app_clone, "codex login stderr").await
+        });
+    }
+
+    let status = tokio::time::timeout(std::time::Duration::from_secs(180), child.wait())
+        .await
+        .map_err(|_| "Codex login timed out after 3 minutes".to_string())?
+        .map_err(|e| format!("Codex login process error: {}", e))?;
+
+    log::debug!(
+        "[onboarding] run_codex_login: exit={:?}, success={}",
+        status.code(),
+        status.success()
+    );
+
+    if !status.success() {
+        return Err(format!(
+            "Codex login exited with code {}",
+            status
+                .code()
+                .map_or("unknown".into(), |c: i32| c.to_string())
+        ));
+    }
+
+    Ok(true)
+}
+
 /// Get an overview of all authentication sources (configuration state only).
 #[tauri::command]
 pub async fn get_auth_overview() -> Result<AuthOverview, String> {

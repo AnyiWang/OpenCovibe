@@ -34,7 +34,8 @@ export async function executeAddDir(ctx: AddDirContext, deps: AddDirDeps): Promi
 
   const dirPath = normalizeDirPath(raw);
 
-  if (ctx.sessionAlive) {
+  if (ctx.sessionAlive && ctx.agent !== "codex") {
+    // Claude: send /add-dir to CLI (instant effect)
     const quoted = quoteCliArg(dirPath);
     if (!quoted) {
       deps.appendOutput(deps.t("chat_addDirFailed", { error: deps.t("chat_addDirInvalidPath") }));
@@ -43,13 +44,18 @@ export async function executeAddDir(ctx: AddDirContext, deps: AddDirDeps): Promi
     await deps.sendMessage(`/add-dir ${quoted}`);
     dbg("chat", "add-dir: sent to CLI", { path: dirPath });
   } else {
+    // Codex or no active session: persist to agent settings
     const settings = await deps.getAgentSettings(ctx.agent);
     const current = (settings.add_dirs ?? []).map(normalizeDirPath);
     if (!current.some((c) => pathsEqual(c, dirPath))) {
       await deps.updateAgentSettings(ctx.agent, {
         add_dirs: [...(settings.add_dirs ?? []), dirPath],
       });
-      deps.appendOutput(deps.t("chat_addDirSaved", { path: dirPath }));
+      deps.appendOutput(
+        ctx.agent === "codex"
+          ? deps.t("chat_addDirNextTurn", { path: dirPath })
+          : deps.t("chat_addDirSaved", { path: dirPath }),
+      );
       dbg("chat", "add-dir: saved to settings", { path: dirPath, agent: ctx.agent });
     } else {
       deps.appendOutput(deps.t("chat_addDirDuplicate", { path: dirPath }));

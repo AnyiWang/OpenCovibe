@@ -1842,12 +1842,9 @@ pub async fn side_question(
     let source =
         storage::runs::get_run(&run_id).ok_or_else(|| format!("Run {} not found", run_id))?;
 
-    // Guard: side questions are only supported for Claude sessions (Codex CLI lacks fork semantics)
-    if source.agent != "claude" {
-        return Err(format!(
-            "Side questions are not supported for {} sessions",
-            source.agent
-        ));
+    // Codex: ephemeral side question (branch before session_id — Codex has none)
+    if source.agent == "codex" {
+        return codex_side_question(app, &source, &question, &btw_id).await;
     }
 
     let session_id = source
@@ -2111,6 +2108,304 @@ pub async fn side_question(
 
     log::debug!("[btw] spawned side question stream, btw_id={}", btw_id);
     Ok(btw_id)
+}
+
+// ── Codex side question (ephemeral, read-only) ──
+
+/// Safely truncate a String to at most `max_chars` characters (UTF-8 safe).
+fn safe_tail(s: &mut String, max_chars: usize) {
+    let char_count = s.chars().count();
+    if char_count > max_chars {
+        let skip = char_count - max_chars;
+        if let Some((idx, _)) = s.char_indices().nth(skip) {
+            *s = s[idx..].to_string();
+        }
+    }
+}
+
+/// Extract assistant text only from a Codex NDJSON payload.
+/// Unlike `extract_codex_delta()` this intentionally skips command_execution
+/// output — side questions should only surface the assistant's answer.
+fn extract_codex_btw_text(payload: &serde_json::Value) -> Option<String> {
+    let type_str = payload.get("type").and_then(|v| v.as_str()).unwrap_or("");
+
+    // Codex v0.98+: item.completed → item.type == "agent_message" → item.text
+    if type_str == "item.completed" {
+        if let Some(item) = payload.get("item") {
+            let item_type = item.get("type").and_then(|v| v.as_str()).unwrap_or("");
+            if item_type == "agent_message" {
+                return item
+                    .get("text")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string());
+            }
+        }
+    }
+
+    // Direct delta field (older Codex versions)
+    if type_str.contains("delta") {
+        if let Some(delta) = payload.get("delta").and_then(|v| v.as_str()) {
+            return Some(delta.to_string());
+        }
+        if let Some(text) = payload.get("text").and_then(|v| v.as_str()) {
+            return Some(text.to_string());
+        }
+    }
+
+    // output_text field (legacy)
+    if let Some(text) = payload.get("output_text").and_then(|v| v.as_str()) {
+        if !text.is_empty() {
+            return Some(text.to_string());
+        }
+    }
+
+    None
+}
+
+/// Decide which btw event to emit based on what was collected during the stream.
+#[derive(Debug, PartialEq)]
+enum BtwOutcome {
+    /// Got content → emit btw-complete (optionally with a non-zero exit warning).
+    Complete {
+        exit_code: Option<i32>,
+        exit_ok: bool,
+    },
+    /// No content → emit btw-error with this message.
+    Error(String),
+}
+
+fn decide_btw_outcome(
+    got_content: bool,
+    error_msg: Option<String>,
+    exit_code: Option<i32>,
+    exit_ok: bool,
+    stderr_tail: &str,
+) -> BtwOutcome {
+    if got_content {
+        BtwOutcome::Complete { exit_code, exit_ok }
+    } else if let Some(msg) = error_msg {
+        BtwOutcome::Error(msg)
+    } else if stderr_tail.is_empty() {
+        BtwOutcome::Error(format!("Side question failed (exit code: {:?})", exit_code))
+    } else {
+        BtwOutcome::Error(format!(
+            "Side question failed: {}",
+            truncate_str(stderr_tail, 200)
+        ))
+    }
+}
+
+/// Codex ephemeral side question: spawn `codex exec --ephemeral --sandbox read-only --json`
+/// with a timeout. Streams btw-delta/btw-complete/btw-error events to the frontend.
+async fn codex_side_question(
+    app: tauri::AppHandle,
+    source: &RunMeta,
+    question: &str,
+    btw_id: &str,
+) -> Result<String, String> {
+    use crate::agent::claude_stream;
+    use crate::process_ext::HideConsole;
+    use serde_json::Value;
+    use tokio::io::{AsyncBufReadExt, BufReader};
+    use tokio::process::Command;
+
+    let codex_bin = claude_stream::which_binary("codex")
+        .ok_or_else(|| "Codex CLI not found in PATH".to_string())?;
+
+    let wrapped_question = format!(
+        "The user is asking a side question. Answer it concisely. \
+         This answer will NOT be added to the conversation history.\n\n{}",
+        question
+    );
+
+    let mut codex_args: Vec<String> = vec![
+        "exec".into(),
+        "--ephemeral".into(),
+        "--sandbox".into(),
+        "read-only".into(),
+        "--json".into(),
+        "--skip-git-repo-check".into(),
+    ];
+
+    // Inherit model from source run (skip Claude model names that Codex rejects)
+    if let Some(ref m) = source.model {
+        let is_claude_model = m.is_empty()
+            || m.contains("claude")
+            || m.contains("opus")
+            || m.contains("sonnet")
+            || m.contains("haiku");
+        if !is_claude_model {
+            codex_args.push("--model".into());
+            codex_args.push(m.clone());
+        }
+    }
+
+    // Prompt must be last arg
+    codex_args.push(wrapped_question);
+
+    let effective_cwd = &source.cwd;
+
+    log::debug!(
+        "[btw] codex_side_question: btw_id={}, cwd={}, args_len={}",
+        btw_id,
+        effective_cwd,
+        codex_args.len()
+    );
+
+    let mut cmd = Command::new(&codex_bin);
+    for arg in &codex_args {
+        cmd.arg(arg);
+    }
+    let path_env = claude_stream::augmented_path();
+    cmd.current_dir(effective_cwd)
+        .env("PATH", &path_env)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .hide_console()
+        .kill_on_drop(true);
+
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("Failed to spawn Codex side question: {}", e))?;
+
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or("Failed to capture Codex stdout for side question")?;
+    let stderr = child.stderr.take();
+
+    // Wrap child in Arc<Mutex> so the timeout branch can still kill explicitly
+    let child = std::sync::Arc::new(tokio::sync::Mutex::new(child));
+
+    let btw_id_owned = btw_id.to_string();
+    let app_clone = app.clone();
+
+    tokio::spawn(async move {
+        use tauri::Emitter;
+
+        // Drain stderr in background to a ring buffer
+        let stderr_buf = std::sync::Arc::new(tokio::sync::Mutex::new(String::new()));
+        if let Some(stderr) = stderr {
+            let buf = stderr_buf.clone();
+            let btw_id_err = btw_id_owned.clone();
+            tokio::spawn(async move {
+                let mut err_reader = BufReader::new(stderr).lines();
+                while let Ok(Some(line)) = err_reader.next_line().await {
+                    log::debug!("[btw] codex stderr ({}): {}", btw_id_err, line);
+                    let mut b = buf.lock().await;
+                    if !b.is_empty() {
+                        b.push('\n');
+                    }
+                    b.push_str(&line);
+                    safe_tail(&mut b, 500);
+                }
+            });
+        }
+
+        // Only move stdout reader into the timeout — child stays accessible
+        let child_inner = child.clone();
+        let btw_id_inner = btw_id_owned.clone();
+        let app_inner = app_clone.clone();
+        let read_result = tokio::time::timeout(std::time::Duration::from_secs(120), async move {
+            let mut reader = BufReader::new(stdout).lines();
+            let mut got_content = false;
+            let mut error_msg: Option<String> = None;
+
+            while let Ok(Some(line)) = reader.next_line().await {
+                log::trace!("[btw] codex stdout: {}", truncate_str(&line, 200));
+                if let Ok(obj) = serde_json::from_str::<Value>(&line) {
+                    let event_type = obj.get("type").and_then(|t| t.as_str()).unwrap_or("");
+
+                    // BTW-specific: only agent_message text, not command_execution
+                    if let Some(text) = extract_codex_btw_text(&obj) {
+                        got_content = true;
+                        let _ = app_inner.emit(
+                            "btw-delta",
+                            serde_json::json!({
+                                "btw_id": &btw_id_inner,
+                                "text": text
+                            }),
+                        );
+                    } else if event_type == "error" {
+                        let msg = obj
+                            .get("message")
+                            .or_else(|| obj.get("error"))
+                            .and_then(|e| e.as_str())
+                            .unwrap_or("unknown error");
+                        error_msg = Some(msg.to_string());
+                        log::error!("[btw] codex error event: {}", msg);
+                    } else {
+                        log::debug!("[btw] codex event type: {}", event_type);
+                    }
+                }
+            }
+
+            // stdout EOF → wait for process exit
+            let status = child_inner.lock().await.wait().await;
+            (got_content, error_msg, status)
+        })
+        .await;
+
+        match read_result {
+            Ok((got_content, error_msg, status)) => {
+                let exit_ok = status.as_ref().ok().is_some_and(|s| s.success());
+                let exit_code = status.as_ref().ok().and_then(|s| s.code());
+                let stderr_tail = stderr_buf.lock().await;
+
+                match decide_btw_outcome(got_content, error_msg, exit_code, exit_ok, &stderr_tail) {
+                    BtwOutcome::Complete { exit_code, exit_ok } => {
+                        if !exit_ok {
+                            log::warn!(
+                                "[btw] non-zero exit with content, code={:?}, stderr_tail={}",
+                                exit_code,
+                                truncate_str(&stderr_tail, 200)
+                            );
+                        }
+                        let _ = app_clone.emit(
+                            "btw-complete",
+                            serde_json::json!({ "btw_id": &btw_id_owned }),
+                        );
+                    }
+                    BtwOutcome::Error(err) => {
+                        log::error!("[btw] no content, exit={:?}, error={}", exit_code, err);
+                        let _ = app_clone.emit(
+                            "btw-error",
+                            serde_json::json!({
+                                "btw_id": &btw_id_owned,
+                                "error": err
+                            }),
+                        );
+                    }
+                }
+            }
+            Err(_timeout) => {
+                log::error!(
+                    "[btw] codex side question timed out, btw_id={}",
+                    btw_id_owned
+                );
+                // Explicit kill + wait (child not consumed by timeout future)
+                let mut ch = child.lock().await;
+                let _ = ch.kill().await;
+                let _ = ch.wait().await;
+                let _ = app_clone.emit(
+                    "btw-error",
+                    serde_json::json!({
+                        "btw_id": &btw_id_owned,
+                        "error": "Side question timed out (120s)"
+                    }),
+                );
+            }
+        }
+
+        log::debug!(
+            "[btw] codex side question finished, btw_id={}",
+            btw_id_owned
+        );
+    });
+
+    log::debug!("[btw] spawned codex side question, btw_id={}", btw_id);
+    Ok(btw_id.to_string())
 }
 
 // ── Ralph Loop commands ──
@@ -2650,5 +2945,126 @@ mod tests {
         // 2-element branch uses [0] for opus/sonnet — empty string still produces envs
         // This is existing behavior; the empty-string guard only applies to 3+ elements
         assert_eq!(r.len(), 4);
+    }
+
+    // ── Codex BTW helper tests ──
+
+    #[test]
+    fn btw_extract_agent_message() {
+        let payload = serde_json::json!({
+            "type": "item.completed",
+            "item": {"type": "agent_message", "text": "Hello from btw"}
+        });
+        assert_eq!(
+            extract_codex_btw_text(&payload),
+            Some("Hello from btw".to_string())
+        );
+    }
+
+    #[test]
+    fn btw_extract_skips_command_execution() {
+        let payload = serde_json::json!({
+            "type": "item.completed",
+            "item": {"type": "command_execution", "command": "ls", "aggregated_output": "file.txt"}
+        });
+        assert_eq!(extract_codex_btw_text(&payload), None);
+    }
+
+    #[test]
+    fn btw_extract_agent_message_empty_text() {
+        let payload = serde_json::json!({
+            "type": "item.completed",
+            "item": {"type": "agent_message", "text": ""}
+        });
+        assert_eq!(extract_codex_btw_text(&payload), None);
+    }
+
+    #[test]
+    fn btw_extract_delta_fallback() {
+        let payload = serde_json::json!({
+            "type": "response.output_text.delta",
+            "delta": "streaming chunk"
+        });
+        assert_eq!(
+            extract_codex_btw_text(&payload),
+            Some("streaming chunk".to_string())
+        );
+    }
+
+    #[test]
+    fn btw_extract_unrelated_event() {
+        let payload = serde_json::json!({"type": "turn.started"});
+        assert_eq!(extract_codex_btw_text(&payload), None);
+    }
+
+    #[test]
+    fn btw_outcome_content_ok() {
+        assert_eq!(
+            decide_btw_outcome(true, None, Some(0), true, ""),
+            BtwOutcome::Complete {
+                exit_code: Some(0),
+                exit_ok: true
+            }
+        );
+    }
+
+    #[test]
+    fn btw_outcome_content_nonzero_exit() {
+        // Got content + non-zero exit → still Complete (warn logged separately)
+        assert_eq!(
+            decide_btw_outcome(true, None, Some(1), false, "some stderr"),
+            BtwOutcome::Complete {
+                exit_code: Some(1),
+                exit_ok: false
+            }
+        );
+    }
+
+    #[test]
+    fn btw_outcome_no_content_error_msg() {
+        assert_eq!(
+            decide_btw_outcome(false, Some("rate limited".into()), Some(1), false, ""),
+            BtwOutcome::Error("rate limited".to_string())
+        );
+    }
+
+    #[test]
+    fn btw_outcome_no_content_no_error_msg_stderr() {
+        let outcome = decide_btw_outcome(false, None, Some(1), false, "oops\npanic");
+        match outcome {
+            BtwOutcome::Error(msg) => assert!(msg.contains("oops")),
+            _ => panic!("expected Error"),
+        }
+    }
+
+    #[test]
+    fn btw_outcome_no_content_no_error_no_stderr() {
+        let outcome = decide_btw_outcome(false, None, Some(42), false, "");
+        match outcome {
+            BtwOutcome::Error(msg) => assert!(msg.contains("42")),
+            _ => panic!("expected Error"),
+        }
+    }
+
+    #[test]
+    fn safe_tail_short_string_unchanged() {
+        let mut s = "hello".to_string();
+        safe_tail(&mut s, 10);
+        assert_eq!(s, "hello");
+    }
+
+    #[test]
+    fn safe_tail_truncates_to_char_boundary() {
+        // 3 CJK chars = 9 bytes, each is 1 char
+        let mut s = "你好世界额外文本".to_string(); // 8 chars
+        safe_tail(&mut s, 3);
+        assert_eq!(s, "外文本");
+    }
+
+    #[test]
+    fn safe_tail_multi_byte_emoji() {
+        let mut s = "🎉🎊🎈🎁🎂".to_string(); // 5 chars
+        safe_tail(&mut s, 2);
+        assert_eq!(s, "🎁🎂");
     }
 }

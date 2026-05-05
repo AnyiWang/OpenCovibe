@@ -37,8 +37,9 @@
   // Codex completed + resumable → display as "idle" (consistent with Claude between turns)
   const displayStatus = $derived(
     run.status === "completed" && run.conversation_ref?.kind === "codex_thread"
-      ? "idle" : run.status
-  ) as string;
+      ? ("idle" as const)
+      : run.status,
+  );
 
   let editing = $state(false);
   let editValue = $state("");

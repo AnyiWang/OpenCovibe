@@ -53,7 +53,7 @@
   /** Check if a registry server matches an already-configured server (for the selected agent).
    *  Matches by URL (http) or package identifier in args (stdio). */
   function isInstalled(server: McpRegistryServer): boolean {
-    const agentServers = installedServers.filter(s => (s.agent ?? "claude") === installAgent);
+    const agentServers = installedServers.filter((s) => (s.agent ?? "claude") === installAgent);
     // HTTP: match by URL
     if (server.remotes.length > 0) {
       const remoteUrl = server.remotes[0].url;
@@ -178,7 +178,10 @@
 
   /** Sanitize registry server name to a valid Codex TOML key [a-zA-Z0-9_-]. */
   function toCodexKey(name: string): string {
-    return name.replace(/[^a-zA-Z0-9_-]/g, "-").replace(/-{2,}/g, "-").replace(/^-|-$/g, "");
+    return name
+      .replace(/[^a-zA-Z0-9_-]/g, "-")
+      .replace(/-{2,}/g, "-")
+      .replace(/^-|-$/g, "");
   }
 
   function getTransportType(server: McpRegistryServer): "stdio" | "http" {
@@ -356,7 +359,10 @@
       class="rounded px-2 py-1 text-xs font-medium transition-colors {installAgent === 'codex'
         ? 'bg-primary text-primary-foreground'
         : 'text-muted-foreground hover:text-foreground'}"
-      onclick={() => { installAgent = "codex"; installScope = "user"; }}>{t("extend_agentBadge_codex")}</button
+      onclick={() => {
+        installAgent = "codex";
+        installScope = "user";
+      }}>{t("extend_agentBadge_codex")}</button
     >
   </div>
 
@@ -662,7 +668,9 @@
                   >
                     {operationLoading === detail.name
                       ? t("mcp_adding")
-                      : t("mcp_addToScope", { scope: installAgent === "codex" ? "codex" : installScope })}
+                      : t("mcp_addToScope", {
+                          scope: installAgent === "codex" ? "codex" : installScope,
+                        })}
                   </button>
                 {/if}
               </div>

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, getContext } from "svelte";
+  import { goto } from "$app/navigation";
   import { page } from "$app/stores";
   import * as api from "$lib/api";
   import { loadCliInfo, KeybindingStore } from "$lib/stores";
@@ -10,7 +11,6 @@
     RemoteTestResult,
     SshKeyInfo,
     CodexAuthResult,
-    CodexConfigResult,
   } from "$lib/types";
   import Card from "$lib/components/Card.svelte";
   import Button from "$lib/components/Button.svelte";
@@ -571,6 +571,52 @@
     }
   }
 
+  // ── Codex hooks count ──
+  let codexHooksCount = $state<number | null>(null);
+
+  async function loadCodexHooksCount() {
+    dbg("settings", "loadCodexHooksCount");
+    try {
+      const { hooks } = await api.getCodexHooks();
+      let count = 0;
+      for (const groups of Object.values(hooks)) {
+        if (Array.isArray(groups)) count += groups.length;
+      }
+      codexHooksCount = count;
+      dbg("settings", "codex hooks loaded", { count: codexHooksCount });
+    } catch (e) {
+      dbgWarn("settings", "loadCodexHooksCount failed", e);
+      codexHooksCount = null;
+    }
+  }
+
+  async function refreshCodexAll() {
+    await loadCodexStatus();
+    if (codexStatus?.installed) {
+      loadCodexHooksCount();
+    } else {
+      codexHooksCount = null;
+    }
+  }
+
+  // ── Codex login ──
+  let codexLoginLoading = $state(false);
+  let codexLoginError = $state("");
+
+  async function handleCodexLogin() {
+    codexLoginLoading = true;
+    codexLoginError = "";
+    try {
+      await api.runCodexLogin();
+      await refreshCodexAll();
+    } catch (e) {
+      codexLoginError = e instanceof Error ? e.message : String(e);
+      dbgWarn("settings", "codex login failed", e);
+    } finally {
+      codexLoginLoading = false;
+    }
+  }
+
   // ── CLI Config state ──
   let cliConfig = $state<Record<string, unknown>>({});
   let projectCliConfig = $state<Record<string, unknown>>({});
@@ -769,7 +815,6 @@
   // ── Codex Config state ──
   let codexConfig = $state<Record<string, unknown>>({});
   let projectCodexConfig = $state<Record<string, unknown>>({});
-  let codexConfigLoaded = $state(false);
   let codexConfigWarning = $state<string | undefined>(undefined);
 
   // Codex Config setting definitions
@@ -901,7 +946,6 @@
       codexConfig = codexResult.config ?? {};
       codexConfigWarning = codexResult.warning;
       projectCodexConfig = projectCodex;
-      codexConfigLoaded = true;
 
       cliConfigLoaded = true;
       dbg("settings", "cliConfig loaded", {
@@ -1248,8 +1292,10 @@
     } catch (e) {
       dbgWarn("settings", "error", e);
     }
-    // Load Codex status
-    loadCodexStatus();
+    // Load Codex status + hooks
+    loadCodexStatus().then(() => {
+      if (codexStatus?.installed) loadCodexHooksCount();
+    });
     // Load auth overview
     api
       .getAuthOverview()
@@ -1494,12 +1540,12 @@
                   class="rounded-md border px-3 py-1.5 text-xs transition-all duration-150
                   {currentLocale() === entry.code
                     ? 'bg-primary text-primary-foreground'
-                    : entry.status === 'beta'
+                    : (entry.status as string) === 'beta'
                       ? 'border-muted-foreground/30 text-muted-foreground hover:bg-accent'
                       : 'hover:bg-accent'}"
                   onclick={() => switchLocale(entry.code)}
                 >
-                  {entry.nativeName}{#if entry.status === "beta"}<span
+                  {entry.nativeName}{#if (entry.status as string) === "beta"}<span
                       class="ml-1 text-[10px] opacity-60">(Beta)</span
                     >{/if}
                 </button>
@@ -2331,7 +2377,7 @@
                   {#if localProxyStatus && !localProxyStatus.running}
                     <p class="text-xs text-amber-500">
                       {selectedPlatform.setup_hint
-                        ? t(selectedPlatform.setup_hint)
+                        ? t(selectedPlatform.setup_hint as Parameters<typeof t>[0])
                         : t("settings_local_startHint", { name: selectedPlatform.name })}
                     </p>
                   {/if}
@@ -2370,7 +2416,9 @@
                         placeholder={t("settings_general_customNamePlaceholder")}
                         class="mt-1 text-xs"
                         onblur={(e) => {
-                          const val = e.currentTarget.value.trim();
+                          const target = e.currentTarget as HTMLInputElement | null;
+                          if (!target) return;
+                          const val = target.value.trim();
                           if (selectedPlatformId) {
                             _upsertCredential(selectedPlatformId, { name: val || "Custom" });
                             saveGeneralPatch({ platform_credentials: platformCredentials });
@@ -2718,7 +2766,7 @@
             </h2>
             <button
               class="text-xs text-muted-foreground hover:text-foreground transition-colors"
-              onclick={loadCodexStatus}
+              onclick={refreshCodexAll}
             >
               {t("settings_codex_refresh")}
             </button>
@@ -2726,7 +2774,9 @@
 
           {#if codexStatusLoading}
             <div class="flex items-center gap-2">
-              <div class="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent"></div>
+              <div
+                class="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent"
+              ></div>
               <span class="text-sm text-muted-foreground">{t("settings_codex_checking")}</span>
             </div>
           {:else if !codexStatus}
@@ -2734,21 +2784,46 @@
           {:else if !codexStatus.installed}
             <div class="flex items-center gap-3">
               <div class="flex h-8 w-8 items-center justify-center rounded-full bg-red-500/10">
-                <svg class="h-4 w-4 text-red-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <circle cx="12" cy="12" r="10" /><line x1="15" y1="9" x2="9" y2="15" /><line x1="9" y1="9" x2="15" y2="15" />
+                <svg
+                  class="h-4 w-4 text-red-400"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <circle cx="12" cy="12" r="10" /><line x1="15" y1="9" x2="9" y2="15" /><line
+                    x1="9"
+                    y1="9"
+                    x2="15"
+                    y2="15"
+                  />
                 </svg>
               </div>
               <div>
                 <p class="text-sm font-medium">{t("settings_codex_notInstalled")}</p>
-                <p class="text-xs text-muted-foreground">{t("settings_codex_installHint", { command: "npm i -g @openai/codex" })}</p>
+                <p class="text-xs text-muted-foreground">
+                  {t("settings_codex_installHint", { command: "npm i -g @openai/codex" })}
+                </p>
               </div>
             </div>
           {:else}
             <div class="space-y-3">
               <!-- Version -->
               <div class="flex items-center gap-3">
-                <div class="flex h-8 w-8 items-center justify-center rounded-full bg-emerald-500/10">
-                  <svg class="h-4 w-4 text-emerald-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <div
+                  class="flex h-8 w-8 items-center justify-center rounded-full bg-emerald-500/10"
+                >
+                  <svg
+                    class="h-4 w-4 text-emerald-400"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  >
                     <path d="M20 6 9 17l-5-5" />
                   </svg>
                 </div>
@@ -2762,29 +2837,110 @@
               <!-- Auth status -->
               <div class="flex items-center gap-3">
                 {#if codexStatus.logged_in}
-                  <div class="flex h-8 w-8 items-center justify-center rounded-full bg-emerald-500/10">
-                    <svg class="h-4 w-4 text-emerald-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                      <rect x="3" y="11" width="18" height="11" rx="2" ry="2" /><path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                  <div
+                    class="flex h-8 w-8 items-center justify-center rounded-full bg-emerald-500/10"
+                  >
+                    <svg
+                      class="h-4 w-4 text-emerald-400"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                    >
+                      <rect x="3" y="11" width="18" height="11" rx="2" ry="2" /><path
+                        d="M7 11V7a5 5 0 0 1 10 0v4"
+                      />
                     </svg>
                   </div>
                   <div>
                     <p class="text-sm font-medium">{t("settings_codex_loggedIn")}</p>
                     <p class="text-xs text-muted-foreground">
-                      {codexStatus.auth_method === "chatgpt" ? t("settings_codex_authChatGPT") : codexStatus.auth_method === "api_key" ? t("settings_codex_authApiKey") : t("settings_codex_authGeneric")}
+                      {codexStatus.auth_method === "chatgpt"
+                        ? t("settings_codex_authChatGPT")
+                        : codexStatus.auth_method === "api_key"
+                          ? t("settings_codex_authApiKey")
+                          : t("settings_codex_authGeneric")}
                     </p>
                   </div>
                 {:else}
-                  <div class="flex h-8 w-8 items-center justify-center rounded-full bg-amber-500/10">
-                    <svg class="h-4 w-4 text-amber-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                      <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" /><line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" />
+                  <div
+                    class="flex h-8 w-8 items-center justify-center rounded-full bg-amber-500/10"
+                  >
+                    <svg
+                      class="h-4 w-4 text-amber-400"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                    >
+                      <path
+                        d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"
+                      /><line x1="12" y1="9" x2="12" y2="13" /><line
+                        x1="12"
+                        y1="17"
+                        x2="12.01"
+                        y2="17"
+                      />
                     </svg>
                   </div>
-                  <div>
+                  <div class="flex-1">
                     <p class="text-sm font-medium">{t("settings_codex_notLoggedIn")}</p>
-                    <p class="text-xs text-muted-foreground">{t("settings_codex_loginHint", { command: "codex login" })}</p>
+                    {#if codexLoginError}
+                      <p class="text-xs text-red-400 mt-1">{codexLoginError}</p>
+                    {/if}
                   </div>
+                  <button
+                    class="shrink-0 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50 transition-colors"
+                    disabled={codexLoginLoading}
+                    onclick={handleCodexLogin}
+                  >
+                    {codexLoginLoading
+                      ? t("settings_codex_loggingIn")
+                      : t("settings_codex_loginBtn")}
+                  </button>
                 {/if}
               </div>
+              <!-- Codex Hooks shortcut -->
+              {#if codexHooksCount !== null}
+                <div class="flex items-center gap-3 pt-3 border-t border-border/50">
+                  <div class="flex h-8 w-8 items-center justify-center rounded-full bg-muted">
+                    <svg
+                      class="h-4 w-4 text-muted-foreground"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                    >
+                      <path d="M18 8h1a4 4 0 0 1 0 8h-1" /><path
+                        d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"
+                      /><line x1="6" y1="1" x2="6" y2="4" /><line
+                        x1="10"
+                        y1="1"
+                        x2="10"
+                        y2="4"
+                      /><line x1="14" y1="1" x2="14" y2="4" />
+                    </svg>
+                  </div>
+                  <div class="flex-1">
+                    <p class="text-sm font-medium">{t("settings_codexHooks_label")}</p>
+                    <p class="text-xs text-muted-foreground">
+                      {t("settings_codexHooks_count", { count: String(codexHooksCount) })}
+                    </p>
+                  </div>
+                  <button
+                    class="text-xs text-primary hover:underline"
+                    onclick={() => goto("/plugins?section=hooks")}
+                  >
+                    {t("settings_codexHooks_manage")}
+                  </button>
+                </div>
+              {/if}
             </div>
           {/if}
         </Card>
@@ -3078,7 +3234,9 @@
                 </svg>
                 <div class="text-xs text-amber-300">
                   <p>{t("settings_codexConfig_warning", { warning: codexConfigWarning })}</p>
-                  <p class="mt-0.5 text-amber-400/70">{t("settings_codexConfig_warningDisabled")}</p>
+                  <p class="mt-0.5 text-amber-400/70">
+                    {t("settings_codexConfig_warningDisabled")}
+                  </p>
                 </div>
               </div>
             {/if}

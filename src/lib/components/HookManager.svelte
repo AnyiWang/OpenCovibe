@@ -82,9 +82,7 @@
     return [...map.entries()];
   });
 
-  let totalGroups = $derived(
-    displayEntries.reduce((sum, [, groups]) => sum + groups.length, 0),
-  );
+  let totalGroups = $derived(displayEntries.reduce((sum, [, groups]) => sum + groups.length, 0));
 
   // ── Lifecycle ──
   onMount(() => {
@@ -430,21 +428,20 @@
                 'claude'
                   ? 'bg-primary text-primary-foreground'
                   : 'text-muted-foreground hover:text-foreground'}"
-                onclick={() => switchEditorAgent("claude")}
-                >{t("extend_agentBadge_claude")}</button
+                onclick={() => switchEditorAgent("claude")}>{t("extend_agentBadge_claude")}</button
               >
               <button
                 class="rounded px-2.5 py-1 text-xs font-medium transition-colors {editorAgent ===
                 'codex'
                   ? 'bg-emerald-500 text-white'
                   : 'text-muted-foreground hover:text-foreground'}"
-                onclick={() => switchEditorAgent("codex")}
-                >{t("extend_agentBadge_codex")}</button
+                onclick={() => switchEditorAgent("codex")}>{t("extend_agentBadge_codex")}</button
               >
             </div>
           {:else}
             <span
-              class="inline-block rounded-full px-2 py-0.5 text-[10px] font-medium {editorAgent === 'codex'
+              class="inline-block rounded-full px-2 py-0.5 text-[10px] font-medium {editorAgent ===
+              'codex'
                 ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
                 : 'bg-primary/10 text-primary'}"
             >
@@ -546,7 +543,9 @@
                       >
                     </div>
                   {:else}
-                    <span class="text-[10px] text-muted-foreground">{t("hooks_handlerCommand")}</span>
+                    <span class="text-[10px] text-muted-foreground"
+                      >{t("hooks_handlerCommand")}</span
+                    >
                   {/if}
                   {#if editorHandlers.length > 1}
                     <button
@@ -808,8 +807,7 @@
                   <div class="flex items-center gap-1 shrink-0">
                     <button
                       class="rounded p-1 text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
-                      onclick={() =>
-                        startEditGroup(event, tg.originalIndex, tg.group, tg.agent)}
+                      onclick={() => startEditGroup(event, tg.originalIndex, tg.group, tg.agent)}
                       title={t("hooks_editGroup")}
                     >
                       <svg
