@@ -20,6 +20,7 @@
   import Modal from "$lib/components/Modal.svelte";
   import CliSessionBrowser from "$lib/components/CliSessionBrowser.svelte";
   import UpdateBanner from "$lib/components/UpdateBanner.svelte";
+  import FolderPicker from "$lib/components/FolderPicker.svelte";
   import type {
     TaskRun,
     UserSettings,
@@ -1067,38 +1068,60 @@
     expandedProjects = next;
   }
 
+  // ── Folder picker (sidebar "+ Open folder") ──
+  let folderPickerOpen = $state(false);
+  let folderPickerInitialHost = $state<string | null>(null);
+  let folderPickerInitialPath = $state("");
+
   async function pickFolder() {
-    if (getTransport().isDesktop()) {
-      try {
-        const { open } = await import("@tauri-apps/plugin-dialog");
-        const selected = await open({ directory: true, title: t("layout_selectProjectFolder") });
-        if (selected) {
-          const normalized = normalizeCwd(selected as string) || "";
-          if (normalized && removedCwds.includes(normalized)) {
-            removedCwds = removedCwds.filter((c) => c !== normalized);
-            persistRemovedCwds();
-            dbg("layout", "pickFolder: un-removed cwd", { cwd: normalized });
+    // Pre-fill from last-target so remote-using users don't lose their target
+    let lastTarget: string | null = null;
+    try {
+      lastTarget = localStorage.getItem("ocv:last-target") || null;
+    } catch {
+      // localStorage may fail in restricted contexts
+    }
+    folderPickerInitialHost = lastTarget;
+    folderPickerInitialPath = lastTarget
+      ? (() => {
+          try {
+            return localStorage.getItem(`ocv:remote-cwd:${lastTarget}`) || "";
+          } catch {
+            return "";
           }
-          projectCwd = normalized;
-        }
-      } catch (e) {
-        dbgWarn("layout", "failed to open folder dialog:", e);
+        })()
+      : projectCwd || settings?.working_directory || "";
+    folderPickerOpen = true;
+  }
+
+  function onFolderPicked(result: { hostName: string | null; path: string }) {
+    const { hostName, path } = result;
+    if (!path) return;
+    if (hostName) {
+      // Remote: persist and navigate to chat with host+folder
+      try {
+        localStorage.setItem(`ocv:remote-cwd:${hostName}`, path);
+        localStorage.setItem("ocv:last-target", hostName);
+      } catch {
+        // localStorage may fail in restricted contexts
       }
+      // Clear local projectCwd so the local file tree doesn't try to list a remote path
+      projectCwd = "";
+      dbg("layout", "pickFolder (remote)", { hostName, path });
+      goto(`/chat?host=${encodeURIComponent(hostName)}&folder=${encodeURIComponent(path)}`);
     } else {
-      // Browser mode: no native file picker, prompt for path
-      const input = window.prompt(
-        t("layout_selectProjectFolder"),
-        projectCwd || settings?.working_directory || "/",
-      );
-      dbg("layout", "pickFolder (browser)", { input });
-      if (input) {
-        const normalized = normalizeCwd(input.trim()) || "";
-        if (normalized && removedCwds.includes(normalized)) {
-          removedCwds = removedCwds.filter((c) => c !== normalized);
-          persistRemovedCwds();
-          dbg("layout", "pickFolder: un-removed cwd", { cwd: normalized });
-        }
-        projectCwd = normalized;
+      // Local target
+      const normalized = normalizeCwd(path) || "";
+      if (normalized && removedCwds.includes(normalized)) {
+        removedCwds = removedCwds.filter((c) => c !== normalized);
+        persistRemovedCwds();
+        dbg("layout", "pickFolder: un-removed cwd", { cwd: normalized });
+      }
+      projectCwd = normalized;
+      try {
+        localStorage.setItem("ocv:last-target", "");
+      } catch {
+        // localStorage may fail in restricted contexts
       }
     }
   }
@@ -2324,6 +2347,13 @@
 <AboutModal bind:open={showAbout} />
 
 <PermissionsModal bind:open={permissionsModalOpen} cwd={projectCwd} />
+
+<FolderPicker
+  bind:open={folderPickerOpen}
+  initialHost={folderPickerInitialHost}
+  initialPath={folderPickerInitialPath}
+  onConfirm={onFolderPicked}
+/>
 
 {#if showCliBrowser}
   <CliSessionBrowser

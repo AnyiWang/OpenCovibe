@@ -249,6 +249,25 @@ export async function checkIsDirectory(path: string): Promise<boolean> {
   return invoke<boolean>("check_is_directory", { path });
 }
 
+// Remote filesystem (over SSH)
+export async function listRemoteDirectory(
+  hostName: string,
+  path: string,
+  showHidden?: boolean,
+): Promise<DirListing> {
+  dbg("api", "listRemoteDirectory", { hostName, path, showHidden });
+  return invoke<DirListing>("list_remote_directory", {
+    hostName,
+    path,
+    showHidden: showHidden ?? null,
+  });
+}
+
+export async function resolveRemoteHome(hostName: string): Promise<string> {
+  dbg("api", "resolveRemoteHome", { hostName });
+  return invoke<string>("resolve_remote_home", { hostName });
+}
+
 export async function readFileBase64(path: string, cwd?: string): Promise<[string, string]> {
   return perfMarkAsync(
     "ipc-readFileBase64",

@@ -263,6 +263,20 @@ pub async fn dispatch_command(
             let result = crate::commands::fs::read_file_base64(path, cwd)?;
             serde_json::to_value(result).map_err(|e| e.to_string())
         }
+        "list_remote_directory" => {
+            let host_name = extract_str(&params, "host_name")?;
+            let path = extract_str(&params, "path")?;
+            let show_hidden = params.get("show_hidden").and_then(|v| v.as_bool());
+            let result =
+                crate::commands::remote_fs::list_remote_directory(host_name, path, show_hidden)
+                    .await?;
+            serde_json::to_value(result).map_err(|e| e.to_string())
+        }
+        "resolve_remote_home" => {
+            let host_name = extract_str(&params, "host_name")?;
+            let result = crate::commands::remote_fs::resolve_remote_home(host_name).await?;
+            Ok(json!(result))
+        }
 
         // ── Git ──
         "get_git_summary" => {

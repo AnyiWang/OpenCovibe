@@ -86,6 +86,7 @@
   import { mapSettled } from "$lib/utils/async-utils";
   import { uuid } from "$lib/utils/uuid";
   import RewindModal from "$lib/components/RewindModal.svelte";
+  import FolderPicker from "$lib/components/FolderPicker.svelte";
   import type { ElementSelection } from "$lib/types";
   import { isElementSelection } from "$lib/types";
 
@@ -125,6 +126,27 @@
   let targetDropdownOpen = $state(false);
   /** Auth overview for AuthSourceBadge. */
   let authOverview = $state<import("$lib/types").AuthOverview | null>(null);
+
+  /** Folder picker state — resolves a Promise on confirm/cancel. */
+  let folderPickerOpen = $state(false);
+  let folderPickerInitialHost = $state<string | null>(null);
+  let folderPickerInitialPath = $state("");
+  let folderPickerHideTarget = $state(false);
+  let folderPickerResolve: ((v: { hostName: string | null; path: string } | null) => void) | null =
+    null;
+  function openFolderPicker(opts: {
+    initialHost?: string | null;
+    initialPath?: string;
+    hideTargetSelector?: boolean;
+  }): Promise<{ hostName: string | null; path: string } | null> {
+    folderPickerInitialHost = opts.initialHost ?? null;
+    folderPickerInitialPath = opts.initialPath ?? "";
+    folderPickerHideTarget = opts.hideTargetSelector ?? false;
+    folderPickerOpen = true;
+    return new Promise((resolve) => {
+      folderPickerResolve = resolve;
+    });
+  }
   /** Preloaded skill details from filesystem (has descriptions). */
   let preloadedSkills = $state<import("$lib/types").StandaloneSkill[]>([]);
   /** Preloaded agent definitions from filesystem. */
@@ -1035,18 +1057,36 @@
   let runId = $derived($page.url.searchParams.get("run") ?? "");
   let hasResumeParam = $derived($page.url.searchParams.has("resume"));
   let folderParam = $derived($page.url.searchParams.get("folder"));
+  let hostParam = $derived($page.url.searchParams.get("host"));
 
-  // Consume ?folder= param: switch to new chat in that folder, then clean URL
+  // Consume ?folder= and/or ?host= params: switch target/folder, then clean URL.
   $effect(() => {
     const folder = folderParam;
-    if (!folder) return;
+    const host = hostParam;
+    if (!folder && !host) return;
     untrack(() => {
-      dbg("chat", "new chat in folder", { folder });
-      localStorage.setItem("ocv:project-cwd", folder);
-      folderCwdOverride = folder;
-      store.loadRun("", xtermRef);
+      dbg("chat", "url params", { folder, host });
+      if (host !== null) {
+        store.remoteHostName = host || null;
+        try {
+          localStorage.setItem("ocv:last-target", host || "");
+        } catch {
+          // localStorage may fail in restricted contexts
+        }
+      }
+      if (folder) {
+        const key = host ? `ocv:remote-cwd:${host}` : "ocv:project-cwd";
+        try {
+          localStorage.setItem(key, folder);
+        } catch {
+          // localStorage may fail in restricted contexts
+        }
+        folderCwdOverride = folder;
+        store.loadRun("", xtermRef);
+      }
       const clean = new URL($page.url);
       clean.searchParams.delete("folder");
+      clean.searchParams.delete("host");
       replaceState(clean, {});
       requestAnimationFrame(() => promptRef?.focus());
     });
@@ -1840,17 +1880,37 @@
     try {
       if (!store.run) {
         // First message: create run
-        let cwd =
-          typeof window !== "undefined"
-            ? localStorage.getItem("ocv:project-cwd") ||
+        const isRemote = !!store.remoteHostName;
+        const remoteCwdKey = isRemote ? `ocv:remote-cwd:${store.remoteHostName}` : null;
+        let cwd = "";
+        if (typeof window !== "undefined") {
+          if (isRemote) {
+            cwd = localStorage.getItem(remoteCwdKey!) || "";
+          } else {
+            cwd =
+              localStorage.getItem("ocv:project-cwd") ||
               localStorage.getItem("ocv:settings-cwd") ||
-              ""
-            : "";
+              "";
+          }
+        }
 
         if (!cwd || cwd === "/") {
           const transport = getTransport();
-          if (transport.isDesktop()) {
-            // Desktop: native folder picker
+          if (isRemote) {
+            // Remote: open FolderPicker for the selected host
+            const result = await openFolderPicker({
+              initialHost: store.remoteHostName,
+              hideTargetSelector: true,
+            });
+            if (!result || !result.path) return; // cancelled
+            cwd = result.path;
+            try {
+              localStorage.setItem(`ocv:remote-cwd:${result.hostName}`, cwd);
+            } catch {
+              // localStorage may fail in restricted contexts
+            }
+          } else if (transport.isDesktop()) {
+            // Desktop local: native folder picker (fast path)
             const { open } = await import("@tauri-apps/plugin-dialog");
             const selected = await open({
               directory: true,
@@ -1861,8 +1921,22 @@
             localStorage.setItem("ocv:project-cwd", cwd);
             window.dispatchEvent(new Event("ocv:cwd-changed"));
           } else {
-            // Browser: use server-configured working_directory from settings
-            cwd = settings?.working_directory || "/";
+            // Browser local: open FolderPicker (allows manual path or switching to remote)
+            const result = await openFolderPicker({ initialHost: null });
+            if (!result || !result.path) return;
+            cwd = result.path;
+            if (result.hostName) {
+              store.remoteHostName = result.hostName;
+              try {
+                localStorage.setItem("ocv:last-target", result.hostName);
+                localStorage.setItem(`ocv:remote-cwd:${result.hostName}`, cwd);
+              } catch {
+                // localStorage may fail in restricted contexts
+              }
+            } else {
+              localStorage.setItem("ocv:project-cwd", cwd);
+              window.dispatchEvent(new Event("ocv:cwd-changed"));
+            }
           }
         }
 
@@ -4884,6 +4958,23 @@
   />
 
   <ShortcutHelpPanel bind:open={shortcutHelpOpen} />
+
+  <FolderPicker
+    bind:open={folderPickerOpen}
+    initialHost={folderPickerInitialHost}
+    initialPath={folderPickerInitialPath}
+    hideTargetSelector={folderPickerHideTarget}
+    onConfirm={(result) => {
+      const fn = folderPickerResolve;
+      folderPickerResolve = null;
+      fn?.(result);
+    }}
+    onCancel={() => {
+      const fn = folderPickerResolve;
+      folderPickerResolve = null;
+      fn?.(null);
+    }}
+  />
 
   <!-- Chat toast (fixed bottom-center, auto-dismiss) -->
   {#if chatToast}

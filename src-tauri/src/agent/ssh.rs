@@ -15,7 +15,7 @@ pub fn shell_escape(s: &str) -> String {
 
 /// Shell-escape a path, preserving leading `~/` for shell tilde expansion on the remote host.
 /// `~/projects/my app` → `~/'projects/my app'` (tilde outside quotes, rest escaped).
-fn shell_escape_path(s: &str) -> String {
+pub fn shell_escape_path(s: &str) -> String {
     if let Some(rest) = s.strip_prefix("~/") {
         format!("~/{}", shell_escape(rest))
     } else {
