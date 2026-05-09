@@ -46,6 +46,12 @@
   // leave any awaiter of openFolderPicker() (chat first-message flow) stuck
   // forever. We detect that here and call onCancel ourselves.
   let _settled = false;
+  // Tracks whether the picker has actually been opened in this lifetime —
+  // without this, the close-effect would fire on initial mount (open=false)
+  // and call onCancel with no preceding open, which is fine today but only
+  // because the layout doesn't pass onCancel and the chat resolver is null
+  // at mount time. Guard the close path against that fragile coincidence.
+  let _wasOpen = false;
 
   function parentPath(p: string): string {
     if (!p || p === "/") return "/";
@@ -80,22 +86,26 @@
     }
   }
 
-  // ── Reset when closed ──
+  // ── Reset on close (true→false transition only) ──
   $effect(() => {
-    if (!open) {
-      // Modal Escape / backdrop click flips `open` directly; if neither
-      // confirm() nor cancel() ran, surface the close as a cancel so the
-      // caller's Promise resolves.
-      if (!_settled) {
-        onCancel?.();
-      }
-      _settled = false;
-      _seq++;
-      _initSent = false;
-      loading = false;
-      error = null;
-      entries = [];
+    if (open) {
+      _wasOpen = true;
+      return;
     }
+    if (!_wasOpen) return; // initial mount with open=false; don't surface as cancel
+    _wasOpen = false;
+    // Modal Escape / backdrop click flips `open` directly; if neither
+    // confirm() nor cancel() ran, surface the close as a cancel so the
+    // caller's Promise resolves.
+    if (!_settled) {
+      onCancel?.();
+    }
+    _settled = false;
+    _seq++;
+    _initSent = false;
+    loading = false;
+    error = null;
+    entries = [];
   });
 
   // ── Initialize when opened ──
