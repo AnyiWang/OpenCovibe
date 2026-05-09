@@ -109,6 +109,12 @@ pub fn start_run(
     // Prefer the cwd argument as the remote path (user's just-picked folder); fall back to the
     // host's configured default only when cwd is empty/`/`. This means `meta.remote_cwd` reflects
     // what the user actually chose for this run.
+    //
+    // Why "/" is treated as empty: the frontend folder picker uses "/" as its placeholder for
+    // "no path selected yet". Treating an explicit "/" as a chosen cwd would root the session at
+    // the remote filesystem root, which is almost never the user's intent and breaks most Claude
+    // Code skills (path resolution, project memory). If "/" is genuinely needed, configure it
+    // via `RemoteHost.remote_cwd`.
     let (remote_cwd, remote_host_snapshot) = if let Some(ref name) = remote_host_name {
         let settings = storage::settings::get_user_settings();
         let host = settings
