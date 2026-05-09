@@ -66,6 +66,12 @@
   import { t } from "$lib/i18n/index.svelte";
   import { dbg, dbgWarn } from "$lib/utils/debug";
   import { yieldToMain } from "$lib/utils/yield";
+  import {
+    getLastTarget,
+    setLastTarget,
+    getStoredRemoteCwd,
+    setStoredRemoteCwd,
+  } from "$lib/utils/remote-cwd";
   import { shouldAutoName } from "$lib/utils/auto-name";
   import { resolvePermissionOptimistic } from "$lib/utils/resolve-permission";
   import { getToolColor } from "$lib/utils/tool-colors";
@@ -1066,20 +1072,32 @@
     if (!folder && !host) return;
     untrack(() => {
       dbg("chat", "url params", { folder, host });
+      // Validate non-empty host against currently loaded settings. If `remoteHosts`
+      // hasn't loaded yet (this effect can fire before onMount finishes settings
+      // fetch), fall back to optimistic acceptance — the backend surfaces a
+      // "Remote host '...' not found" error if the name is genuinely bogus.
+      let resolvedHost: string | null = null;
       if (host !== null) {
-        store.remoteHostName = host || null;
-        try {
-          localStorage.setItem("ocv:last-target", host || "");
-        } catch {
-          // localStorage may fail in restricted contexts
+        if (host === "") {
+          resolvedHost = null; // explicit clear
+        } else if (remoteHosts.length === 0 || remoteHosts.some((h) => h.name === host)) {
+          resolvedHost = host;
+        } else {
+          dbgWarn("chat", "URL ?host= references unknown remote — ignoring", { host });
+          resolvedHost = null;
         }
+        store.remoteHostName = resolvedHost;
+        setLastTarget(resolvedHost);
       }
       if (folder) {
-        const key = host ? `ocv:remote-cwd:${host}` : "ocv:project-cwd";
-        try {
-          localStorage.setItem(key, folder);
-        } catch {
-          // localStorage may fail in restricted contexts
+        if (resolvedHost) {
+          setStoredRemoteCwd(resolvedHost, folder);
+        } else {
+          try {
+            localStorage.setItem("ocv:project-cwd", folder);
+          } catch {
+            // localStorage may fail in restricted contexts
+          }
         }
         folderCwdOverride = folder;
         store.loadRun("", xtermRef);
@@ -1110,15 +1128,12 @@
       settings = await api.getUserSettings();
       store.authMode = settings.auth_mode ?? "cli";
       remoteHosts = settings.remote_hosts ?? [];
-      // Restore last target selection
+      // Restore last target selection (must validate against current settings — a
+      // configured host may have been removed since the value was persisted).
       if (!store.run && remoteHosts.length > 0) {
-        try {
-          const lastTarget = localStorage.getItem("ocv:last-target");
-          if (lastTarget && remoteHosts.some((h) => h.name === lastTarget)) {
-            store.remoteHostName = lastTarget;
-          }
-        } catch {
-          // localStorage access may fail in restricted contexts
+        const lastTarget = getLastTarget();
+        if (lastTarget && remoteHosts.some((h) => h.name === lastTarget)) {
+          store.remoteHostName = lastTarget;
         }
       }
       // Initialize per-session platform from global active
@@ -1881,11 +1896,10 @@
       if (!store.run) {
         // First message: create run
         const isRemote = !!store.remoteHostName;
-        const remoteCwdKey = isRemote ? `ocv:remote-cwd:${store.remoteHostName}` : null;
         let cwd = "";
         if (typeof window !== "undefined") {
           if (isRemote) {
-            cwd = localStorage.getItem(remoteCwdKey!) || "";
+            cwd = getStoredRemoteCwd(store.remoteHostName!);
           } else {
             cwd =
               localStorage.getItem("ocv:project-cwd") ||
@@ -1904,11 +1918,7 @@
             });
             if (!result || !result.path) return; // cancelled
             cwd = result.path;
-            try {
-              localStorage.setItem(`ocv:remote-cwd:${result.hostName}`, cwd);
-            } catch {
-              // localStorage may fail in restricted contexts
-            }
+            if (result.hostName) setStoredRemoteCwd(result.hostName, cwd);
           } else if (transport.isDesktop()) {
             // Desktop local: native folder picker (fast path)
             const { open } = await import("@tauri-apps/plugin-dialog");
@@ -1927,12 +1937,8 @@
             cwd = result.path;
             if (result.hostName) {
               store.remoteHostName = result.hostName;
-              try {
-                localStorage.setItem("ocv:last-target", result.hostName);
-                localStorage.setItem(`ocv:remote-cwd:${result.hostName}`, cwd);
-              } catch {
-                // localStorage may fail in restricted contexts
-              }
+              setLastTarget(result.hostName);
+              setStoredRemoteCwd(result.hostName, cwd);
             } else {
               localStorage.setItem("ocv:project-cwd", cwd);
               window.dispatchEvent(new Event("ocv:cwd-changed"));
@@ -3705,11 +3711,7 @@
               : 'text-foreground/70 hover:bg-accent'} transition-colors"
             onclick={() => {
               store.remoteHostName = null;
-              try {
-                localStorage.setItem("ocv:last-target", "");
-              } catch {
-                // localStorage may fail in restricted contexts
-              }
+              setLastTarget(null);
               dbg("chat", "target changed", "local");
               targetDropdownOpen = false;
             }}
@@ -3724,11 +3726,7 @@
                 : 'text-foreground/70 hover:bg-accent'} transition-colors"
               onclick={() => {
                 store.remoteHostName = host.name;
-                try {
-                  localStorage.setItem("ocv:last-target", host.name);
-                } catch {
-                  // localStorage may fail in restricted contexts
-                }
+                setLastTarget(host.name);
                 dbg("chat", "target changed", host.name);
                 targetDropdownOpen = false;
               }}

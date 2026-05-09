@@ -4,6 +4,7 @@
   import * as api from "$lib/api";
   import type { DirEntry, RemoteHost } from "$lib/types";
   import { dbg, dbgWarn } from "$lib/utils/debug";
+  import { getStoredRemoteCwd, setStoredRemoteCwd } from "$lib/utils/remote-cwd";
   import { getTransport } from "$lib/transport";
   import Modal from "./Modal.svelte";
   import Button from "./Button.svelte";
@@ -39,10 +40,6 @@
 
   let _seq = 0;
   let _initSent = false;
-
-  function lsKey(host: string): string {
-    return `ocv:remote-cwd:${host}`;
-  }
 
   function parentPath(p: string): string {
     if (!p || p === "/") return "/";
@@ -106,11 +103,7 @@
     if (!hostName) return;
     let path = initialPath;
     if (!path) {
-      try {
-        path = localStorage.getItem(lsKey(hostName)) ?? "";
-      } catch {
-        // localStorage may be unavailable
-      }
+      path = getStoredRemoteCwd(hostName);
     }
     if (!path) {
       const host = remoteHosts.find((h) => h.name === hostName);
@@ -205,11 +198,7 @@
     const path = (pathInput || currentPath).trim();
     if (!path) return;
     if (hostName) {
-      try {
-        localStorage.setItem(lsKey(hostName), path);
-      } catch {
-        // localStorage may be unavailable
-      }
+      setStoredRemoteCwd(hostName, path);
     }
     open = false;
     dbg("folder-picker", "confirm", { hostName, path });

@@ -40,6 +40,12 @@
     type ConversationGroup,
   } from "$lib/utils/sidebar-groups";
   import { loadRemovedCwds } from "$lib/utils/removed-cwds";
+  import {
+    getLastTarget,
+    setLastTarget,
+    getStoredRemoteCwd,
+    setStoredRemoteCwd,
+  } from "$lib/utils/remote-cwd";
   import { page } from "$app/stores";
   import { goto, afterNavigate } from "$app/navigation";
   import { onMount, setContext, untrack } from "svelte";
@@ -1075,21 +1081,10 @@
 
   async function pickFolder() {
     // Pre-fill from last-target so remote-using users don't lose their target
-    let lastTarget: string | null = null;
-    try {
-      lastTarget = localStorage.getItem("ocv:last-target") || null;
-    } catch {
-      // localStorage may fail in restricted contexts
-    }
+    const lastTarget = getLastTarget();
     folderPickerInitialHost = lastTarget;
     folderPickerInitialPath = lastTarget
-      ? (() => {
-          try {
-            return localStorage.getItem(`ocv:remote-cwd:${lastTarget}`) || "";
-          } catch {
-            return "";
-          }
-        })()
+      ? getStoredRemoteCwd(lastTarget)
       : projectCwd || settings?.working_directory || "";
     folderPickerOpen = true;
   }
@@ -1099,12 +1094,8 @@
     if (!path) return;
     if (hostName) {
       // Remote: persist and navigate to chat with host+folder
-      try {
-        localStorage.setItem(`ocv:remote-cwd:${hostName}`, path);
-        localStorage.setItem("ocv:last-target", hostName);
-      } catch {
-        // localStorage may fail in restricted contexts
-      }
+      setStoredRemoteCwd(hostName, path);
+      setLastTarget(hostName);
       // Clear local projectCwd so the local file tree doesn't try to list a remote path
       projectCwd = "";
       dbg("layout", "pickFolder (remote)", { hostName, path });
@@ -1118,11 +1109,7 @@
         dbg("layout", "pickFolder: un-removed cwd", { cwd: normalized });
       }
       projectCwd = normalized;
-      try {
-        localStorage.setItem("ocv:last-target", "");
-      } catch {
-        // localStorage may fail in restricted contexts
-      }
+      setLastTarget(null);
     }
   }
 
@@ -1785,9 +1772,12 @@
           {#if explorerTab === "files"}
             <div class="flex-1 overflow-y-auto px-1 py-1">
               {#if !projectCwd}
+                {@const lastRemote = getLastTarget()}
                 <div class="flex items-center justify-center px-3 py-12">
                   <p class="text-xs text-muted-foreground text-center">
-                    {t("sidebar_selectProjectBrowse")}
+                    {lastRemote
+                      ? t("layout_remoteFileTreeUnavailable")
+                      : t("sidebar_selectProjectBrowse")}
                   </p>
                 </div>
               {:else if treeLoading}
