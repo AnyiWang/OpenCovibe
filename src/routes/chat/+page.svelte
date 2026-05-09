@@ -1894,7 +1894,29 @@
 
     try {
       if (!store.run) {
-        // First message: create run
+        // First message: create run.
+        //
+        // Validate the remote target up-front. The host could have been
+        // removed/renamed since the chat tab was opened (or since
+        // `ocv:last-target` was persisted). Without this check, every
+        // downstream path — `getStoredRemoteCwd`, the folder picker (which
+        // silently falls back to local UI when its `loadRemoteHosts` clears
+        // the unknown host), and `startSession` — would still run with the
+        // stale `store.remoteHostName`, and the backend `start_run` would
+        // fail with an opaque "Remote host '...' not found".
+        if (
+          store.remoteHostName &&
+          remoteHosts.length > 0 &&
+          !remoteHosts.some((h) => h.name === store.remoteHostName)
+        ) {
+          dbgWarn("chat", "remote host no longer in settings — clearing target", {
+            host: store.remoteHostName,
+          });
+          showChatToast(t("toast_remoteHostMissing"));
+          store.remoteHostName = null;
+          setLastTarget(null);
+          return;
+        }
         const isRemote = !!store.remoteHostName;
         let cwd = "";
         if (typeof window !== "undefined") {

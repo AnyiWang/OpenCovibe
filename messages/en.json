@@ -1237,6 +1237,7 @@
   "shortcutHelp_hintAt": "File references",
   "shortcutHelp_hintDoubleEsc": "Clear input",
   "shortcutHelp_hintNewline": "New line",
+  "toast_remoteHostMissing": "Remote host no longer in settings — target reset to local",
   "toast_stashSaved": "Prompt stashed",
   "toast_stashRestored": "Prompt restored",
   "toast_fastModeOn": "Fast mode enabled",

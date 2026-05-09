@@ -1237,6 +1237,7 @@
   "shortcutHelp_hintAt": "文件引用",
   "shortcutHelp_hintDoubleEsc": "清空输入",
   "shortcutHelp_hintNewline": "换行",
+  "toast_remoteHostMissing": "远程主机已从设置中移除 — 已切回本地",
   "toast_stashSaved": "输入已暂存",
   "toast_stashRestored": "输入已恢复",
   "toast_fastModeOn": "快速模式已开启",
