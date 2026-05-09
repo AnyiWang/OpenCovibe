@@ -65,6 +65,7 @@
   import ReleaseNotesCard from "$lib/components/ReleaseNotesCard.svelte";
   import { t } from "$lib/i18n/index.svelte";
   import { dbg, dbgWarn } from "$lib/utils/debug";
+  import { yieldToMain } from "$lib/utils/yield";
   import { shouldAutoName } from "$lib/utils/auto-name";
   import { resolvePermissionOptimistic } from "$lib/utils/resolve-permission";
   import { getToolColor } from "$lib/utils/tool-colors";
@@ -309,8 +310,16 @@
   }
 
   // ── Timeline rendering ──
-  let renderLimit = $state(Infinity);
+  // Progressive render: start with the most recent N entries, grow on upward scroll.
+  // Switching to a multi-thousand-entry run with `Infinity` would mount thousands of
+  // ChatMessage components in one frame and freeze the WebView (issue #119).
+  const INITIAL_RENDER_LIMIT = 100;
+  const RENDER_GROWTH_STEP = 100;
+  let renderLimit = $state(INITIAL_RENDER_LIMIT);
   let progressiveGen = 0; // generation counter for stale-callback protection
+  let loadingMore = $state(false);
+  let loadMoreArmed = $state(true); // throttle: re-armed by handleChatScroll
+  let _suppressLoadMoreRearm = false; // raised during programmatic scrollTop adjustment
 
   async function syncVerboseState(runId: string | undefined) {
     const key = runId ?? "__no_run__";
@@ -628,23 +637,142 @@
 
   // ── Progressive timeline rendering ── helpers
 
+  /** Invalidate any in-flight async load so its post-await side effects bail out. */
   function cancelProgressive() {
     progressiveGen++;
-    renderLimit = Infinity;
+  }
+
+  /** Bump the load generation and return it — caller compares against `progressiveGen`. */
+  function nextProgressiveGen(): number {
+    return ++progressiveGen;
   }
 
   /**
-   * Load a run and render its full timeline in one frame.
-   * content-visibility:auto on entries lets the browser skip layout/paint
-   * for off-screen items, keeping scroll performance smooth.
+   * Expand `renderLimit` enough that `targetIndex` (in `filteredTimeline`) is mounted,
+   * with `margin` extra entries above for context. No-op if already covered.
+   */
+  function expandRenderLimitTo(targetIndex: number, margin = 50) {
+    const ft = filteredTimeline;
+    if (targetIndex < 0 || targetIndex >= ft.length) return;
+    if (renderLimit === Infinity) return;
+    const needed = ft.length - targetIndex + margin;
+    if (renderLimit < needed) renderLimit = Math.min(needed, ft.length);
+  }
+
+  /**
+   * If `visibleIdx` (visibleTimeline-local) sits inside a collapsed tool burst,
+   * force-expand that burst via `manualOverrides` so the entry's DOM mounts.
+   * Caller must pass an index in the visibleTimeline namespace, not filteredTimeline.
+   */
+  async function ensureBurstExpandedFor(visibleIdx: number) {
+    if (!burstHiddenIndices.has(visibleIdx)) return;
+    for (const [, burst] of toolBursts) {
+      if (visibleIdx >= burst.startIndex && visibleIdx <= burst.endIndex) {
+        const next = new Map(manualOverrides);
+        next.set(burst.key, true);
+        manualOverrides = next;
+        await tick();
+        return;
+      }
+    }
+  }
+
+  // Sentinel above the visible list — when it intersects the chat viewport, grow renderLimit.
+  let topSentinel = $state<HTMLDivElement | null>(null);
+  let _topObserver: IntersectionObserver | null = null;
+
+  $effect(() => {
+    if (!topSentinel || !chatAreaRef) {
+      _topObserver?.disconnect();
+      _topObserver = null;
+      return;
+    }
+    _topObserver?.disconnect();
+    _topObserver = new IntersectionObserver(
+      (entries) => {
+        const entry = entries[0];
+        if (!entry?.isIntersecting) return;
+        if (!loadMoreArmed || loadingMore) return;
+        const hidden = filteredTimeline.length - renderLimit;
+        if (hidden <= 0) return;
+        dbg("chat", "progressive-load-more", { renderLimit, hidden });
+        void loadMoreEarlier();
+      },
+      { root: chatAreaRef, rootMargin: "200px 0px 0px 0px", threshold: 0 },
+    );
+    _topObserver.observe(topSentinel);
+    return () => {
+      _topObserver?.disconnect();
+      _topObserver = null;
+    };
+  });
+
+  /**
+   * Grow `renderLimit` by `RENDER_GROWTH_STEP` and preserve the user's scroll position.
+   * Browser-native scroll anchoring is unreliable on WKWebView with content-visibility,
+   * so we measure the first rendered entry's offset before/after and adjust scrollTop
+   * by the delta.
+   */
+  async function loadMoreEarlier() {
+    if (loadingMore || !loadMoreArmed) return;
+    loadingMore = true;
+    loadMoreArmed = false; // re-armed by handleChatScroll on next user scroll
+    try {
+      const anchor = chatAreaRef?.querySelector<HTMLElement>("[data-entry-id]") ?? null;
+      const anchorId = anchor?.dataset.entryId ?? null;
+      const beforeTop = anchor?.getBoundingClientRect().top ?? 0;
+      const beforeScroll = chatAreaRef?.scrollTop ?? 0;
+
+      renderLimit = Math.min(renderLimit + RENDER_GROWTH_STEP, filteredTimeline.length);
+      await tick();
+      await yieldToMain();
+
+      if (anchorId && chatAreaRef) {
+        let after: HTMLElement | null = null;
+        try {
+          after = chatAreaRef.querySelector<HTMLElement>(
+            `[data-entry-id="${CSS.escape(anchorId)}"]`,
+          );
+        } catch {
+          after =
+            Array.from(chatAreaRef.querySelectorAll<HTMLElement>("[data-entry-id]")).find(
+              (el) => el.dataset.entryId === anchorId,
+            ) ?? null;
+        }
+        if (after) {
+          const afterTop = after.getBoundingClientRect().top;
+          // Suppress re-arm so the programmatic scrollTop write doesn't immediately
+          // rearm the observer — the sentinel may still be in view post-prepend.
+          _suppressLoadMoreRearm = true;
+          chatAreaRef.scrollTop = beforeScroll + (afterTop - beforeTop);
+          // Clear suppression after the scroll event has dispatched + been handled.
+          // yieldToMain has a 50ms timeout fallback so a backgrounded WebView with
+          // throttled rAF can't strand the suppression flag.
+          await yieldToMain();
+          _suppressLoadMoreRearm = false;
+        }
+      }
+    } finally {
+      loadingMore = false;
+    }
+  }
+
+  /**
+   * Load a run and render its timeline progressively.
+   * Starts with the most recent `INITIAL_RENDER_LIMIT` entries; the top sentinel
+   * grows `renderLimit` as the user scrolls up.
    */
   async function loadRunProgressive(
     id: string,
     xtermRef?: { clear(): void; writeText(s: string): void },
   ) {
     toolFilter = null;
-    cancelProgressive();
-    const gen = ++progressiveGen;
+    // Reset progressive state so a previous run's expanded renderLimit (e.g. after
+    // an anchor jump) doesn't leak into the new run.
+    renderLimit = INITIAL_RENDER_LIMIT;
+    loadingMore = false;
+    loadMoreArmed = true;
+    const gen = nextProgressiveGen();
 
     // Capture scrollTo BEFORE loadRun — URL may change during async load
     const scrollTo = $page.url.searchParams.get("scrollTo");
@@ -681,8 +809,11 @@
     }
 
     if (gen !== progressiveGen) return;
-    renderLimit = Infinity;
-    dbg("chat", "loadRun complete", { timeline: filteredTimeline.length, gen });
+    dbg("chat", "loadRun complete", {
+      timeline: filteredTimeline.length,
+      renderLimit,
+      gen,
+    });
 
     if (scrollTo) {
       await tick();
@@ -1636,6 +1767,12 @@
     const dist = chatAreaRef.scrollHeight - chatAreaRef.scrollTop - chatAreaRef.clientHeight;
     isChatAutoScroll = dist < SCROLL_BOTTOM_THRESHOLD;
     if (isChatAutoScroll) showChatScrollHint = false;
+    // Re-arm progressive load-more after a user-initiated scroll. The IntersectionObserver
+    // fires once per arm; this prevents short timelines from runaway-expanding while the
+    // sentinel remains in view after a prepend. Programmatic scrollTop adjustments
+    // (loadMoreEarlier's anchor compensation) raise `_suppressLoadMoreRearm` so the
+    // anchor-correction scroll doesn't immediately re-arm the observer.
+    if (!loadMoreArmed && !_suppressLoadMoreRearm) loadMoreArmed = true;
   }
 
   function scrollChatToBottom() {
@@ -3031,16 +3168,23 @@
   }
 
   async function scrollToTool(toolUseId: string) {
-    // Cancel progressive rendering so full timeline is available
-    if (renderLimit !== Infinity) {
-      cancelProgressive();
-      await tick();
-    }
-    // Clear filter first (target tool may be filtered out)
+    // Clear filter first — target may be filtered out, and burst/visible indices
+    // depend on the unfiltered timeline.
     if (toolFilter) {
       toolFilter = null;
       await tick();
     }
+    // Locate target in the data layer (DOM may not be mounted yet under progressive render).
+    const ft = filteredTimeline;
+    const ftIdx = ft.findIndex((e) => e.kind === "tool" && e.tool.tool_use_id === toolUseId);
+    if (ftIdx < 0) return;
+    expandRenderLimitTo(ftIdx);
+    await tick();
+    // Re-map to visibleTimeline-local index for burst expansion.
+    const visibleIdx = visibleTimeline.findIndex(
+      (e) => e.kind === "tool" && e.tool.tool_use_id === toolUseId,
+    );
+    if (visibleIdx >= 0) await ensureBurstExpandedFor(visibleIdx);
     const el = document.getElementById("tool-" + toolUseId);
     if (el) {
       // Temporarily disable content-visibility so the browser knows real heights and
@@ -3062,29 +3206,25 @@
 
   async function scrollToMessage(ts: string) {
     dbg("chat", "scrollToMessage", { ts });
-    // Cancel progressive rendering so full timeline is available
-    if (renderLimit !== Infinity) {
-      cancelProgressive();
-      await tick();
-    }
-    // Clear filter first (target message may be filtered out)
     if (toolFilter) {
       toolFilter = null;
       await tick();
     }
-    // Primary: lookup by anchorId (stable event ID)
-    let el = document.getElementById("msg-" + ts);
-    // Fallback: search timeline by multiple fields (ts, anchorId, cliUuid, id)
-    if (!el) {
-      const match = store.timeline.find(
-        (e) =>
-          e.ts === ts ||
-          e.anchorId === ts ||
-          (e.kind === "user" && e.cliUuid === ts) ||
-          e.id === ts,
-      );
-      if (match) el = document.getElementById("msg-" + match.anchorId);
-    }
+    // Resolve target from data — `ts` may be ts, anchorId, cliUuid, or id.
+    const match = store.timeline.find(
+      (e) =>
+        e.ts === ts || e.anchorId === ts || (e.kind === "user" && e.cliUuid === ts) || e.id === ts,
+    );
+    if (!match) return;
+    const ft = filteredTimeline;
+    const ftIdx = ft.findIndex((e) => e.id === match.id);
+    if (ftIdx < 0) return;
+    expandRenderLimitTo(ftIdx);
+    await tick();
+    const visibleIdx = visibleTimeline.findIndex((e) => e.id === match.id);
+    if (visibleIdx >= 0) await ensureBurstExpandedFor(visibleIdx);
+    // DOM id uses anchorId (see `id="msg-{entry.anchorId}"` in the each block).
+    const el = document.getElementById("msg-" + match.anchorId);
     if (el) {
       // Temporarily disable content-visibility on ALL entries so the browser
       // knows real heights and scrollIntoView lands at the correct offset.
@@ -3896,10 +4036,14 @@
                   </div>
                 </div>
               {/if}
+              {#if filteredTimeline.length - renderLimit > 0}
+                <div bind:this={topSentinel} aria-hidden="true" class="h-px w-full"></div>
+              {/if}
               {#each visibleTimeline as entry, i (entry.id)}
                 {#if !(burstHiddenIndices.has(i) && !toolBursts.has(i))}
                   <div
                     id="msg-{entry.anchorId}"
+                    data-entry-id={entry.id}
                     class:cv-auto={true}
                     class="group/msg"
                     class:opacity-40={lastClearSepId !== null &&
