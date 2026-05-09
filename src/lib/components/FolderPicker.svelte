@@ -40,6 +40,12 @@
 
   let _seq = 0;
   let _initSent = false;
+  // Tracks whether the current open→close transition was driven by an explicit
+  // confirm()/cancel() call. Modal closes via Escape or backdrop click bypass
+  // those paths and just set `open = false` through the bound prop, which would
+  // leave any awaiter of openFolderPicker() (chat first-message flow) stuck
+  // forever. We detect that here and call onCancel ourselves.
+  let _settled = false;
 
   function parentPath(p: string): string {
     if (!p || p === "/") return "/";
@@ -64,11 +70,26 @@
     } finally {
       hostsLoaded = true;
     }
+    // Defense in depth: drop a stale `initialHost` (host removed/renamed since
+    // the caller persisted it). Without this, the <select> visually falls back
+    // to "Local" because the value doesn't match an option, but the internal
+    // `hostName` state stays stale and confirm() would return the dead host.
+    if (hostName && !remoteHosts.some((h) => h.name === hostName)) {
+      dbgWarn("folder-picker", "initialHost references unknown remote — clearing", { hostName });
+      hostName = null;
+    }
   }
 
   // ── Reset when closed ──
   $effect(() => {
     if (!open) {
+      // Modal Escape / backdrop click flips `open` directly; if neither
+      // confirm() nor cancel() ran, surface the close as a cancel so the
+      // caller's Promise resolves.
+      if (!_settled) {
+        onCancel?.();
+      }
+      _settled = false;
       _seq++;
       _initSent = false;
       loading = false;
@@ -88,14 +109,21 @@
       showHidden = false;
       entries = [];
       error = null;
-      void loadRemoteHosts();
-      if (hostName) {
-        void initRemotePath();
-      } else {
-        // Local: nothing to fetch — user clicks native dialog
-        currentPath = initialPath || "";
-        pathInput = currentPath;
-      }
+      // Load hosts BEFORE initRemotePath so the configured RemoteHost.remote_cwd
+      // fallback in initRemotePath actually has a hosts list to look in.
+      // Otherwise the empty `remoteHosts` would silently skip the configured
+      // default and force a resolveRemoteHome roundtrip.
+      void (async () => {
+        await loadRemoteHosts();
+        // hostName may have been cleared by loadRemoteHosts (stale initialHost).
+        if (hostName) {
+          await initRemotePath();
+        } else {
+          // Local: nothing to fetch — user clicks native dialog
+          currentPath = initialPath || "";
+          pathInput = currentPath;
+        }
+      })();
     });
   });
 
@@ -200,12 +228,14 @@
     if (hostName) {
       setStoredRemoteCwd(hostName, path);
     }
+    _settled = true;
     open = false;
     dbg("folder-picker", "confirm", { hostName, path });
     onConfirm({ hostName, path });
   }
 
   function cancel() {
+    _settled = true;
     open = false;
     onCancel?.();
   }

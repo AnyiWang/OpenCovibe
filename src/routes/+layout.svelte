@@ -1080,11 +1080,22 @@
   let folderPickerInitialPath = $state("");
 
   async function pickFolder() {
-    // Pre-fill from last-target so remote-using users don't lose their target
+    // Pre-fill from last-target so remote-using users don't lose their target.
+    // Validate against current settings — a host removed/renamed since the
+    // value was persisted should not silently leak through to the picker.
     const lastTarget = getLastTarget();
-    folderPickerInitialHost = lastTarget;
-    folderPickerInitialPath = lastTarget
-      ? getStoredRemoteCwd(lastTarget)
+    const validatedTarget =
+      lastTarget && (settings?.remote_hosts ?? []).some((h) => h.name === lastTarget)
+        ? lastTarget
+        : null;
+    if (lastTarget && !validatedTarget) {
+      dbgWarn("layout", "lastTarget references unknown remote — falling back to local", {
+        lastTarget,
+      });
+    }
+    folderPickerInitialHost = validatedTarget;
+    folderPickerInitialPath = validatedTarget
+      ? getStoredRemoteCwd(validatedTarget)
       : projectCwd || settings?.working_directory || "";
     folderPickerOpen = true;
   }
