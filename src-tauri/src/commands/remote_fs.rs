@@ -92,7 +92,21 @@ pub async fn list_remote_directory(
     );
 
     let (stdout, _stderr) = run_remote(&host, &remote_shell).await?;
+    let listing = parse_listing(&stdout)?;
 
+    log::debug!(
+        "[remote_fs] list_remote_directory: canonical={}, entries={}",
+        listing.path,
+        listing.entries.len()
+    );
+
+    Ok(listing)
+}
+
+/// Parse the `pwd && ls -1pL` stdout shape: first line is the canonical path,
+/// remaining lines are entries with a trailing `/` marking directories.
+/// Sort: directories first, then case-insensitive name ascending.
+fn parse_listing(stdout: &str) -> Result<DirListing, String> {
     let mut lines = stdout.lines();
     let canonical = lines
         .next()
@@ -126,12 +140,6 @@ pub async fn list_remote_directory(
             .then(a.name.to_lowercase().cmp(&b.name.to_lowercase()))
     });
 
-    log::debug!(
-        "[remote_fs] list_remote_directory: canonical={}, entries={}",
-        canonical,
-        entries.len()
-    );
-
     Ok(DirListing {
         path: canonical,
         entries,
@@ -150,4 +158,74 @@ pub async fn resolve_remote_home(host_name: String) -> Result<String, String> {
         return Err("Empty pwd response from remote shell".to_string());
     }
     Ok(home)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_listing_empty_stdout_errors() {
+        assert!(parse_listing("").is_err());
+    }
+
+    #[test]
+    fn parse_listing_canonical_only_no_entries() {
+        let listing = parse_listing("/home/user\n").unwrap();
+        assert_eq!(listing.path, "/home/user");
+        assert!(listing.entries.is_empty());
+    }
+
+    #[test]
+    fn parse_listing_separates_dirs_from_files() {
+        let stdout = "/home/user\nDocuments/\nReadme.md\nProjects/\nnotes.txt\n";
+        let listing = parse_listing(stdout).unwrap();
+        assert_eq!(listing.path, "/home/user");
+        // Directories first (case-insensitive sort), then files (case-insensitive).
+        let names: Vec<_> = listing
+            .entries
+            .iter()
+            .map(|e| (e.name.as_str(), e.is_dir))
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                ("Documents", true),
+                ("Projects", true),
+                ("notes.txt", false),
+                ("Readme.md", false),
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_listing_skips_blank_and_lone_slash_lines() {
+        // Blank lines from trailing newlines, and a stray "/" entry (e.g. `pwd` of /
+        // followed by `ls /` returns nothing useful) are dropped, not surfaced as
+        // empty-named entries.
+        let stdout = "/\n\nbin/\n\netc/\n/\n";
+        let listing = parse_listing(stdout).unwrap();
+        assert_eq!(listing.path, "/");
+        assert_eq!(listing.entries.len(), 2);
+        assert_eq!(listing.entries[0].name, "bin");
+        assert_eq!(listing.entries[1].name, "etc");
+    }
+
+    #[test]
+    fn parse_listing_dotfiles_preserved_when_present() {
+        // `ls -A` includes dotfiles; parser should accept them as-is (no filtering here).
+        let stdout = "/home/user\n.config/\n.bashrc\nbin/\n";
+        let listing = parse_listing(stdout).unwrap();
+        let names: Vec<_> = listing.entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, vec![".config", "bin", ".bashrc"]);
+    }
+
+    #[test]
+    fn parse_listing_case_insensitive_sort_stable_within_group() {
+        let stdout = "/x\nzeta/\nAlpha/\nbeta/\nGamma\nApple\n";
+        let listing = parse_listing(stdout).unwrap();
+        let names: Vec<_> = listing.entries.iter().map(|e| e.name.as_str()).collect();
+        // Dirs (case-insensitive): Alpha, beta, zeta — then files: Apple, Gamma.
+        assert_eq!(names, vec!["Alpha", "beta", "zeta", "Apple", "Gamma"]);
+    }
 }
