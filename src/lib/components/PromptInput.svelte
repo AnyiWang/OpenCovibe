@@ -391,6 +391,9 @@
   let slashBtnEl: HTMLButtonElement | undefined = $state();
   let savedInputForSlash = $state("");
 
+  // ── Chinese IME support ──
+  let isComposing = $state(false);
+
   let allCommands = $derived(mergeWithVirtual(cliCommands ?? []));
   let quickActions = $derived(getQuickActions(allCommands));
   let skillNameSet = $derived(new Set(availableSkills));
@@ -609,27 +612,30 @@
     const interaction = getCommandInteraction(cmd);
     dbg("slash", `select:${interaction}:${trigger}`, { name: cmd.name });
 
+    // Use slash prefix (handles both / and 、 triggers)
+    const prefix = "/";
+
     switch (interaction) {
       case "immediate":
         if (trigger === "enter") {
-          inputText = `/${cmd.name}`;
+          inputText = `${prefix}${cmd.name}`;
           closeSlashMenu("execute");
           handleSend();
         } else {
           // Tab: fill only, don't execute
           closeSlashMenu("fill");
-          inputText = `/${cmd.name} `;
+          inputText = `${prefix}${cmd.name} `;
           moveCursorToEnd();
         }
         break;
       case "free-text":
         closeSlashMenu("fill");
-        inputText = `/${cmd.name} `;
+        inputText = `${prefix}${cmd.name} `;
         moveCursorToEnd();
         break;
       case "enum":
         activeSlashCmd = cmd;
-        inputText = `/${cmd.name} `;
+        inputText = `${prefix}${cmd.name} `;
         if (cmd.name === "fast") {
           slashPhase = "sub-fast";
           slashSubSelectedIndex = fastModeState === "on" ? 1 : 0;
@@ -749,8 +755,22 @@
     onSend(`/${cmd.name}`, []);
   }
 
+  // ── IME composition event handlers ──
+  function handleCompositionStart() {
+    isComposing = true;
+  }
+
+  function handleCompositionEnd() {
+    isComposing = false;
+    // Re-check input after IME completes (e.g., user typed顿号)
+    handleInput();
+  }
+
   function handleInput() {
     autoResize();
+
+    // Skip processing during IME composition
+    if (isComposing) return;
 
     // Exit history mode if user edits the recalled text
     if (histState.index >= 0 && inputText !== userHistory[histState.index]) {
@@ -775,12 +795,14 @@
       return;
     }
 
-    // Commands phase
-    const match = inputText.match(/^\/([a-zA-Z0-9_-]*)$/);
+    // Commands phase: support both slash (/) and Chinese dun (、) triggers
+    const match = inputText.match(/^([/、])([a-zA-Z0-9_-]*)$/);
     if (match) {
+      const triggerChar = match[1] as "/" | "、";
+      const query = match[2];
       slashSelectedIndex = 0;
       if (!slashMenuOpen) {
-        dbg("slash", "open", { query: match[1] });
+        dbg("slash", "open", { query, trigger: triggerChar });
         if (modeDropdownOpen) modeDropdownOpen = false;
         slashMenuOpen = true;
         slashPhase = "commands";
@@ -1987,6 +2009,8 @@
       onkeydown={handleKeydown}
       oninput={handleInput}
       onpaste={handlePaste}
+      oncompositionstart={handleCompositionStart}
+      oncompositionend={handleCompositionEnd}
       placeholder={effectivePlaceholder}
       rows={1}
       {disabled}
