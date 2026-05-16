@@ -169,8 +169,14 @@ fn discover_plugin_components(
     lsp_servers_json: &Option<serde_json::Value>,
 ) -> PluginComponents {
     let skills = list_subdir_names(&plugin_dir.join("skills"));
-    let commands = list_md_stems(&plugin_dir.join("commands"));
-    let agents = list_md_stems(&plugin_dir.join("agents"));
+    let commands = list_md_stems(&plugin_dir.join("commands"))
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect::<Vec<_>>();
+    let agents = list_md_stems(&plugin_dir.join("agents"))
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect::<Vec<_>>();
     let hooks = plugin_dir.join("hooks").is_dir() || plugin_dir.join("hooks.json").is_file();
 
     let mcp_servers = if let Some(mcp) =
@@ -217,23 +223,61 @@ fn list_subdir_names(dir: &Path) -> Vec<String> {
         .collect()
 }
 
-/// List .md file stems within a directory (for commands, agents).
-fn list_md_stems(dir: &Path) -> Vec<String> {
+/// List .md command/agent entries within a directory, recursively scanning
+/// subdirectories. Returns `(command_name, file_path)` pairs where
+/// `command_name` uses colons to separate nested subdirectories
+/// (e.g. `.claude/commands/opsx/apply.md` → `("opsx:apply", <path>)`).
+fn list_md_stems(dir: &Path) -> Vec<(String, PathBuf)> {
+    let mut stems = Vec::new();
+    collect_md_stems_recursive(dir, "", 0, &mut stems);
+    stems
+}
+
+/// Maximum directory nesting depth for command discovery. Guards against
+/// pathological structures or symlink cycles.
+const MAX_COMMAND_DEPTH: usize = 8;
+
+fn collect_md_stems_recursive(
+    dir: &Path,
+    prefix: &str,
+    depth: usize,
+    stems: &mut Vec<(String, PathBuf)>,
+) {
+    if depth > MAX_COMMAND_DEPTH {
+        return;
+    }
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
-        Err(_) => return vec![],
+        Err(_) => return,
     };
-    entries
-        .flatten()
-        .filter_map(|e| {
-            let path = e.path();
-            if path.is_file() && path.extension().map(|ext| ext == "md").unwrap_or(false) {
-                path.file_stem().and_then(|s| s.to_str()).map(String::from)
-            } else {
-                None
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        // Use the entry's file_type to avoid following symlinks into cycles.
+        let file_type = match entry.file_type() {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+        if file_type.is_dir() {
+            if let Some(dir_name) = path.file_name().and_then(|n| n.to_str()) {
+                let new_prefix = if prefix.is_empty() {
+                    dir_name.to_string()
+                } else {
+                    format!("{}:{}", prefix, dir_name)
+                };
+                collect_md_stems_recursive(&path, &new_prefix, depth + 1, stems);
             }
-        })
-        .collect()
+        } else if file_type.is_file() && path.extension().map(|ext| ext == "md").unwrap_or(false) {
+            if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                let command_name = if prefix.is_empty() {
+                    stem.to_string()
+                } else {
+                    format!("{}:{}", prefix, stem)
+                };
+                stems.push((command_name, path));
+            }
+        }
+    }
 }
 
 /// List project-level commands from ~/.claude/commands/ and {cwd}/.claude/commands/.
@@ -266,20 +310,22 @@ fn scan_commands_dir(
     seen: &mut std::collections::HashSet<String>,
 ) {
     let stems = list_md_stems(dir);
-    for stem in stems {
+    for (stem, md_path) in stems {
         if seen.contains(&stem) {
             continue; // project-scope already added this name
         }
-        let md_path = dir.join(format!("{}.md", stem));
-        let (name, description) = parse_skill_frontmatter(&md_path);
-        let name = if name.is_empty() { stem.clone() } else { name };
-        seen.insert(stem);
+        // Invocation name is path-derived (e.g. `opsx:apply` for opsx/apply.md).
+        // Frontmatter `name` is only a display label in Claude Code and is
+        // restricted to [a-z0-9-], so it cannot encode the nested invocation
+        // form CLI actually expects. Pull only `description` for the menu hint.
+        let (_display_name, description) = parse_skill_frontmatter(&md_path);
         commands.push(crate::models::CliCommand {
-            name,
+            name: stem.clone(),
             description,
             aliases: vec![],
             extra: std::collections::HashMap::new(),
         });
+        seen.insert(stem);
     }
 }
 
@@ -748,4 +794,123 @@ pub async fn list_installed_plugins_cli() -> Result<Vec<crate::models::Installed
         plugins.len()
     );
     Ok(plugins)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::tempdir;
+
+    fn names(stems: &[(String, PathBuf)]) -> Vec<&str> {
+        stems.iter().map(|(n, _)| n.as_str()).collect()
+    }
+
+    #[test]
+    fn list_md_stems_flat() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("apply.md"), "---\nname: apply\n---").unwrap();
+        fs::write(dir.path().join("review.md"), "---\nname: review\n---").unwrap();
+
+        let stems = list_md_stems(dir.path());
+        let names = names(&stems);
+        assert_eq!(stems.len(), 2);
+        assert!(names.contains(&"apply"));
+        assert!(names.contains(&"review"));
+    }
+
+    #[test]
+    fn list_md_stems_nested_uses_colon_prefix() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("opsx")).unwrap();
+        fs::write(
+            dir.path().join("opsx").join("apply.md"),
+            "---\nname: apply\n---",
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join("opsx").join("continue.md"),
+            "---\nname: continue\n---",
+        )
+        .unwrap();
+        fs::write(dir.path().join("test.md"), "---\nname: test\n---").unwrap();
+
+        let stems = list_md_stems(dir.path());
+        let names = names(&stems);
+        assert_eq!(stems.len(), 3);
+        assert!(names.contains(&"opsx:apply"));
+        assert!(names.contains(&"opsx:continue"));
+        assert!(names.contains(&"test"));
+    }
+
+    #[test]
+    fn list_md_stems_returns_real_paths_for_nested() {
+        // Regression: scan_commands_dir needs the actual file path to read
+        // frontmatter; colon-encoded names must not be re-joined as `opsx:apply.md`.
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("opsx")).unwrap();
+        let expected = dir.path().join("opsx").join("apply.md");
+        fs::write(&expected, "---\nname: apply\n---").unwrap();
+
+        let stems = list_md_stems(dir.path());
+        let (name, path) = stems.iter().find(|(n, _)| n == "opsx:apply").unwrap();
+        assert_eq!(name, "opsx:apply");
+        assert_eq!(path, &expected);
+        assert!(path.is_file(), "returned path must exist on disk");
+    }
+
+    #[test]
+    fn list_md_stems_deeply_nested() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("a").join("b")).unwrap();
+        fs::write(dir.path().join("a").join("b").join("cmd.md"), "x").unwrap();
+
+        let stems = list_md_stems(dir.path());
+        let names = names(&stems);
+        assert_eq!(stems.len(), 1);
+        assert!(names.contains(&"a:b:cmd"));
+    }
+
+    #[test]
+    fn scan_commands_dir_uses_path_name_and_reads_description() {
+        // Invocation name must be path-derived ("opsx:apply"), not the
+        // frontmatter `name` (which is just a display label and can't encode
+        // nested invocation). Description is pulled from frontmatter.
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("opsx")).unwrap();
+        fs::write(
+            dir.path().join("opsx").join("apply.md"),
+            "---\nname: opsx-apply\ndescription: Apply an opsx change\n---\nbody",
+        )
+        .unwrap();
+
+        let mut commands = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        scan_commands_dir(dir.path(), &mut commands, &mut seen);
+
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0].name, "opsx:apply");
+        assert_eq!(commands[0].description, "Apply an opsx change");
+        assert!(seen.contains("opsx:apply"));
+    }
+
+    #[test]
+    fn scan_commands_dir_ignores_frontmatter_name_for_flat_command() {
+        // Regression: even for flat commands, frontmatter `name` must not
+        // override the file stem. CLI invocation is `/foo` for `foo.md`.
+        let dir = tempdir().unwrap();
+        fs::write(
+            dir.path().join("foo.md"),
+            "---\nname: bar\ndescription: Foo helper\n---\nbody",
+        )
+        .unwrap();
+
+        let mut commands = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        scan_commands_dir(dir.path(), &mut commands, &mut seen);
+
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0].name, "foo");
+        assert_eq!(commands[0].description, "Foo helper");
+    }
 }
