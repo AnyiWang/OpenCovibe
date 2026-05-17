@@ -777,6 +777,11 @@ export async function readClipboardFile(
   return invoke<ClipboardFileContent>("read_clipboard_file", { path, asText });
 }
 
+/** Read plain text from the native clipboard via Tauri IPC. Browsers navigator.clipboard API. */
+export async function readClipboardText(): Promise<string> {
+  return invoke<string>("read_clipboard_text");
+}
+
 /** Save file to temp directory, return filesystem path. For >20MB PDFs from drag-drop/file picker. */
 export async function saveTempAttachment(name: string, contentBase64: string): Promise<string> {
   dbg("api", "saveTempAttachment", { name, len: contentBase64.length });

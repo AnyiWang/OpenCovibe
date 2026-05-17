@@ -1360,6 +1360,7 @@ export interface PromptInputSnapshot {
     lineCount: number;
     charCount: number;
     preview: string;
+    ext?: string;
   }>;
   pathRefs?: Array<{ id: string; name: string; path: string; isDir: boolean }>;
 }

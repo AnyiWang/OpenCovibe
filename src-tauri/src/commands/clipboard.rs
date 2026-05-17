@@ -336,6 +336,89 @@ pub fn read_clipboard_file(path: String, as_text: bool) -> Result<ClipboardFileC
     })
 }
 
+/// Read plain text from the native clipboard.
+///
+/// - macOS: uses NSPasteboard via osascript.
+/// - Linux: probes wl-paste → xclip → xsel.
+/// - Windows: uses Win32 clipboard API.
+#[tauri::command]
+pub fn read_clipboard_text() -> Result<String, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let script = r#"
+use framework "AppKit"
+set pb to current application's NSPasteboard's generalPasteboard()
+set txt to pb's stringForType:(current application's NSPasteboardTypeString)
+if txt is missing value then return ""
+return txt as text
+"#;
+        let output = std::process::Command::new("osascript")
+            .arg("-e")
+            .arg(script)
+            .output()
+            .map_err(|e| format!("osascript failed: {}", e))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(format!("osascript error: {}", stderr));
+        }
+        let text = String::from_utf8_lossy(&output.stdout).into_owned();
+        Ok(text)
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let tools: &[(&str, &[&str])] = &[
+            ("wl-paste", &["--no-newline"]),
+            ("xclip", &["-selection", "clipboard", "-o"]),
+            ("xsel", &["--clipboard", "--output"]),
+        ];
+        for (bin, args) in tools {
+            if let Ok(output) = std::process::Command::new(bin).args(args).output() {
+                if output.status.success() {
+                    return Ok(String::from_utf8_lossy(&output.stdout).into_owned());
+                }
+            }
+        }
+        Err("No clipboard tool available (tried wl-paste, xclip, xsel)".into())
+    }
+
+    #[cfg(windows)]
+    {
+        use windows::Win32::System::DataExchange::{
+            CloseClipboard, GetClipboardData, OpenClipboard,
+        };
+        use windows::Win32::System::Ole::CF_UNICODETEXT;
+        unsafe {
+            if OpenClipboard(None).is_err() {
+                return Err("Failed to open clipboard".into());
+            }
+            struct ClipGuard;
+            impl Drop for ClipGuard {
+                fn drop(&mut self) {
+                    unsafe {
+                        let _ = CloseClipboard();
+                    }
+                }
+            }
+            let _guard = ClipGuard;
+            let handle = match GetClipboardData(CF_UNICODETEXT.0 as u32) {
+                Ok(h) if !h.0.is_null() => h,
+                _ => return Ok(String::new()),
+            };
+            let ptr = handle.0 as *const u16;
+            let len = (0..).take_while(|&i| *ptr.add(i) != 0).count();
+            Ok(String::from_utf16_lossy(std::slice::from_raw_parts(
+                ptr, len,
+            )))
+        }
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
+    {
+        Err("Clipboard text read is not supported on this platform".into())
+    }
+}
+
 /// Save file content to a temp directory, returning the filesystem path.
 /// Used for >20MB PDFs from drag-and-drop/file picker: file is saved to temp,
 /// then its path is injected into the prompt text so CLI handles via pdftoppm.
