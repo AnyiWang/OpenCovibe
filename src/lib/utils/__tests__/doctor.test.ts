@@ -42,6 +42,8 @@ function makeReport(overrides: Partial<DiagnosticsReport> = {}): DiagnosticsRepo
       cwd: "/tmp/project",
       has_claude_md: true,
       claude_md_files: [{ path: "/tmp/project/CLAUDE.md", size_chars: 500 }],
+      has_agents_md: false,
+      agents_md_files: [],
       skipped_project_scope: false,
     },
     configs: {
@@ -167,6 +169,8 @@ describe("buildDoctorReport", () => {
           cwd: "",
           has_claude_md: false,
           claude_md_files: [],
+          has_agents_md: false,
+          agents_md_files: [],
           skipped_project_scope: true,
         },
       }),
@@ -182,6 +186,8 @@ describe("buildDoctorReport", () => {
           cwd: "/tmp/project",
           has_claude_md: true,
           claude_md_files: [{ path: "~/.claude/CLAUDE.md", size_chars: 15000 }],
+          has_agents_md: false,
+          agents_md_files: [],
           skipped_project_scope: false,
         },
       }),
@@ -189,6 +195,52 @@ describe("buildDoctorReport", () => {
     const text = await buildDoctorReport("/tmp/project");
     expect(text).toContain("doctor_projectLargeFile");
     expect(text).toContain("15000");
+  });
+
+  it("hides AGENTS.md section when no AGENTS.md files exist", async () => {
+    mockRunDiagnostics.mockResolvedValue(makeReport());
+    const text = await buildDoctorReport("/tmp/project");
+    expect(text).not.toContain("doctor_projectAgentsMdTitle");
+  });
+
+  it("renders AGENTS.md section when files exist", async () => {
+    mockRunDiagnostics.mockResolvedValue(
+      makeReport({
+        project: {
+          cwd: "/tmp/project",
+          has_claude_md: false,
+          claude_md_files: [],
+          has_agents_md: true,
+          agents_md_files: [
+            { path: "/tmp/project/AGENTS.md", size_chars: 320 },
+            { path: "~/.codex/AGENTS.md", size_chars: 80 },
+          ],
+          skipped_project_scope: false,
+        },
+      }),
+    );
+    const text = await buildDoctorReport("/tmp/project");
+    expect(text).toContain("doctor_projectAgentsMdTitle");
+    expect(text).toContain("/tmp/project/AGENTS.md");
+    expect(text).toContain("~/.codex/AGENTS.md");
+  });
+
+  it("warns about large AGENTS.md files", async () => {
+    mockRunDiagnostics.mockResolvedValue(
+      makeReport({
+        project: {
+          cwd: "/tmp/project",
+          has_claude_md: false,
+          claude_md_files: [],
+          has_agents_md: true,
+          agents_md_files: [{ path: "~/.codex/AGENTS.md", size_chars: 25000 }],
+          skipped_project_scope: false,
+        },
+      }),
+    );
+    const text = await buildDoctorReport("/tmp/project");
+    expect(text).toContain("doctor_projectLargeFile");
+    expect(text).toContain("25000");
   });
 
   it("shows service health status", async () => {

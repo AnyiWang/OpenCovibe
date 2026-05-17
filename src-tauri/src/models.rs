@@ -705,11 +705,19 @@ pub struct ProjectDiagnostics {
     pub cwd: String,
     pub has_claude_md: bool,
     pub claude_md_files: Vec<ClaudeMdInfo>,
+    pub has_agents_md: bool,
+    pub agents_md_files: Vec<AgentsMdInfo>,
     pub skipped_project_scope: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ClaudeMdInfo {
+    pub path: String,
+    pub size_chars: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AgentsMdInfo {
     pub path: String,
     pub size_chars: usize,
 }

@@ -1,10 +1,10 @@
 use crate::agent::claude_stream::augmented_path;
 use crate::agent::ssh::{expand_local_tilde, shell_escape};
 use crate::models::{
-    ApiTestResult, AuthDiagnostics, ClaudeMdInfo, CliCheckResult, CliDiagnostics, CliDistTags,
-    CodexAuthResult, ConfigDiagnostics, ConfigIssue, DiagnosticsReport, LocalProxyStatus,
-    ProjectDiagnostics, ProjectInitStatus, RemoteTestResult, ServicesDiagnostics, SshKeyInfo,
-    SystemDiagnostics,
+    AgentsMdInfo, ApiTestResult, AuthDiagnostics, ClaudeMdInfo, CliCheckResult, CliDiagnostics,
+    CliDistTags, CodexAuthResult, ConfigDiagnostics, ConfigIssue, DiagnosticsReport,
+    LocalProxyStatus, ProjectDiagnostics, ProjectInitStatus, RemoteTestResult, ServicesDiagnostics,
+    SshKeyInfo, SystemDiagnostics,
 };
 use crate::process_ext::HideConsole;
 use std::path::Path;
@@ -683,9 +683,9 @@ pub async fn run_diagnostics(cwd: String) -> Result<DiagnosticsReport, String> {
     };
 
     // Sync checks
-    let home = crate::storage::dirs_next()
-        .map(|h| h.join(".claude"))
-        .unwrap_or_default();
+    let user_home = crate::storage::dirs_next().unwrap_or_default();
+    let home = user_home.join(".claude");
+    let codex_home = user_home.join(".codex");
     let settings_issues = validate_config_files_at(&home, &cwd, has_valid_cwd);
     let keybinding_issues = validate_keybindings_at(&home);
     let mcp_issues = validate_mcp_configs_at(&home, &cwd, has_valid_cwd);
@@ -694,6 +694,8 @@ pub async fn run_diagnostics(cwd: String) -> Result<DiagnosticsReport, String> {
     let has_claude_md = claude_md_files
         .iter()
         .any(|f| f.path.ends_with("CLAUDE.md"));
+    let agents_md_files = scan_agents_md_files_at(&codex_home, &cwd, has_valid_cwd);
+    let has_agents_md = !agents_md_files.is_empty();
     let sandbox = check_sandbox();
     let locks = list_lock_files_at(&home);
 
@@ -722,6 +724,8 @@ pub async fn run_diagnostics(cwd: String) -> Result<DiagnosticsReport, String> {
             cwd: cwd.clone(),
             has_claude_md,
             claude_md_files,
+            has_agents_md,
+            agents_md_files,
             skipped_project_scope: !has_valid_cwd,
         },
         configs: ConfigDiagnostics {
@@ -1201,6 +1205,43 @@ fn scan_claude_md_files_at(home: &Path, cwd: &str, has_valid_cwd: bool) -> Vec<C
     files
 }
 
+// ── Sub-check: AGENTS.md files (Codex) ──
+
+fn scan_agents_md_files_at(codex_home: &Path, cwd: &str, has_valid_cwd: bool) -> Vec<AgentsMdInfo> {
+    let mut files = Vec::new();
+
+    // ~/.codex/AGENTS.md
+    let global_path = codex_home.join("AGENTS.md");
+    if let Ok(content) = std::fs::read_to_string(&global_path) {
+        files.push(AgentsMdInfo {
+            path: global_path.display().to_string(),
+            size_chars: content.chars().count(),
+        });
+    }
+
+    if has_valid_cwd {
+        // {cwd}/AGENTS.md
+        let cwd_path = Path::new(cwd).join("AGENTS.md");
+        if let Ok(content) = std::fs::read_to_string(&cwd_path) {
+            files.push(AgentsMdInfo {
+                path: cwd_path.display().to_string(),
+                size_chars: content.chars().count(),
+            });
+        }
+
+        // {cwd}/.codex/AGENTS.md
+        let cwd_dot_path = Path::new(cwd).join(".codex").join("AGENTS.md");
+        if let Ok(content) = std::fs::read_to_string(&cwd_dot_path) {
+            files.push(AgentsMdInfo {
+                path: cwd_dot_path.display().to_string(),
+                size_chars: content.chars().count(),
+            });
+        }
+    }
+
+    files
+}
+
 // ── Sub-check: Sandbox ──
 
 fn check_sandbox() -> Option<bool> {
@@ -1328,6 +1369,49 @@ mod tests {
         assert_eq!(files.len(), 2);
         assert_eq!(files[0].size_chars, 8); // "# Global"
         assert_eq!(files[1].size_chars, 22); // "# Project content here"
+    }
+
+    #[test]
+    fn test_scan_agents_md_files_at() {
+        let dir = tempfile::tempdir().unwrap();
+        let codex_home = dir.path().join("home_codex");
+        std::fs::create_dir_all(&codex_home).unwrap();
+        std::fs::write(codex_home.join("AGENTS.md"), "# Global Codex").unwrap();
+
+        let cwd_dir = dir.path().join("project");
+        let cwd_dotcodex = cwd_dir.join(".codex");
+        std::fs::create_dir_all(&cwd_dotcodex).unwrap();
+        std::fs::write(cwd_dir.join("AGENTS.md"), "# Project root").unwrap();
+        std::fs::write(cwd_dotcodex.join("AGENTS.md"), "# Project dotcodex").unwrap();
+
+        let files = scan_agents_md_files_at(&codex_home, &cwd_dir.to_string_lossy(), true);
+        assert_eq!(files.len(), 3);
+        assert_eq!(files[0].size_chars, 14); // "# Global Codex"
+        assert_eq!(files[1].size_chars, 14); // "# Project root"
+        assert_eq!(files[2].size_chars, 18); // "# Project dotcodex"
+    }
+
+    #[test]
+    fn test_scan_agents_md_files_at_skips_project_when_invalid_cwd() {
+        let dir = tempfile::tempdir().unwrap();
+        let codex_home = dir.path().join("home_codex");
+        std::fs::create_dir_all(&codex_home).unwrap();
+        std::fs::write(codex_home.join("AGENTS.md"), "# Global").unwrap();
+
+        let files = scan_agents_md_files_at(&codex_home, "/nonexistent", false);
+        assert_eq!(files.len(), 1);
+        assert!(files[0].path.ends_with("AGENTS.md"));
+    }
+
+    #[test]
+    fn test_scan_agents_md_files_at_empty_when_none_exist() {
+        let dir = tempfile::tempdir().unwrap();
+        let files = scan_agents_md_files_at(
+            &dir.path().join("nohome"),
+            &dir.path().to_string_lossy(),
+            true,
+        );
+        assert!(files.is_empty());
     }
 
     #[test]

@@ -1386,6 +1386,7 @@
   "doctor_projectNoClaudeMd": "未找到 CLAUDE.md",
   "doctor_projectSkipped": "无项目目录 — 已跳过项目级检查",
   "doctor_projectLargeFile": "大文件：{path}（{size} 字符）",
+  "doctor_projectAgentsMdTitle": "AGENTS.md（Codex）",
   "doctor_configSettingsOk": "设置文件：JSON 有效",
   "doctor_configKeybindingsOk": "快捷键配置：有效",
   "doctor_configMcpOk": "MCP 配置：有效",
