@@ -407,6 +407,18 @@ pub struct AgentSettings {
     /// Takes priority over plan_mode and user.permission_mode in adapter resolution.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission_mode: Option<String>,
+    /// Codex `--ephemeral` — disable on-disk session persistence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ephemeral: Option<bool>,
+    /// Codex `--profile <name>` — select a profile from ~/.codex/config.toml.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
+    /// Codex `--ignore-user-config` — skip ~/.codex/config.toml.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ignore_user_config: Option<bool>,
+    /// Codex `--ignore-rules` — skip execpolicy .rules files.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ignore_rules: Option<bool>,
     pub updated_at: String,
 }
 
@@ -434,6 +446,10 @@ impl AgentSettings {
             betas: None,
             agents_json: None,
             permission_mode: None,
+            ephemeral: None,
+            profile: None,
+            ignore_user_config: None,
+            ignore_rules: None,
             updated_at: now_iso(),
         }
     }

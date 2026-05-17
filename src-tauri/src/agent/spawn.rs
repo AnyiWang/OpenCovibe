@@ -37,6 +37,34 @@ pub fn build_agent_command(
             }
             args.push("--json".to_string());
             args.push("--skip-git-repo-check".to_string());
+
+            // Codex per-session flags (AgentSettings).
+            // `--ephemeral` MUST go before resume target rejection — but since
+            // resume_thread_id was already added earlier, ordering here just
+            // affects ergonomics. Codex parses flags positionally before the
+            // optional prompt.
+            if settings.ephemeral {
+                args.push("--ephemeral".to_string());
+            }
+            if settings.ignore_user_config {
+                args.push("--ignore-user-config".to_string());
+            }
+            if settings.ignore_rules {
+                args.push("--ignore-rules".to_string());
+            }
+            if let Some(p) = &settings.profile {
+                args.push("--profile".to_string());
+                args.push(p.clone());
+            }
+            // model_reasoning_effort overrides config.toml on a per-session
+            // basis. Empty string treated as unset (UI sends "" to clear).
+            if let Some(e) = &settings.effort {
+                if !e.is_empty() {
+                    args.push("-c".to_string());
+                    args.push(format!("model_reasoning_effort=\"{}\"", e));
+                }
+            }
+
             // Only pass --model if it's a Codex-compatible model.
             // The adapter fallback chain (agent.model → user.default_model) may
             // resolve to a Claude model name (e.g. "opus", "claude-*") which Codex
@@ -118,6 +146,10 @@ mod tests {
             effort: None,
             betas: vec![],
             agents_json: None,
+            ephemeral: false,
+            profile: None,
+            ignore_user_config: false,
+            ignore_rules: false,
         }
     }
 
@@ -199,5 +231,107 @@ mod tests {
         let (_, args) = build_agent_command("codex", "q", &s, false, None).unwrap();
         assert!(!args.contains(&"--sandbox".to_string()));
         assert!(!args.contains(&"--dangerously-bypass-approvals-and-sandbox".to_string()));
+    }
+
+    // ── Codex per-session flags ──
+
+    #[test]
+    fn codex_no_per_session_flags_by_default() {
+        let s = make_settings();
+        let (_, args) = build_agent_command("codex", "q", &s, false, None).unwrap();
+        assert!(!args.contains(&"--ephemeral".to_string()));
+        assert!(!args.contains(&"--profile".to_string()));
+        assert!(!args.contains(&"--ignore-user-config".to_string()));
+        assert!(!args.contains(&"--ignore-rules".to_string()));
+        assert!(!args.iter().any(|a| a.contains("model_reasoning_effort")));
+    }
+
+    #[test]
+    fn codex_ephemeral_flag() {
+        let mut s = make_settings();
+        s.ephemeral = true;
+        let (_, args) = build_agent_command("codex", "q", &s, false, None).unwrap();
+        assert!(args.contains(&"--ephemeral".to_string()));
+    }
+
+    #[test]
+    fn codex_ignore_user_config_flag() {
+        let mut s = make_settings();
+        s.ignore_user_config = true;
+        let (_, args) = build_agent_command("codex", "q", &s, false, None).unwrap();
+        assert!(args.contains(&"--ignore-user-config".to_string()));
+    }
+
+    #[test]
+    fn codex_ignore_rules_flag() {
+        let mut s = make_settings();
+        s.ignore_rules = true;
+        let (_, args) = build_agent_command("codex", "q", &s, false, None).unwrap();
+        assert!(args.contains(&"--ignore-rules".to_string()));
+    }
+
+    #[test]
+    fn codex_profile_flag() {
+        let mut s = make_settings();
+        s.profile = Some("dev".into());
+        let (_, args) = build_agent_command("codex", "q", &s, false, None).unwrap();
+        let idx = args
+            .iter()
+            .position(|a| a == "--profile")
+            .expect("--profile");
+        assert_eq!(args[idx + 1], "dev");
+    }
+
+    #[test]
+    fn codex_profile_empty_string_skipped() {
+        // build_adapter_settings filters empty strings to None, but spawn.rs only
+        // checks Some(&p) without re-validating. Guard against future regressions
+        // by asserting spawn doesn't emit --profile when the value is None.
+        let mut s = make_settings();
+        s.profile = None;
+        let (_, args) = build_agent_command("codex", "q", &s, false, None).unwrap();
+        assert!(!args.contains(&"--profile".to_string()));
+    }
+
+    #[test]
+    fn codex_effort_emits_config_override() {
+        for effort in ["minimal", "low", "medium", "high", "xhigh"] {
+            let mut s = make_settings();
+            s.effort = Some(effort.into());
+            let (_, args) = build_agent_command("codex", "q", &s, false, None).unwrap();
+            let expected = format!("model_reasoning_effort=\"{}\"", effort);
+            assert!(
+                args.iter().any(|a| a == &expected),
+                "expected {} in args for effort={}",
+                expected,
+                effort
+            );
+        }
+    }
+
+    #[test]
+    fn codex_effort_empty_skipped() {
+        let mut s = make_settings();
+        s.effort = Some("".into());
+        let (_, args) = build_agent_command("codex", "q", &s, false, None).unwrap();
+        assert!(!args.iter().any(|a| a.contains("model_reasoning_effort")));
+    }
+
+    #[test]
+    fn codex_all_per_session_flags_together() {
+        let mut s = make_settings();
+        s.ephemeral = true;
+        s.ignore_user_config = true;
+        s.ignore_rules = true;
+        s.profile = Some("ci".into());
+        s.effort = Some("high".into());
+        let (_, args) = build_agent_command("codex", "q", &s, false, None).unwrap();
+        assert!(args.contains(&"--ephemeral".to_string()));
+        assert!(args.contains(&"--ignore-user-config".to_string()));
+        assert!(args.contains(&"--ignore-rules".to_string()));
+        assert!(args.contains(&"--profile".to_string()));
+        assert!(args.contains(&"ci".to_string()));
+        assert!(args.iter().any(|a| a == "model_reasoning_effort=\"high\""));
+        assert_eq!(args.last().unwrap(), "q"); // prompt still last
     }
 }

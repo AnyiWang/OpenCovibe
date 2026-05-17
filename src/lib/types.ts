@@ -253,6 +253,14 @@ export interface AgentSettings {
   betas?: string[];
   agents_json?: string;
   permission_mode?: string;
+  /** Codex `--ephemeral` — disable on-disk session persistence. */
+  ephemeral?: boolean;
+  /** Codex `--profile <name>` — select profile from ~/.codex/config.toml. */
+  profile?: string;
+  /** Codex `--ignore-user-config` — skip ~/.codex/config.toml. */
+  ignore_user_config?: boolean;
+  /** Codex `--ignore-rules` — skip execpolicy .rules files. */
+  ignore_rules?: boolean;
   updated_at: string;
 }
 
