@@ -367,6 +367,12 @@ impl ProtocolState {
                         skills.len()
                     );
 
+                    let plugin_errors: Vec<Value> = raw
+                        .get("plugin_errors")
+                        .and_then(|v| v.as_array())
+                        .cloned()
+                        .unwrap_or_default();
+
                     events.push(BusEvent::SessionInit {
                         run_id: run_id.to_string(),
                         session_id,
@@ -382,6 +388,7 @@ impl ProtocolState {
                         agents,
                         skills,
                         plugins,
+                        plugin_errors,
                         fast_mode_state,
                     });
                     // Only emit RunState on the FIRST system/init:

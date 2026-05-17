@@ -157,11 +157,15 @@ You can re-run the wizard anytime from **Settings > General > Setup Wizard**.
 | Kimi For Coding | `api.kimi.com/coding/` | Bearer |
 | Zhipu (智谱) | `open.bigmodel.cn/api/anthropic` | Bearer |
 | Zhipu (智谱 Intl) | `api.z.ai/api/anthropic` | Bearer |
-| Bailian (百炼) | `coding.dashscope.aliyuncs.com/apps/anthropic` | Bearer |
+| Bailian (Coding Plan) | `coding.dashscope.aliyuncs.com/apps/anthropic` | Bearer |
+| Bailian (百炼 API) | `dashscope.aliyuncs.com/apps/anthropic` | Bearer |
 | DouBao (豆包) | `ark.cn-beijing.volces.com/api/coding` | Bearer |
 | MiniMax | `api.minimax.io/anthropic` | Bearer |
 | MiniMax (China) | `api.minimaxi.com/anthropic` | Bearer |
 | Xiaomi MiMo (小米) | `api.xiaomimimo.com/anthropic` | Bearer |
+| Xiaomi MiMo (Token Plan) | `token-plan-cn.xiaomimimo.com/anthropic` | Bearer |
+| Tencent Hunyuan (混元) | `api.hunyuan.cloud.tencent.com/anthropic` | Bearer |
+| SiliconFlow (硅基流动) | `api.siliconflow.com/` | Bearer |
 
 ### API Gateway
 

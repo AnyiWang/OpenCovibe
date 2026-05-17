@@ -8,7 +8,7 @@
     type CommandCategory,
   } from "$lib/commands";
   import * as api from "$lib/api";
-  import { dbgWarn } from "$lib/utils/debug";
+  import { dbg, dbgWarn } from "$lib/utils/debug";
   import { t } from "$lib/i18n/index.svelte";
 
   let {
@@ -160,6 +160,21 @@
           }
         }
         break;
+
+      case "export_conversation_html": {
+        dbg("palette", "dispatching ocv:export-html");
+        let acked = false;
+        const onAck = () => {
+          acked = true;
+        };
+        window.addEventListener("ocv:export-html-ack", onAck, { once: true });
+        window.dispatchEvent(new CustomEvent("ocv:export-html"));
+        setTimeout(() => {
+          window.removeEventListener("ocv:export-html-ack", onAck);
+          if (!acked) dbgWarn("palette", "export-html: no ack — not on chat page?");
+        }, 500);
+        break;
+      }
 
       case "stop_run":
         if (runId) {

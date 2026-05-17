@@ -5,7 +5,7 @@ export interface MemoryFileCandidate {
   exists: boolean;
 }
 
-export type RunStatus = "pending" | "running" | "completed" | "failed" | "stopped" | "idle";
+export type RunStatus = "pending" | "running" | "idle" | "completed" | "failed" | "stopped";
 
 export type RunEventType = "system" | "stdout" | "stderr" | "command" | "user" | "assistant";
 
@@ -864,6 +864,7 @@ export type BusEvent =
       agents?: string[];
       skills?: string[];
       plugins?: unknown[];
+      plugin_errors?: unknown[];
       fast_mode_state?: string;
     }
   | {
@@ -1182,6 +1183,7 @@ export type HookEventType =
   | "InstructionsLoaded"
   | "Elicitation"
   | "ElicitationResult"
+  | "PreCompact"
   | "PostCompact"
   | "StopFailure"
   | "TaskCreated"
@@ -1190,7 +1192,7 @@ export type HookEventType =
   | "PermissionDenied";
 
 export interface HookHandler {
-  type: "command" | "prompt" | "http";
+  type: "command" | "prompt" | "http" | "mcp_tool";
   command?: string;
   prompt?: string;
   timeout?: number;
@@ -1200,6 +1202,13 @@ export interface HookHandler {
   once?: boolean;
   /** Conditional filter using permission rule syntax (e.g., `Bash(git *)`) — CLI 2.1.85+ */
   if?: string;
+  /** mcp_tool handler: name of an already-configured MCP server to invoke — CLI 2.1.118+ */
+  server?: string;
+  /** mcp_tool handler: name of the tool on that server to call — CLI 2.1.118+ */
+  tool?: string;
+  /** mcp_tool handler: arguments passed to the MCP tool. String values support
+   *  `${path}` interpolation from the hook input JSON (e.g. `${tool_input.file_path}`). */
+  input?: Record<string, unknown>;
 }
 
 export interface HookMatcherGroup {

@@ -73,7 +73,7 @@ fn known_provider_defaults(pid: &str) -> Option<ProviderDefaults> {
     match pid {
         "deepseek" => Some(ProviderDefaults {
             base_url: Some("https://api.deepseek.com/anthropic"),
-            models: Some(vec!["deepseek-chat".to_string()]),
+            models: Some(vec!["deepseek-v4-pro".to_string()]),
             extra_env: Some(HashMap::from([(
                 "API_TIMEOUT_MS".to_string(),
                 "600000".to_string(),
@@ -90,7 +90,7 @@ fn known_provider_defaults(pid: &str) -> Option<ProviderDefaults> {
         }),
         "kimi-coding" => Some(ProviderDefaults {
             base_url: Some("https://api.kimi.com/coding/"),
-            models: None,
+            models: Some(vec!["kimi-for-coding".to_string()]),
             extra_env: None,
             key_optional: false,
             auth_env_var: None,
@@ -98,9 +98,9 @@ fn known_provider_defaults(pid: &str) -> Option<ProviderDefaults> {
         "zhipu" => Some(ProviderDefaults {
             base_url: Some("https://open.bigmodel.cn/api/anthropic"),
             models: Some(vec![
+                "glm-5.1".to_string(),
+                "glm-5".to_string(),
                 "glm-4.7".to_string(),
-                "glm-4.5-air".to_string(),
-                "glm-4.5-flash".to_string(),
             ]),
             extra_env: None,
             key_optional: false,
@@ -109,9 +109,9 @@ fn known_provider_defaults(pid: &str) -> Option<ProviderDefaults> {
         "zhipu-intl" => Some(ProviderDefaults {
             base_url: Some("https://api.z.ai/api/anthropic"),
             models: Some(vec![
+                "glm-5.1".to_string(),
+                "glm-5".to_string(),
                 "glm-4.7".to_string(),
-                "glm-4.5-air".to_string(),
-                "glm-4.5-flash".to_string(),
             ]),
             extra_env: None,
             key_optional: false,
@@ -120,10 +120,18 @@ fn known_provider_defaults(pid: &str) -> Option<ProviderDefaults> {
         "bailian" => Some(ProviderDefaults {
             base_url: Some("https://coding.dashscope.aliyuncs.com/apps/anthropic"),
             models: Some(vec![
-                "qwen3-max".to_string(),
                 "qwen3.5-plus".to_string(),
-                "qwen-plus".to_string(),
-                "qwen-flash".to_string(),
+                "qwen3-coder-next".to_string(),
+            ]),
+            extra_env: None,
+            key_optional: false,
+            auth_env_var: None,
+        }),
+        "bailian-api" => Some(ProviderDefaults {
+            base_url: Some("https://dashscope.aliyuncs.com/apps/anthropic"),
+            models: Some(vec![
+                "qwen3.5-plus".to_string(),
+                "qwen3-coder-next".to_string(),
             ]),
             extra_env: None,
             key_optional: false,
@@ -138,27 +146,45 @@ fn known_provider_defaults(pid: &str) -> Option<ProviderDefaults> {
         }),
         "minimax" => Some(ProviderDefaults {
             base_url: Some("https://api.minimax.io/anthropic"),
-            models: Some(vec![
-                "MiniMax-M2.5".to_string(),
-                "MiniMax-M2.5-highspeed".to_string(),
-            ]),
+            models: Some(vec!["MiniMax-M2.7".to_string()]),
             extra_env: None,
             key_optional: false,
             auth_env_var: None,
         }),
         "minimax-cn" => Some(ProviderDefaults {
             base_url: Some("https://api.minimaxi.com/anthropic"),
-            models: Some(vec![
-                "MiniMax-M2.5".to_string(),
-                "MiniMax-M2.5-highspeed".to_string(),
-            ]),
+            models: Some(vec!["MiniMax-M2.7".to_string()]),
             extra_env: None,
             key_optional: false,
             auth_env_var: None,
         }),
         "mimo" => Some(ProviderDefaults {
             base_url: Some("https://api.xiaomimimo.com/anthropic"),
-            models: Some(vec!["mimo-v2-flash".to_string()]),
+            models: Some(vec!["mimo-v2.5-pro".to_string()]),
+            extra_env: None,
+            key_optional: false,
+            auth_env_var: None,
+        }),
+        "mimo-tp" => Some(ProviderDefaults {
+            base_url: Some("https://token-plan-cn.xiaomimimo.com/anthropic"),
+            models: Some(vec!["mimo-v2.5-pro".to_string()]),
+            extra_env: None,
+            key_optional: false,
+            auth_env_var: None,
+        }),
+        "siliconflow" => Some(ProviderDefaults {
+            base_url: Some("https://api.siliconflow.com/"),
+            models: None,
+            extra_env: None,
+            key_optional: false,
+            auth_env_var: None,
+        }),
+        "hunyuan" => Some(ProviderDefaults {
+            base_url: Some("https://api.hunyuan.cloud.tencent.com/anthropic"),
+            models: Some(vec![
+                "hunyuan-2.0-thinking-20251109".to_string(),
+                "hunyuan-2.0-instruct-20251111".to_string(),
+            ]),
             extra_env: None,
             key_optional: false,
             auth_env_var: None,

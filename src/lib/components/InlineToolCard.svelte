@@ -40,6 +40,7 @@
     latestPlanTool,
     showPermissionInPanel,
     agentDisplayName,
+    onPreviewFile,
   }: {
     tool: BusToolItem;
     subTimeline?: TimelineEntry[];
@@ -70,6 +71,8 @@
     showPermissionInPanel?: boolean;
     /** Display name for the agent (e.g. "Claude" or "Codex"). */
     agentDisplayName?: string;
+    /** Click on Edit/Write/Read tool card's file path → open preview in right panel. */
+    onPreviewFile?: (path: string) => void;
   } = $props();
 
   // Look up the task notification for this specific Task tool
@@ -233,6 +236,7 @@
           : "running",
   );
 
+  // AskUserQuestion detection
   // Denied detection: explicit permission_denied status, OR error with no selected option
   // (handles old snapshots where finalizer overwrote permission_denied → error)
   let isAskDenied = $derived.by(() => {
@@ -1708,7 +1712,7 @@
             </button>
           {/if}
         {:else}
-          <ToolDetailView tool={enrichedTool} {isInputStreaming} />
+          <ToolDetailView tool={enrichedTool} {isInputStreaming} {onPreviewFile} />
         {/if}
       </div>
     {/if}
@@ -1748,7 +1752,10 @@
               <pre
                 class="text-xs font-mono whitespace-pre-wrap break-words text-blue-300/70 italic mb-1 leading-relaxed">{subEntry.thinkingText.trimEnd()}</pre>
             {/if}
-            <MarkdownContent text={subEntry.content} />
+            <MarkdownContent
+              text={subEntry.content}
+              streaming={subEntry.id?.startsWith("__sub_stream_") ?? false}
+            />
           </div>
         {:else if subEntry.kind === "tool"}
           <svelte:self
@@ -1762,6 +1769,7 @@
             {taskNotifications}
             {showPermissionInPanel}
             {agentDisplayName}
+            {onPreviewFile}
           />
         {/if}
       {/each}

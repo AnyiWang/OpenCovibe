@@ -114,7 +114,7 @@ export async function loadCliVersionInfo(): Promise<void> {
 
     _versionInfo = {
       installed: cliCheck.version ?? undefined,
-      channel: (cliConfig.autoUpdatesChannel as string) ?? undefined,
+      channel: ((cliConfig as Record<string, unknown>).autoUpdatesChannel as string) ?? undefined,
       latest: distTags.latest ?? undefined,
       stable: distTags.stable ?? undefined,
     };

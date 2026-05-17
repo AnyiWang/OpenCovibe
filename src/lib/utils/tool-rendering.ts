@@ -147,6 +147,12 @@ const FRIENDLY_TOOL_NAMES: Record<string, string> = {
   WebSearch: "Search web",
   Task: "Run sub-agent",
   NotebookEdit: "Edit notebook",
+  PowerShell: "Run PowerShell",
+  Monitor: "Monitor events",
+  CronCreate: "Schedule task",
+  CronList: "List scheduled",
+  CronDelete: "Cancel scheduled",
+  ScheduleWakeup: "Schedule wakeup",
 };
 
 /** Map a tool name to a human-readable description. Falls back to the original name. */
@@ -578,6 +584,13 @@ import type { PermissionSuggestion } from "$lib/types";
 /** Extract a human-readable detail string from tool input (file path, command, pattern, etc.). */
 export function getToolDetail(input: Record<string, unknown> | undefined): string {
   if (!input || Object.keys(input).length === 0) return "";
+  // Scheduling tools: show schedule + prompt so cadence is visible (otherwise
+  // the prompt-only fallback hides cron expression).
+  const schedule = (input.cron ?? input.schedule ?? input.expression) as string | undefined;
+  if (typeof schedule === "string" && schedule.length > 0) {
+    const prompt = typeof input.prompt === "string" ? input.prompt : "";
+    return prompt ? `${schedule} — ${prompt}` : schedule;
+  }
   return (
     (input.file_path as string) ??
     (input.notebook_path as string) ??

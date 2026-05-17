@@ -1,0 +1,60 @@
+#!/bin/sh
+# Pre-commit checklist:
+#   1. Rust formatting (cargo fmt)
+#   2. Frontend formatting (prettier)
+#   3. ESLint
+#   4. Svelte type check (svelte-check)
+#
+# Skip with: git commit --no-verify
+
+set -e
+
+# ── 1. Rust formatting ──
+if git diff --cached --name-only | grep -q '\.rs$'; then
+  echo "▶ Checking Rust formatting..."
+  if ! cargo fmt --manifest-path src-tauri/Cargo.toml --check 2>/dev/null; then
+    echo ""
+    echo "⚠  Rust formatting check failed."
+    echo "   Run: cargo fmt --manifest-path src-tauri/Cargo.toml"
+    echo ""
+    exit 1
+  fi
+fi
+
+# ── 2. Frontend formatting (only if TS/Svelte/JSON staged) ──
+if git diff --cached --name-only | grep -qE '\.(ts|svelte|json)$'; then
+  echo "▶ Checking Prettier formatting..."
+  if ! npx prettier --check 'src/**/*.{ts,svelte,json}' 'messages/*.json' --log-level warn 2>/dev/null; then
+    echo ""
+    echo "⚠  Prettier formatting check failed."
+    echo "   Run: npx prettier --write 'src/**/*.{ts,svelte,json}' 'messages/*.json'"
+    echo ""
+    exit 1
+  fi
+fi
+
+# ── 3. ESLint ──
+if git diff --cached --name-only | grep -qE '\.(ts|svelte)$'; then
+  echo "▶ Running ESLint..."
+  if ! npm run lint --silent 2>/dev/null; then
+    echo ""
+    echo "⚠  ESLint check failed."
+    echo "   Run: npm run lint"
+    echo ""
+    exit 1
+  fi
+fi
+
+# ── 4. Svelte type check ──
+if git diff --cached --name-only | grep -qE '\.(ts|svelte)$'; then
+  echo "▶ Running svelte-check..."
+  if ! npx svelte-check --threshold error 2>&1 | grep -q "found 0 errors"; then
+    echo ""
+    echo "⚠  svelte-check found type errors."
+    echo "   Run: npm run check"
+    echo ""
+    exit 1
+  fi
+fi
+
+echo "✓ All pre-commit checks passed."

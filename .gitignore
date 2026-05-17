@@ -49,8 +49,7 @@ AGENTS.md
 /memory/
 .claude/
 
-# Git hooks (local only)
-.githooks/
+# Git hooks (shared via .githooks/, activated by `npm run prepare`)
 
 .metadata_never_index
 

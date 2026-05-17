@@ -33,18 +33,31 @@ export function statusLabel(status: string): string {
   }
 }
 
+/** Deduplicate MCP servers by name. CLI may report the same server from
+ *  multiple scopes (user/project/local) as separate entries; UI treats them
+ *  as a single logical server. First occurrence wins. */
+export function dedupeMcpServersByName(servers: McpServerInfo[]): McpServerInfo[] {
+  const seen = new Set<string>();
+  return servers.filter((s) => {
+    if (seen.has(s.name)) return false;
+    seen.add(s.name);
+    return true;
+  });
+}
+
 export function parseServersFromResponse(response: Record<string, unknown>): McpServerInfo[] {
   // The response shape from get_mcp_status is not fully documented.
   // Try common field names defensively.
   const arr = (response.servers ?? response.mcp_servers ?? response.data) as unknown;
   if (Array.isArray(arr)) {
-    return arr.map((s: Record<string, unknown>) => ({
+    const parsed = arr.map((s: Record<string, unknown>) => ({
       name: String(s.name ?? "unknown"),
       status: String(s.status ?? "pending"),
       server_type: (s.type as string | undefined) ?? (s.server_type as string | undefined),
       scope: s.scope as string | undefined,
       error: s.error as string | undefined,
     }));
+    return dedupeMcpServersByName(parsed);
   }
   return [];
 }

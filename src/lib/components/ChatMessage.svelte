@@ -121,6 +121,7 @@
             : 'opacity-0'}"
           onclick={onRewind}
           title={t("rewind_toHere")}
+          data-export-exclude
         >
           <svg
             class="h-3.5 w-3.5"
@@ -145,6 +146,7 @@
           : 'opacity-0'}"
         onclick={copyContent}
         title={t("chat_copyMessage")}
+        data-export-exclude
       >
         {#if copied}
           <svg

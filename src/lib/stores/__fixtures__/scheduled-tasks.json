@@ -1,0 +1,77 @@
+[
+  { "type": "user_message", "run_id": "run-cron", "text": "/loop 5m echo test" },
+  {
+    "type": "run_state",
+    "run_id": "run-cron",
+    "state": "spawning",
+    "error": null,
+    "exit_code": null
+  },
+  {
+    "type": "session_init",
+    "run_id": "run-cron",
+    "session_id": "sess-cron",
+    "model": "claude-opus-4-6",
+    "tools": ["CronCreate", "CronDelete", "CronList"],
+    "cwd": "/"
+  },
+  {
+    "type": "run_state",
+    "run_id": "run-cron",
+    "state": "running",
+    "error": null,
+    "exit_code": null
+  },
+  {
+    "type": "tool_start",
+    "run_id": "run-cron",
+    "tool_use_id": "tool-cc-1",
+    "tool_name": "CronCreate",
+    "input": { "cron": "*/5 * * * *", "prompt": "echo test", "recurring": true }
+  },
+  {
+    "type": "tool_end",
+    "run_id": "run-cron",
+    "tool_use_id": "tool-cc-1",
+    "tool_name": "CronCreate",
+    "output": { "success": true },
+    "status": "success",
+    "duration_ms": 12,
+    "tool_use_result": {
+      "id": "abc12345",
+      "humanSchedule": "every 5 minutes",
+      "recurring": true,
+      "durable": false
+    }
+  },
+  {
+    "type": "message_complete",
+    "run_id": "run-cron",
+    "message_id": "msg-cron-1",
+    "text": "Scheduled task abc12345."
+  },
+  { "type": "user_message", "run_id": "run-cron", "text": "cancel scheduled task abc12345" },
+  {
+    "type": "tool_start",
+    "run_id": "run-cron",
+    "tool_use_id": "tool-cd-1",
+    "tool_name": "CronDelete",
+    "input": { "id": "abc12345" }
+  },
+  {
+    "type": "tool_end",
+    "run_id": "run-cron",
+    "tool_use_id": "tool-cd-1",
+    "tool_name": "CronDelete",
+    "output": { "success": true },
+    "status": "success",
+    "duration_ms": 4,
+    "tool_use_result": { "id": "abc12345" }
+  },
+  {
+    "type": "message_complete",
+    "run_id": "run-cron",
+    "message_id": "msg-cron-2",
+    "text": "Cancelled."
+  }
+]

@@ -34,6 +34,7 @@ See [README.md](README.md) for detailed prerequisites (Rust, Node.js, Tauri CLI)
 
 - **TypeScript** — strict mode enabled
 - **Svelte 5** — use runes (`$state`, `$derived`, `$effect`, `$props()`, `$bindable()`), no legacy stores or `<slot>`
+- **Comments** — only comment the *why*, not the *what*. See "Comment Standards" in `CLAUDE.md` for detailed rules
 - Run `npm run fix` to auto-format and lint-fix before committing
 
 ## Testing

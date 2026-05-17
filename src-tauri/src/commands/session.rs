@@ -491,6 +491,7 @@ pub(crate) async fn start_session_impl(
     initial_message: Option<String>,
     attachments: Option<Vec<AttachmentData>>,
     platform_id: Option<String>,
+    permission_mode_override: Option<String>,
 ) -> Result<(), String> {
     let _guard = spawn_locks.acquire(&run_id).await;
     let session_mode = mode.unwrap_or_default();
@@ -527,6 +528,18 @@ pub(crate) async fn start_session_impl(
     let user_settings = storage::settings::get_user_settings();
     let mut adapter_settings =
         adapter::build_adapter_settings(&agent_settings, &user_settings, meta.model.clone());
+
+    // 2a. Apply per-session permission_mode override (e.g. ExitPlanMode → acceptEdits).
+    //     Session-scoped: does not touch persisted user settings. Must run BEFORE spawn
+    //     so the CLI's --permission-mode arg reflects the override for the first turn.
+    if let Some(ref override_mode) = permission_mode_override {
+        log::debug!(
+            "[session] permission_mode override: {:?} → {:?}",
+            adapter_settings.permission_mode,
+            override_mode
+        );
+        adapter_settings.permission_mode = Some(override_mode.clone());
+    }
 
     // 2b. Resolve remote host from RunMeta (audit #2: single truth source)
     let remote = resolve_remote_host(&meta)?;
@@ -703,6 +716,21 @@ pub(crate) async fn start_session_impl(
             error: None,
         };
         emitter.persist_and_emit(&run_id, &idle_event);
+        // Persist idle status (allows Pending→Idle, not just Running→Idle)
+        let should_update = storage::runs::get_run(&run_id)
+            .map(|m| m.status != RunStatus::Idle)
+            .unwrap_or(false);
+        if should_update {
+            if let Err(e) = storage::runs::update_status(&run_id, RunStatus::Idle, None, None) {
+                log::warn!("[session] synthetic idle meta update failed: {}", e);
+            } else {
+                emitter.emit_realtime(
+                    "ocv:status-changed",
+                    &serde_json::json!({"run_id": run_id.as_str(), "status": "idle"}),
+                    Some(&run_id),
+                );
+            }
+        }
         log::debug!(
             "[session] resume/continue: emitted synthetic RunState(idle) for run_id={}",
             run_id
@@ -726,6 +754,7 @@ pub async fn start_session(
     initial_message: Option<String>,
     attachments: Option<Vec<AttachmentData>>,
     platform_id: Option<String>,
+    permission_mode_override: Option<String>,
 ) -> Result<(), String> {
     start_session_impl(
         emitter.inner(),
@@ -738,6 +767,7 @@ pub async fn start_session(
         initial_message,
         attachments,
         platform_id,
+        permission_mode_override,
     )
     .await
 }
@@ -1385,17 +1415,26 @@ pub async fn respond_hook_callback(
     run_id: String,
     request_id: String,
     decision: String, // "allow", "deny", or "defer" (defer pauses tool call in headless sessions)
+    // PreToolUse hooks can rewrite tool input alongside `decision: "allow"` (CLI v2.1.85+).
+    // Only honored when decision == "allow"; CLI ignores it for deny/defer.
+    updated_input: Option<serde_json::Value>,
 ) -> Result<(), String> {
     log::debug!(
-        "[session] respond_hook_callback: run_id={}, req_id={}, decision={}",
+        "[session] respond_hook_callback: run_id={}, req_id={}, decision={}, has_updated_input={}",
         run_id,
         request_id,
-        decision
+        decision,
+        updated_input.is_some(),
     );
 
     let cmd_tx = get_cmd_tx(&sessions, &run_id).await?;
 
-    let response = serde_json::json!({ "decision": decision });
+    let mut response = serde_json::json!({ "decision": decision });
+    if decision == "allow" {
+        if let Some(input) = updated_input {
+            response["updatedInput"] = input;
+        }
+    }
 
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
     cmd_tx

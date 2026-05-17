@@ -16,9 +16,10 @@ import type {
   CliCommand,
   McpServerInfo,
   ElicitationSchema,
+  SessionMode,
 } from "$lib/types";
 import { dbg, dbgWarn } from "$lib/utils/debug";
-import type { SessionMode } from "$lib/types";
+import { yieldToMain } from "$lib/utils/yield";
 import { IMAGE_TYPES } from "$lib/utils/file-types";
 import { uuid } from "$lib/utils/uuid";
 import {
@@ -37,6 +38,7 @@ import * as snapshotCache from "$lib/utils/snapshot-cache";
 import { getTransport } from "$lib/transport";
 import { getAgentCaps, type AgentCapabilities } from "$lib/utils/agent-caps";
 import { getAgentFeatures, type AgentFeatures } from "$lib/utils/agent-features";
+import { dedupeMcpServersByName } from "$lib/utils/mcp";
 
 // ── CLI permission mode normalization ──
 // CLI may return different names for the same mode across versions.
@@ -127,6 +129,13 @@ interface ReduceCtx {
   toolTlIndex: Map<string, number>;
   /** tool_use_id → he[] index (only HookEvent entries with tool_use_id). */
   toolHeIndex: Map<string, number>;
+  /** tool_use_id → tool_start.input. Populated in tool_start branch so
+   *  tool_end branches in the same batch can join without waiting for commit. */
+  toolInputByUseId: Map<string, Record<string, unknown>>;
+  /** Local scheduled-task accumulator. Snapshotted from store at ctx
+   *  creation; only committed in _commitReduceCtx. Keeps async replay
+   *  stale-safe (mid-batch abort doesn't pollute live store). */
+  scheduledTasks: ScheduledTask[];
 }
 
 // ── Helpers ──
@@ -219,6 +228,19 @@ export interface TaskNotificationItem {
   tool_use_id?: string;
 }
 
+/** Scheduled task created via CronCreate (CLI /loop infrastructure).
+ *  prompt/cron are best-effort: only available when the matching tool_start
+ *  input is present in the same batch or snapshot. */
+export interface ScheduledTask {
+  id: string;
+  humanSchedule: string;
+  recurring: boolean;
+  durable: boolean;
+  prompt?: string;
+  cron?: string;
+  toolUseId: string;
+}
+
 // ── Store ──
 
 export class SessionStore {
@@ -277,6 +299,10 @@ export class SessionStore {
     startedAt: string;
     reason: import("$lib/types").RalphCompleteReason | "interrupted" | null;
   } | null>(null);
+
+  /** Scheduled tasks created via CronCreate. Updated by tool_end reducer
+   *  branches; replayed via snapshot. UI lives in ScheduledTasksChip.svelte. */
+  scheduledTasks = $state<ScheduledTask[]>([]);
 
   /** CLI slash commands from session_init (session-specific, includes custom commands). */
   sessionCommands = $state<CliCommand[]>([]);
@@ -840,6 +866,26 @@ export class SessionStore {
     return this._findToolIdx(ctx, parentToolUseId);
   }
 
+  /** Lookup the tool_start input for a given tool_use_id. Used by tool_end
+   *  branches (e.g. CronCreate) to join with the originating input.
+   *  Order: ctx batch map → ctx.tl → live timeline (covers live applyEvent path). */
+  private _lookupToolStartInput(
+    ctx: ReduceCtx | null,
+    toolUseId: string,
+  ): Record<string, unknown> | undefined {
+    if (ctx) {
+      const fromMap = ctx.toolInputByUseId.get(toolUseId);
+      if (fromMap) return fromMap;
+    }
+    const tl = ctx?.tl ?? this.timeline;
+    const idx = this._findToolIdx(ctx, toolUseId);
+    if (idx >= 0) {
+      const e = tl[idx];
+      if (e.kind === "tool") return e.tool.input as Record<string, unknown> | undefined;
+    }
+    return undefined;
+  }
+
   /** Search ALL subTimelines (one level deep) for a tool with the given id.
    *  Used when parent_tool_use_id is missing but the tool exists in a subTimeline.
    *  Returns true if found and updated; false if not found. */
@@ -1080,13 +1126,9 @@ export class SessionStore {
     this._reduce(ev, null);
   }
 
-  /** Apply a batch of events (e.g. during loadRun replay). Avoids N reactive updates.
-   *  opts.replayOnly=true skips phase and error assignments (used during resume).
-   *  Returns elapsed milliseconds. */
-  applyEventBatch(events: BusEvent[], opts?: { replayOnly?: boolean }): number {
-    const t0 = performance.now();
-    const replayOnly = opts?.replayOnly ?? false;
-    // Build tool indexes from existing state for batch processing
+  /** Build a reducer context snapshotted from current store state. Caller drives the
+   * reduce loop and then passes the ctx to `_commitReduceCtx`. */
+  private _createReduceCtx(): ReduceCtx {
     const batchTlIndex = new Map<string, number>();
     for (let i = 0; i < this.timeline.length; i++) {
       const e = this.timeline[i];
@@ -1097,7 +1139,7 @@ export class SessionStore {
       const tid = (this.tools[i] as Record<string, unknown>).tool_use_id as string | undefined;
       if (tid && !batchHeIndex.has(tid)) batchHeIndex.set(tid, i);
     }
-    const ctx: ReduceCtx = {
+    return {
       tl: [...this.timeline],
       he: [...this.tools],
       streamText: this.streamingText,
@@ -1114,13 +1156,14 @@ export class SessionStore {
       turnUsages: [...this.turnUsages],
       toolTlIndex: batchTlIndex,
       toolHeIndex: batchHeIndex,
+      toolInputByUseId: new Map<string, Record<string, unknown>>(),
+      scheduledTasks: [...this.scheduledTasks],
     };
-    for (const ev of events) {
-      // Track WS sequence checkpoint
-      const evSeq = ((ev as Record<string, unknown>)._seq as number) ?? 0;
-      if (evSeq > 0) this._lastProcessedSeq = Math.max(this._lastProcessedSeq, evSeq);
-      this._reduce(ev, ctx, replayOnly);
-    }
+  }
+
+  /** Apply the reducer ctx to live store state. Runs synchronously — no awaits inside,
+   * so a stale check before this call is sufficient to skip publishing. */
+  private _commitReduceCtx(ctx: ReduceCtx, replayOnly: boolean): void {
     // If the session ended, resolve any leftover incomplete tools
     // (running, ask_pending, permission_prompt — these will never receive results)
     const runStatus = this.run?.status;
@@ -1132,7 +1175,6 @@ export class SessionStore {
         let changed = false;
         const result = tl.map((e) => {
           if (e.kind !== "tool") return e;
-          // Recurse into subTimeline first
           const newSub = e.subTimeline ? finalizeTools(e.subTimeline) : e.subTimeline;
           const needsFinalize = staleStatuses.has(e.tool.status);
           if (!needsFinalize && newSub === e.subTimeline) return e;
@@ -1150,12 +1192,6 @@ export class SessionStore {
       ctx.tl = finalizeTools(ctx.tl);
     }
 
-    // Single reactive assignment
-    const t1 = performance.now();
-    dbg(
-      "store",
-      `applyEventBatch: ${events.length} events processed in ${(t1 - t0).toFixed(1)}ms, timeline=${ctx.tl.length} entries`,
-    );
     this.timeline = ctx.tl;
     this.tools = ctx.he;
     this.streamingText = ctx.streamText;
@@ -1167,14 +1203,13 @@ export class SessionStore {
     this._seenToolIds = ctx.seenToolIds;
     this._toolTlIndex = ctx.toolTlIndex;
     this._toolHeIndex = ctx.toolHeIndex;
-    // Phase and error only assigned in live mode (not during resume replay)
+    this.scheduledTasks = ctx.scheduledTasks;
     if (!replayOnly) {
       this._setPhase(ctx.phase);
       this.error = ctx.error;
-      // Sync run.status and session_id for non-terminal states from batch
       if ((ctx.runStatus || ctx.sessionId) && this.run) {
         const updates: Partial<TaskRun> = {};
-        if (ctx.runStatus) updates.status = ctx.runStatus;
+        if (ctx.runStatus) updates.status = ctx.runStatus as RunStatus;
         if (ctx.sessionId) {
           dbg("store", "batch: updating session_id", {
             old: this.run.session_id,
@@ -1186,14 +1221,86 @@ export class SessionStore {
       }
     }
 
-    // Ralph: mark interrupted loops after replay
-    // If ralphLoop.active is true but session is not live, the loop was interrupted
     if (this.ralphLoop?.active && replayOnly) {
       this.ralphLoop = { ...this.ralphLoop, active: false, reason: "interrupted" };
       dbg("store", "ralph loop marked interrupted after replay");
     }
+  }
 
-    return performance.now() - t0;
+  /** Apply a batch of events (e.g. during loadRun replay). Avoids N reactive updates.
+   *  opts.replayOnly=true skips phase and error assignments (used during resume).
+   *  Returns elapsed milliseconds. Synchronous — for chunked replay use
+   *  `applyEventBatchAsync` which yields between chunks. */
+  applyEventBatch(events: BusEvent[], opts?: { replayOnly?: boolean }): number {
+    const t0 = performance.now();
+    const replayOnly = opts?.replayOnly ?? false;
+    const ctx = this._createReduceCtx();
+    for (const ev of events) {
+      const evSeq = ((ev as Record<string, unknown>)._seq as number) ?? 0;
+      if (evSeq > 0) this._lastProcessedSeq = Math.max(this._lastProcessedSeq, evSeq);
+      this._reduce(ev, ctx, replayOnly);
+    }
+    const cpuMs = performance.now() - t0;
+    dbg(
+      "store",
+      `applyEventBatch:sync: ${events.length} events in ${cpuMs.toFixed(1)}ms cpu, timeline=${ctx.tl.length}`,
+    );
+    this._commitReduceCtx(ctx, replayOnly);
+    return cpuMs;
+  }
+
+  /**
+   * Async variant for replay paths (loadRun / resume / fork / idle catchup).
+   *
+   * Always reduces into a local ctx + `localSeq`; on stale abort neither
+   * `this.timeline` nor `this._lastProcessedSeq` is touched (so a quick run
+   * switch can't pollute the next subscribe's seq checkpoint).
+   *
+   * Large batches (> CHUNK_THRESHOLD) yield between chunks to keep the main
+   * thread responsive. Small batches use the same code path but skip the
+   * yields — slightly more overhead than the public sync `applyEventBatch`,
+   * but worth it for the stale-safety guarantee.
+   *
+   * Returns elapsed ms (wall-time when chunked, cpu-time otherwise), or `null`
+   * if `opts.isStale()` reported stale — caller must skip subsequent
+   * subscribe/snapshot work in that case.
+   */
+  async applyEventBatchAsync(
+    events: BusEvent[],
+    opts: { replayOnly?: boolean; isStale?: () => boolean } = {},
+  ): Promise<number | null> {
+    if (opts.isStale?.()) return null;
+    const t0 = performance.now();
+    const isStale = opts.isStale ?? (() => false);
+    const replayOnly = opts.replayOnly ?? false;
+    // Local accumulators — both ctx and `_lastProcessedSeq` stay isolated until commit.
+    // This prevents stale aborts from polluting store state mid-replay.
+    const ctx = this._createReduceCtx();
+    let localSeq = this._lastProcessedSeq;
+    const CHUNK = 200;
+    const CHUNK_THRESHOLD = 500;
+    const shouldYield = events.length > CHUNK_THRESHOLD;
+    for (let i = 0; i < events.length; i += CHUNK) {
+      if (isStale()) return null;
+      const end = Math.min(i + CHUNK, events.length);
+      for (let j = i; j < end; j++) {
+        const ev = events[j];
+        const evSeq = ((ev as Record<string, unknown>)._seq as number) ?? 0;
+        if (evSeq > 0 && evSeq > localSeq) localSeq = evSeq;
+        this._reduce(ev, ctx, replayOnly);
+      }
+      if (shouldYield) await yieldToMain();
+    }
+    if (isStale()) return null;
+    // Atomic commit: seq + timeline + tools + phase land together.
+    this._lastProcessedSeq = localSeq;
+    this._commitReduceCtx(ctx, replayOnly);
+    const wallMs = performance.now() - t0;
+    dbg(
+      "store",
+      `applyEventBatch:async: ${events.length} events in ${wallMs.toFixed(1)}ms ${shouldYield ? "wall" : "cpu"}, timeline=${ctx.tl.length}`,
+    );
+    return wallMs;
   }
 
   /** Apply a hook event (from hook-event Tauri listener). */
@@ -1275,6 +1382,7 @@ export class SessionStore {
     this.pendingElicitations = new Map();
     this.persistedFiles = [];
     this.ralphLoop = null;
+    this.scheduledTasks = [];
     this.sessionCommands = [];
     this.mcpServers = [];
     this.cliVersion = "";
@@ -1384,6 +1492,7 @@ export class SessionStore {
       unknownEventCount: this.unknownEventCount,
       rawFallbackCount: this.rawFallbackCount,
       taskNotifications: [...this.taskNotifications.entries()],
+      scheduledTasks: this.scheduledTasks,
       _lastProcessedSeq: this._lastProcessedSeq,
     };
     return JSON.stringify(obj);
@@ -1436,7 +1545,7 @@ export class SessionStore {
       this.fastModeState = (obj.fastModeState as string) ?? "";
       this.apiKeySource = (obj.apiKeySource as string) ?? "";
       this.sessionCommands = (obj.sessionCommands ?? []) as CliCommand[];
-      this.mcpServers = (obj.mcpServers ?? []) as McpServerInfo[];
+      this.mcpServers = dedupeMcpServersByName((obj.mcpServers ?? []) as McpServerInfo[]);
       this.sessionTools = (obj.sessionTools ?? []) as string[];
       this.availableAgents = (obj.availableAgents ?? []) as string[];
       this.availableSkills = (obj.availableSkills ?? []) as string[];
@@ -1454,6 +1563,15 @@ export class SessionStore {
       this.taskNotifications = new Map(
         (obj.taskNotifications ?? []) as Array<[string, TaskNotificationItem]>,
       );
+      this.scheduledTasks = Array.isArray(obj.scheduledTasks)
+        ? (obj.scheduledTasks as unknown[]).filter(
+            (t): t is ScheduledTask =>
+              !!t &&
+              typeof t === "object" &&
+              typeof (t as Record<string, unknown>).id === "string" &&
+              typeof (t as Record<string, unknown>).humanSchedule === "string",
+          )
+        : [];
       this._lastProcessedSeq = (obj._lastProcessedSeq as number) ?? 0;
 
       // Rebuild runtime tool indexes from restored state
@@ -1623,7 +1741,13 @@ export class SessionStore {
                 if (gen !== this._loadGen) return;
                 if (catchupEvents.length > 0) {
                   dbg("store", "idle snapshot catchup", { count: catchupEvents.length });
-                  this.applyEventBatch(catchupEvents, { replayOnly: false });
+                  const catchupMs = await this.applyEventBatchAsync(catchupEvents, {
+                    replayOnly: false,
+                    isStale: () => gen !== this._loadGen,
+                  });
+                  // Stale (catchupMs === null) means a newer load owns the store —
+                  // do NOT touch _isLoadingReplay; the new owner manages it.
+                  if (catchupMs === null) return;
                   const catchupSt = this.run?.status;
                   if (
                     catchupSt === "idle" ||
@@ -1654,7 +1778,13 @@ export class SessionStore {
             dbg("store", "stale after getBusEvents, gen=", gen);
             return;
           }
-          reducerMs = this.applyEventBatch(busEvents, { replayOnly: isTerminal });
+          const ms = await this.applyEventBatchAsync(busEvents, {
+            replayOnly: isTerminal,
+            isStale: () => gen !== this._loadGen,
+          });
+          // Stale: a newer load owns the store; do not touch _isLoadingReplay.
+          if (ms === null) return;
+          reducerMs = ms;
           this._wsSubscribeAfterLoad(id, busEvents);
           // Write guard: distinguish "legit empty session" from "reducer anomaly"
           if (snapshotEligible && (this.timeline.length > 0 || busEvents.length === 0)) {
@@ -1745,8 +1875,16 @@ export class SessionStore {
     }
   }
 
-  /** Create a new run and start the session. Returns the run ID. */
-  async startSession(prompt: string, cwd: string, attachments: Attachment[]): Promise<string> {
+  /** Create a new run and start the session. Returns the run ID.
+   *  permissionModeOverride: session-scoped permission mode (CLI name, e.g. "acceptEdits").
+   *  When set, takes priority over persisted user settings for this spawn only —
+   *  used by ExitPlanMode "clear context + auto-accept" flow. */
+  async startSession(
+    prompt: string,
+    cwd: string,
+    attachments: Attachment[],
+    permissionModeOverride?: string,
+  ): Promise<string> {
     this.error = "";
     this._setPhase("spawning");
 
@@ -1776,11 +1914,16 @@ export class SessionStore {
           auto: "auto",
           dont_ask: "dontAsk",
         };
-        // Refresh permissionMode: agentSettings.plan_mode takes priority (consistent
-        // with backend adapter.rs:102). Don't set permissionModeSetByUser — that flag
-        // is only for user manual changes; session_init is the authority.
-        if (!this.permissionModeSetByUser) {
-          // Try to read current agent's plan_mode setting
+        if (permissionModeOverride) {
+          // Session-scoped override wins — sync UI state to match what backend will spawn with.
+          if (permissionModeOverride !== this.permissionMode) {
+            this.permissionMode = permissionModeOverride;
+            this.permissionModeSetByUser = true;
+          }
+        } else if (!this.permissionModeSetByUser) {
+          // Refresh permissionMode: agentSettings.plan_mode takes priority (consistent
+          // with backend adapter.rs:102). Don't set permissionModeSetByUser — that flag
+          // is only for user manual changes; session_init is the authority.
           let agentPlanMode = false;
           try {
             const as = await api.getAgentSettings(this.agent);
@@ -1848,6 +1991,7 @@ export class SessionStore {
           undefined,
           backendAtt,
           this.platformId || undefined,
+          permissionModeOverride,
         );
         dbg("store", "startSession resolved");
         // phase will be set by run_state bus event
@@ -2062,8 +2206,9 @@ export class SessionStore {
         throw new Error("No session_id available for resume");
       }
 
-      // Invalidate any concurrent loadRun
-      this._loadGen++;
+      // Invalidate any concurrent loadRun, then snapshot the gen for our own
+      // stale-check (a later loadRun would bump _loadGen and we'd see the change).
+      const loadGen = ++this._loadGen;
       const resumeT0 = performance.now();
 
       // ★ Phase 1: async data fetch BEFORE clearing state (avoids flash)
@@ -2106,7 +2251,12 @@ export class SessionStore {
             if (!this._resumeGuard.isMounted) return runId;
           }
           if (busEvents.length > 0) {
-            reducerMs = this.applyEventBatch(busEvents, { replayOnly: true });
+            const ms = await this.applyEventBatchAsync(busEvents, {
+              replayOnly: true,
+              isStale: () => !this._resumeGuard.isMounted || loadGen !== this._loadGen,
+            });
+            if (ms === null) return runId;
+            reducerMs = ms;
           }
           // Always subscribe — even empty history needs real-time events
           this._wsSubscribeAfterLoad(runId, busEvents);
@@ -2199,6 +2349,7 @@ export class SessionStore {
    *  Step 2 (connectSession) is called by the frontend after dismissing the fork overlay. */
   private async _handleFork(runId: string): Promise<string> {
     dbg("store", "resumeSession: two-step fork", { runId });
+    const loadGen = this._loadGen;
 
     // Clear any subscription to prevent source RunState(stopped) interference
     getEventMiddleware().subscribeCurrent("", this);
@@ -2212,24 +2363,32 @@ export class SessionStore {
 
     this.run = newRun;
 
-    // Subscribe to NEW run — live events from stream-json will route here
-    getEventMiddleware().subscribeCurrent(newRunId, this);
-    dbg("store", "fork: middleware subscribed to new run", newRunId);
-
     // Reset display state — start fresh for the fork run.
     // Without this, the source session's timeline stays in state and
     // message_delta events accumulate as duplicate streamingText.
     this._clearContentState();
     this._useChatTimelineForRun = true;
 
-    // Replay copied parent events for immediate display
+    // Replay copied parent events for immediate display.
+    // Subscribe to live events AFTER replay so a live applyEvent during chunked
+    // replay can't slip in and be overwritten by `_commitReduceCtx` snapshotting
+    // a now-stale `this.timeline`.
     const allForkEvents = await api.getBusEvents(newRunId);
     if (!this._resumeGuard.isMounted) throw new Error("Unmounted during fork");
     const newEvents = allForkEvents.filter((ev) => ev.run_id === newRunId);
     if (newEvents.length > 0) {
       dbg("store", "fork: replaying", newEvents.length, "parent events");
-      this.applyEventBatch(newEvents, { replayOnly: true });
+      const ms = await this.applyEventBatchAsync(newEvents, {
+        replayOnly: true,
+        isStale: () => !this._resumeGuard.isMounted || loadGen !== this._loadGen,
+      });
+      // Match the existing fork pattern (line ~2157): treat a stale/unmount
+      // mid-replay as a fatal interruption so the caller's catch path runs.
+      if (ms === null) throw new Error("Stale during fork replay");
     }
+    // Subscribe to NEW run — live events from stream-json will route here.
+    getEventMiddleware().subscribeCurrent(newRunId, this);
+    dbg("store", "fork: middleware subscribed to new run", newRunId);
     this._wsSubscribeAfterLoad(newRunId, allForkEvents);
 
     // Step 2 (stream-json resume) is NOT started here.
@@ -2292,9 +2451,9 @@ export class SessionStore {
     this._clearSpawnTimeout();
   }
 
-  /** Update MCP servers (e.g. after getMcpStatus refresh). */
+  /** Update MCP servers (e.g. after getMcpStatus refresh). Deduplicates by name. */
   updateMcpServers(servers: McpServerInfo[]): void {
-    this.mcpServers = servers;
+    this.mcpServers = dedupeMcpServersByName(servers);
   }
 
   /** Resolve an AskUserQuestion tool: transition from ask_pending → success. */
@@ -2521,9 +2680,9 @@ export class SessionStore {
             typeof c === "string" ? { name: c, description: "", aliases: [] } : (c as CliCommand),
           );
         }
-        // Store MCP servers (per-session state)
+        // Store MCP servers (per-session state, deduplicate by name)
         if (ev.mcp_servers && ev.mcp_servers.length > 0) {
-          this.mcpServers = ev.mcp_servers;
+          this.mcpServers = dedupeMcpServersByName(ev.mcp_servers);
         }
         // Store CLI verbose fields
         if (ev.claude_code_version) {
@@ -2838,6 +2997,12 @@ export class SessionStore {
         this._clearTimeoutError();
         if (getSeenTool().has(ev.tool_use_id)) break;
         getSeenTool().add(ev.tool_use_id);
+        // Stash input so tool_end branches can join by tool_use_id.
+        // Batch path uses ctx map; live path falls back to timeline lookup
+        // in `_lookupToolStartInput` (entry written by _pushTimeline below).
+        if (ctx && ev.input && typeof ev.input === "object") {
+          ctx.toolInputByUseId.set(ev.tool_use_id, ev.input as Record<string, unknown>);
+        }
         // Subagent routing: nest inside parent tool's subTimeline
         if (ev.parent_tool_use_id) {
           const parentIdx = this._findParentToolIdx(ctx, ev.parent_tool_use_id);
@@ -2953,6 +3118,72 @@ export class SessionStore {
             const u = [...this.timeline];
             u[tIdx] = updated;
             this.timeline = u;
+          }
+        }
+
+        // Scheduled-task tracking: CronCreate / CronDelete maintain scheduledTasks state.
+        // Writes go through ctx.scheduledTasks (batch path) or this.scheduledTasks
+        // (live applyEvent path with ctx=null) to keep async-replay stale-safety.
+        // CronList is intentionally not consumed — output shape is unverified upstream.
+        if (resolvedStatus === "success") {
+          const readTasks = (): ScheduledTask[] => (ctx ? ctx.scheduledTasks : this.scheduledTasks);
+          const writeTasks = (next: ScheduledTask[]): void => {
+            if (ctx) ctx.scheduledTasks = next;
+            else this.scheduledTasks = next;
+          };
+
+          if (ev.tool_name === "CronCreate") {
+            const result = ev.tool_use_result as Record<string, unknown> | undefined;
+            const id = typeof result?.id === "string" ? result.id : null;
+            if (id && result) {
+              const startInput = this._lookupToolStartInput(ctx, ev.tool_use_id);
+              const humanSchedule =
+                typeof result.humanSchedule === "string" ? result.humanSchedule : "";
+              const task: ScheduledTask = {
+                id,
+                humanSchedule,
+                recurring: result.recurring === true,
+                durable: result.durable === true,
+                prompt: typeof startInput?.prompt === "string" ? startInput.prompt : undefined,
+                cron:
+                  typeof startInput?.cron === "string"
+                    ? startInput.cron
+                    : typeof startInput?.schedule === "string"
+                      ? (startInput.schedule as string)
+                      : typeof startInput?.expression === "string"
+                        ? (startInput.expression as string)
+                        : undefined,
+                toolUseId: ev.tool_use_id,
+              };
+              // Replace-by-id: if CLI re-emits the same id (e.g. snapshot + live
+              // overlap, or replay with newer input), keep the latest payload
+              // rather than skipping. Preserves order.
+              const cur = readTasks();
+              const idx = cur.findIndex((t) => t.id === id);
+              if (idx >= 0) {
+                const next = [...cur];
+                next[idx] = task;
+                writeTasks(next);
+              } else {
+                writeTasks([...cur, task]);
+              }
+            } else {
+              dbgWarn("store", "CronCreate tool_end missing id", { result });
+            }
+          } else if (ev.tool_name === "CronDelete") {
+            const result = ev.tool_use_result as Record<string, unknown> | undefined;
+            const startInput = this._lookupToolStartInput(ctx, ev.tool_use_id);
+            const id =
+              (typeof result?.id === "string" && result.id) ||
+              (typeof startInput?.id === "string" && (startInput.id as string)) ||
+              (typeof startInput?.task_id === "string" && (startInput.task_id as string)) ||
+              (typeof startInput?.cronId === "string" && (startInput.cronId as string)) ||
+              null;
+            if (id) {
+              writeTasks(readTasks().filter((t) => t.id !== id));
+            } else {
+              dbgWarn("store", "CronDelete tool_end could not resolve id", { result, startInput });
+            }
           }
         }
 

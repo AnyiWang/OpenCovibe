@@ -167,12 +167,16 @@ pub fn run() {
             commands::fs::list_directory,
             commands::fs::check_is_directory,
             commands::fs::read_file_base64,
+            commands::remote_fs::list_remote_directory,
+            commands::remote_fs::resolve_remote_home,
             commands::git::get_git_summary,
             commands::git::get_git_branch,
             commands::git::get_git_diff,
             commands::git::get_git_status,
             commands::export::export_conversation,
+            commands::export::write_html_export,
             commands::files::read_text_file,
+            commands::files::stat_text_file,
             commands::files::write_text_file,
             commands::files::read_task_output,
             commands::files::list_memory_files,
@@ -379,12 +383,10 @@ pub fn run() {
                         });
                     }
                 }
-                tauri::WindowEvent::Destroyed => {
+                tauri::WindowEvent::Destroyed if window.label() == "main" => {
                     // Safety fallback: cancel actors if main window is truly destroyed (e.g. app.exit()).
                     // Skip for secondary windows (e.g. preview) — destroying them must not shut down the app.
-                    if window.label() == "main" {
-                        cancel_for_exit.cancel();
-                    }
+                    cancel_for_exit.cancel();
                 }
                 _ => {}
             }

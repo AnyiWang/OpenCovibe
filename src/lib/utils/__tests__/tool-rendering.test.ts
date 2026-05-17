@@ -15,6 +15,7 @@ import {
   extractPlanContent,
   applyPlanEditsForward,
   getToolRenderLevel,
+  getToolDetail,
 } from "../tool-rendering";
 
 // ── extractOutputText ──
@@ -930,5 +931,40 @@ describe("getToolRenderLevel", () => {
     expect(getToolRenderLevel("Read", "permission_denied")).toBe(1);
     expect(getToolRenderLevel("Glob", "permission_denied")).toBe(1);
     expect(getToolRenderLevel("ExitPlanMode", "permission_denied")).toBe(1);
+  });
+});
+
+// ── getToolDetail: scheduling tools (CronCreate/ScheduleWakeup) ──
+
+describe("getToolDetail scheduling extractor", () => {
+  it("returns cron + prompt for CronCreate-style input", () => {
+    expect(getToolDetail({ cron: "*/5 * * * *", prompt: "check deploy", recurring: true })).toBe(
+      "*/5 * * * * \u2014 check deploy",
+    );
+  });
+
+  it("falls back to schedule field name", () => {
+    expect(getToolDetail({ schedule: "0 9 * * *", prompt: "morning standup" })).toBe(
+      "0 9 * * * \u2014 morning standup",
+    );
+  });
+
+  it("falls back to expression field name", () => {
+    expect(getToolDetail({ expression: "*/15 * * * *", prompt: "poll" })).toBe(
+      "*/15 * * * * \u2014 poll",
+    );
+  });
+
+  it("returns cron only when prompt missing", () => {
+    expect(getToolDetail({ cron: "0 * * * *" })).toBe("0 * * * *");
+  });
+
+  it("still falls through to file_path when no schedule present", () => {
+    expect(getToolDetail({ file_path: "/tmp/a.txt" })).toBe("/tmp/a.txt");
+  });
+
+  it("returns empty string for empty input", () => {
+    expect(getToolDetail({})).toBe("");
+    expect(getToolDetail(undefined)).toBe("");
   });
 });

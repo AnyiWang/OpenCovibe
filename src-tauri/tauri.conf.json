@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/nicegui/nicegui/main/.github/schemas/tauri-v2.json",
   "productName": "OpenCovibe",
-  "version": "0.1.50",
+  "version": "0.1.59",
   "identifier": "com.opencovibe.desktop",
   "build": {
     "frontendDist": "../build",
@@ -53,7 +53,8 @@
           "xclip | xsel"
         ],
         "recommends": [
-          "wl-clipboard"
+          "wl-clipboard",
+          "fonts-noto-cjk | fonts-wqy-microhei"
         ]
       }
     },

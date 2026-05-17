@@ -1,5 +1,6 @@
 import { getTransport } from "./transport";
 import { dbg, dbgWarn, redactSensitive } from "./utils/debug";
+import { perfMarkAsync } from "./utils/perf";
 
 function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   return getTransport().invoke<T>(cmd, args);
@@ -257,8 +258,31 @@ export async function checkIsDirectory(path: string): Promise<boolean> {
   return invoke<boolean>("check_is_directory", { path });
 }
 
+// Remote filesystem (over SSH)
+export async function listRemoteDirectory(
+  hostName: string,
+  path: string,
+  showHidden?: boolean,
+): Promise<DirListing> {
+  dbg("api", "listRemoteDirectory", { hostName, path, showHidden });
+  return invoke<DirListing>("list_remote_directory", {
+    hostName,
+    path,
+    showHidden: showHidden ?? null,
+  });
+}
+
+export async function resolveRemoteHome(hostName: string): Promise<string> {
+  dbg("api", "resolveRemoteHome", { hostName });
+  return invoke<string>("resolve_remote_home", { hostName });
+}
+
 export async function readFileBase64(path: string, cwd?: string): Promise<[string, string]> {
-  return invoke<[string, string]>("read_file_base64", { path, cwd: cwd ?? null });
+  return perfMarkAsync(
+    "ipc-readFileBase64",
+    () => invoke<[string, string]>("read_file_base64", { path, cwd: cwd ?? null }),
+    { path },
+  );
 }
 
 // Git
@@ -274,7 +298,11 @@ export async function getGitBranch(cwd: string): Promise<string> {
 
 export async function getGitDiff(cwd: string, staged: boolean, file?: string): Promise<string> {
   dbg("api", "getGitDiff", { cwd, staged, file });
-  return invoke<string>("get_git_diff", { cwd, staged, file: file ?? null });
+  return perfMarkAsync(
+    "ipc-getGitDiff",
+    () => invoke<string>("get_git_diff", { cwd, staged, file: file ?? null }),
+    { cwd, staged, file },
+  );
 }
 
 export async function getGitStatus(cwd: string): Promise<string> {
@@ -288,6 +316,11 @@ export async function exportConversation(runId: string): Promise<string> {
   return invoke<string>("export_conversation", { runId });
 }
 
+export async function writeHtmlExport(path: string, content: string): Promise<void> {
+  dbg("api", "writeHtmlExport", { path, contentLen: content.length });
+  return invoke<void>("write_html_export", { path, content });
+}
+
 // Memory file candidates
 export async function listMemoryFiles(
   cwd?: string,
@@ -299,7 +332,24 @@ export async function listMemoryFiles(
 // Files
 export async function readTextFile(path: string, cwd?: string): Promise<string> {
   dbg("api", "readTextFile", path, { cwd });
-  return invoke<string>("read_text_file", { path, cwd: cwd ?? null });
+  return perfMarkAsync(
+    "ipc-readTextFile",
+    async () => {
+      const content = await invoke<string>("read_text_file", { path, cwd: cwd ?? null });
+      return content;
+    },
+    { path, chars: 0 }, // chars not known until after; left for shape consistency
+  );
+}
+
+/** Cheap file size lookup — used by FilePreviewPane to skip readTextFile for huge files. */
+export async function statTextFile(path: string, cwd?: string): Promise<number> {
+  dbg("api", "statTextFile", path, { cwd });
+  return perfMarkAsync(
+    "ipc-statTextFile",
+    () => invoke<number>("stat_text_file", { path, cwd: cwd ?? null }),
+    { path },
+  );
 }
 
 export async function writeTextFile(path: string, content: string, cwd?: string): Promise<void> {
@@ -432,6 +482,7 @@ export async function startSession(
   initialMessage?: string,
   attachments?: Array<{ content_base64: string; media_type: string; filename: string }>,
   platformId?: string,
+  permissionModeOverride?: string,
 ): Promise<void> {
   dbg("api", "startSession", {
     runId,
@@ -440,6 +491,7 @@ export async function startSession(
     hasMessage: !!initialMessage,
     attachments: attachments?.length ?? 0,
     platformId,
+    permissionModeOverride,
   });
   return invoke("start_session", {
     runId,
@@ -448,6 +500,7 @@ export async function startSession(
     initialMessage,
     attachments: attachments ?? null,
     platformId: platformId ?? null,
+    permissionModeOverride: permissionModeOverride ?? null,
   });
 }
 
@@ -564,9 +617,22 @@ export async function respondHookCallback(
   runId: string,
   requestId: string,
   decision: "allow" | "deny" | "defer",
+  // PreToolUse hooks can rewrite tool input alongside `allow` (CLI v2.1.85+).
+  // Only honored by the CLI when decision == "allow".
+  updatedInput?: Record<string, unknown>,
 ): Promise<void> {
-  dbg("api", "respondHookCallback", { runId, requestId, decision });
-  return invoke("respond_hook_callback", { runId, requestId, decision });
+  dbg("api", "respondHookCallback", {
+    runId,
+    requestId,
+    decision,
+    hasUpdatedInput: updatedInput != null,
+  });
+  return invoke("respond_hook_callback", {
+    runId,
+    requestId,
+    decision,
+    updatedInput: updatedInput ?? null,
+  });
 }
 
 // ── Typed control request wrappers ──

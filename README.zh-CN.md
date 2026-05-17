@@ -157,11 +157,15 @@ npm run tauri dev
 | Kimi For Coding | `api.kimi.com/coding/` | Bearer |
 | 智谱 | `open.bigmodel.cn/api/anthropic` | Bearer |
 | 智谱（国际） | `api.z.ai/api/anthropic` | Bearer |
-| 百炼（阿里云） | `coding.dashscope.aliyuncs.com/apps/anthropic` | Bearer |
+| 百炼（阿里云 Coding Plan） | `coding.dashscope.aliyuncs.com/apps/anthropic` | Bearer |
+| 百炼（阿里云 API） | `dashscope.aliyuncs.com/apps/anthropic` | Bearer |
 | 豆包（字节跳动） | `ark.cn-beijing.volces.com/api/coding` | Bearer |
 | MiniMax | `api.minimax.io/anthropic` | Bearer |
 | MiniMax（中国） | `api.minimaxi.com/anthropic` | Bearer |
 | 小米 MiMo | `api.xiaomimimo.com/anthropic` | Bearer |
+| 小米 MiMo（订阅 Token Plan） | `token-plan-cn.xiaomimimo.com/anthropic` | Bearer |
+| 腾讯混元 | `api.hunyuan.cloud.tencent.com/anthropic` | Bearer |
+| SiliconFlow（硅基流动） | `api.siliconflow.com/` | Bearer |
 
 ### API 代理
 

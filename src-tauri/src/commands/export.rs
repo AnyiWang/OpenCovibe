@@ -1,4 +1,5 @@
 use crate::storage;
+use std::path::Path;
 
 #[tauri::command]
 pub fn export_conversation(run_id: String) -> Result<String, String> {
@@ -31,4 +32,33 @@ pub fn export_conversation(run_id: String) -> Result<String, String> {
     }
 
     Ok(md)
+}
+
+#[tauri::command]
+pub async fn write_html_export(path: String, content: String) -> Result<(), String> {
+    log::debug!(
+        "[export] write_html_export: path={}, content_len={}",
+        path,
+        content.len()
+    );
+
+    let ext = Path::new(&path)
+        .extension()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_ascii_lowercase());
+    match ext.as_deref() {
+        Some("html") | Some("htm") => {}
+        _ => {
+            log::error!(
+                "[export] write_html_export rejected non-html path: {}",
+                path
+            );
+            return Err("write_html_export: only .html/.htm paths allowed".into());
+        }
+    }
+
+    tokio::fs::write(&path, content).await.map_err(|e| {
+        log::error!("[export] write_html_export failed: {}", e);
+        e.to_string()
+    })
 }

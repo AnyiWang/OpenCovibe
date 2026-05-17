@@ -53,6 +53,7 @@
   import SessionStatusBar from "$lib/components/SessionStatusBar.svelte";
   import McpStatusPanel from "$lib/components/McpStatusPanel.svelte";
   import PromptInput from "$lib/components/PromptInput.svelte";
+  import ScheduledTasksChip from "$lib/components/ScheduledTasksChip.svelte";
   import PermissionPanel from "$lib/components/PermissionPanel.svelte";
   import ElicitationDialog from "$lib/components/ElicitationDialog.svelte";
   import AuthSourceBadge from "$lib/components/AuthSourceBadge.svelte";
@@ -69,6 +70,13 @@
   import ReleaseNotesCard from "$lib/components/ReleaseNotesCard.svelte";
   import { t } from "$lib/i18n/index.svelte";
   import { dbg, dbgWarn } from "$lib/utils/debug";
+  import { yieldToMain } from "$lib/utils/yield";
+  import {
+    getLastTarget,
+    setLastTarget,
+    getStoredRemoteCwd,
+    setStoredRemoteCwd,
+  } from "$lib/utils/remote-cwd";
   import { shouldAutoName } from "$lib/utils/auto-name";
   import { resolvePermissionOptimistic } from "$lib/utils/resolve-permission";
   import { getToolColor } from "$lib/utils/tool-colors";
@@ -90,6 +98,7 @@
   import { mapSettled } from "$lib/utils/async-utils";
   import { uuid } from "$lib/utils/uuid";
   import RewindModal from "$lib/components/RewindModal.svelte";
+  import FolderPicker from "$lib/components/FolderPicker.svelte";
   import type { ElementSelection } from "$lib/types";
   import { isElementSelection } from "$lib/types";
 
@@ -135,6 +144,27 @@
   let targetDropdownOpen = $state(false);
   /** Auth overview for AuthSourceBadge. */
   let authOverview = $state<import("$lib/types").AuthOverview | null>(null);
+
+  /** Folder picker state — resolves a Promise on confirm/cancel. */
+  let folderPickerOpen = $state(false);
+  let folderPickerInitialHost = $state<string | null>(null);
+  let folderPickerInitialPath = $state("");
+  let folderPickerHideTarget = $state(false);
+  let folderPickerResolve: ((v: { hostName: string | null; path: string } | null) => void) | null =
+    null;
+  function openFolderPicker(opts: {
+    initialHost?: string | null;
+    initialPath?: string;
+    hideTargetSelector?: boolean;
+  }): Promise<{ hostName: string | null; path: string } | null> {
+    folderPickerInitialHost = opts.initialHost ?? null;
+    folderPickerInitialPath = opts.initialPath ?? "";
+    folderPickerHideTarget = opts.hideTargetSelector ?? false;
+    folderPickerOpen = true;
+    return new Promise((resolve) => {
+      folderPickerResolve = resolve;
+    });
+  }
   /** Preloaded skill details from filesystem (has descriptions). */
   let preloadedSkills = $state<import("$lib/types").StandaloneSkill[]>([]);
   /** Preloaded agent definitions from filesystem. */
@@ -261,6 +291,24 @@
   let statusBarRef: SessionStatusBar | undefined = $state();
   let stashedInput: PromptInputSnapshot | null = $state(null);
   let sidebarRequestedTab = $state<"tools" | "context" | "files" | "info" | "tasks" | null>(null);
+  let requestedPreviewPath = $state<string | null>(null);
+
+  function openPreviewForPath(path: string) {
+    if (!path) return;
+    requestedPreviewPath = path;
+    sidebarRequestedTab = "files";
+    if (sidebarCollapsed) sidebarCollapsed = false;
+  }
+
+  // Clear preview when run changes (defense-in-depth; ToolActivity also clears via its runId effect)
+  let _lastPreviewClearRunId = "__unset__";
+  $effect(() => {
+    const id = store.run?.id ?? "";
+    if (id !== _lastPreviewClearRunId) {
+      _lastPreviewClearRunId = id;
+      requestedPreviewPath = null;
+    }
+  });
 
   // ── Verbose state (chat page level) ──
   let verboseEnabled = $state(false);
@@ -306,8 +354,16 @@
   }
 
   // ── Timeline rendering ──
-  let renderLimit = $state(Infinity);
+  // Progressive render: start with the most recent N entries, grow on upward scroll.
+  // Switching to a multi-thousand-entry run with `Infinity` would mount thousands of
+  // ChatMessage components in one frame and freeze the WebView (issue #119).
+  const INITIAL_RENDER_LIMIT = 100;
+  const RENDER_GROWTH_STEP = 100;
+  let renderLimit = $state(INITIAL_RENDER_LIMIT);
   let progressiveGen = 0; // generation counter for stale-callback protection
+  let loadingMore = $state(false);
+  let loadMoreArmed = $state(true); // throttle: re-armed by handleChatScroll
+  let _suppressLoadMoreRearm = false; // raised during programmatic scrollTop adjustment
 
   async function syncVerboseState(runId: string | undefined) {
     const key = runId ?? "__no_run__";
@@ -640,23 +696,142 @@
 
   // ── Progressive timeline rendering ── helpers
 
+  /** Invalidate any in-flight async load so its post-await side effects bail out. */
   function cancelProgressive() {
     progressiveGen++;
-    renderLimit = Infinity;
+  }
+
+  /** Bump the load generation and return it — caller compares against `progressiveGen`. */
+  function nextProgressiveGen(): number {
+    return ++progressiveGen;
   }
 
   /**
-   * Load a run and render its full timeline in one frame.
-   * content-visibility:auto on entries lets the browser skip layout/paint
-   * for off-screen items, keeping scroll performance smooth.
+   * Expand `renderLimit` enough that `targetIndex` (in `filteredTimeline`) is mounted,
+   * with `margin` extra entries above for context. No-op if already covered.
+   */
+  function expandRenderLimitTo(targetIndex: number, margin = 50) {
+    const ft = filteredTimeline;
+    if (targetIndex < 0 || targetIndex >= ft.length) return;
+    if (renderLimit === Infinity) return;
+    const needed = ft.length - targetIndex + margin;
+    if (renderLimit < needed) renderLimit = Math.min(needed, ft.length);
+  }
+
+  /**
+   * If `visibleIdx` (visibleTimeline-local) sits inside a collapsed tool burst,
+   * force-expand that burst via `manualOverrides` so the entry's DOM mounts.
+   * Caller must pass an index in the visibleTimeline namespace, not filteredTimeline.
+   */
+  async function ensureBurstExpandedFor(visibleIdx: number) {
+    if (!burstHiddenIndices.has(visibleIdx)) return;
+    for (const [, burst] of toolBursts) {
+      if (visibleIdx >= burst.startIndex && visibleIdx <= burst.endIndex) {
+        const next = new Map(manualOverrides);
+        next.set(burst.key, true);
+        manualOverrides = next;
+        await tick();
+        return;
+      }
+    }
+  }
+
+  // Sentinel above the visible list — when it intersects the chat viewport, grow renderLimit.
+  let topSentinel = $state<HTMLDivElement | null>(null);
+  let _topObserver: IntersectionObserver | null = null;
+
+  $effect(() => {
+    if (!topSentinel || !chatAreaRef) {
+      _topObserver?.disconnect();
+      _topObserver = null;
+      return;
+    }
+    _topObserver?.disconnect();
+    _topObserver = new IntersectionObserver(
+      (entries) => {
+        const entry = entries[0];
+        if (!entry?.isIntersecting) return;
+        if (!loadMoreArmed || loadingMore) return;
+        const hidden = filteredTimeline.length - renderLimit;
+        if (hidden <= 0) return;
+        dbg("chat", "progressive-load-more", { renderLimit, hidden });
+        void loadMoreEarlier();
+      },
+      { root: chatAreaRef, rootMargin: "200px 0px 0px 0px", threshold: 0 },
+    );
+    _topObserver.observe(topSentinel);
+    return () => {
+      _topObserver?.disconnect();
+      _topObserver = null;
+    };
+  });
+
+  /**
+   * Grow `renderLimit` by `RENDER_GROWTH_STEP` and preserve the user's scroll position.
+   * Browser-native scroll anchoring is unreliable on WKWebView with content-visibility,
+   * so we measure the first rendered entry's offset before/after and adjust scrollTop
+   * by the delta.
+   */
+  async function loadMoreEarlier() {
+    if (loadingMore || !loadMoreArmed) return;
+    loadingMore = true;
+    loadMoreArmed = false; // re-armed by handleChatScroll on next user scroll
+    try {
+      const anchor = chatAreaRef?.querySelector<HTMLElement>("[data-entry-id]") ?? null;
+      const anchorId = anchor?.dataset.entryId ?? null;
+      const beforeTop = anchor?.getBoundingClientRect().top ?? 0;
+      const beforeScroll = chatAreaRef?.scrollTop ?? 0;
+
+      renderLimit = Math.min(renderLimit + RENDER_GROWTH_STEP, filteredTimeline.length);
+      await tick();
+      await yieldToMain();
+
+      if (anchorId && chatAreaRef) {
+        let after: HTMLElement | null = null;
+        try {
+          after = chatAreaRef.querySelector<HTMLElement>(
+            `[data-entry-id="${CSS.escape(anchorId)}"]`,
+          );
+        } catch {
+          after =
+            Array.from(chatAreaRef.querySelectorAll<HTMLElement>("[data-entry-id]")).find(
+              (el) => el.dataset.entryId === anchorId,
+            ) ?? null;
+        }
+        if (after) {
+          const afterTop = after.getBoundingClientRect().top;
+          // Suppress re-arm so the programmatic scrollTop write doesn't immediately
+          // rearm the observer — the sentinel may still be in view post-prepend.
+          _suppressLoadMoreRearm = true;
+          chatAreaRef.scrollTop = beforeScroll + (afterTop - beforeTop);
+          // Clear suppression after the scroll event has dispatched + been handled.
+          // yieldToMain has a 50ms timeout fallback so a backgrounded WebView with
+          // throttled rAF can't strand the suppression flag.
+          await yieldToMain();
+          _suppressLoadMoreRearm = false;
+        }
+      }
+    } finally {
+      loadingMore = false;
+    }
+  }
+
+  /**
+   * Load a run and render its timeline progressively.
+   * Starts with the most recent `INITIAL_RENDER_LIMIT` entries; the top sentinel
+   * grows `renderLimit` as the user scrolls up.
    */
   async function loadRunProgressive(
     id: string,
     xtermRef?: { clear(): void; writeText(s: string): void },
   ) {
     toolFilter = null;
-    cancelProgressive();
-    const gen = ++progressiveGen;
+    // Reset progressive state so a previous run's expanded renderLimit (e.g. after
+    // an anchor jump) doesn't leak into the new run.
+    renderLimit = INITIAL_RENDER_LIMIT;
+    loadingMore = false;
+    loadMoreArmed = true;
+    const gen = nextProgressiveGen();
 
     // Capture scrollTo BEFORE loadRun — URL may change during async load
     const scrollTo = $page.url.searchParams.get("scrollTo");
@@ -683,7 +858,7 @@
             disabledSet.has(s.name) && s.status !== "disabled" ? { ...s, status: "disabled" } : s,
           );
           if (patched.some((s, i) => s !== store.mcpServers[i])) {
-            store.mcpServers = patched;
+            store.updateMcpServers(patched);
             dbg("chat", "patched MCP disabled state", { disabledNames });
           }
         }
@@ -693,8 +868,11 @@
     }
 
     if (gen !== progressiveGen) return;
-    renderLimit = Infinity;
-    dbg("chat", "loadRun complete", { timeline: filteredTimeline.length, gen });
+    dbg("chat", "loadRun complete", {
+      timeline: filteredTimeline.length,
+      renderLimit,
+      gen,
+    });
 
     if (scrollTo) {
       await tick();
@@ -916,6 +1094,7 @@
   let runId = $derived($page.url.searchParams.get("run") ?? "");
   let hasResumeParam = $derived($page.url.searchParams.has("resume"));
   let folderParam = $derived($page.url.searchParams.get("folder"));
+  let hostParam = $derived($page.url.searchParams.get("host"));
   let agentParam = $derived($page.url.searchParams.get("agent"));
 
   // Consume ?agent= param: switch agent for new sessions, then clean URL
@@ -933,17 +1112,46 @@
     });
   });
 
-  // Consume ?folder= param: switch to new chat in that folder, then clean URL
+  // Consume ?folder= and/or ?host= params: switch target/folder, then clean URL.
   $effect(() => {
     const folder = folderParam;
-    if (!folder) return;
+    const host = hostParam;
+    if (!folder && !host) return;
     untrack(() => {
-      dbg("chat", "new chat in folder", { folder });
-      localStorage.setItem("ocv:project-cwd", folder);
-      folderCwdOverride = folder;
-      store.loadRun("", xtermRef);
+      dbg("chat", "url params", { folder, host });
+      // Validate non-empty host against currently loaded settings. If `remoteHosts`
+      // hasn't loaded yet (this effect can fire before onMount finishes settings
+      // fetch), fall back to optimistic acceptance — the backend surfaces a
+      // "Remote host '...' not found" error if the name is genuinely bogus.
+      let resolvedHost: string | null = null;
+      if (host !== null) {
+        if (host === "") {
+          resolvedHost = null; // explicit clear
+        } else if (remoteHosts.length === 0 || remoteHosts.some((h) => h.name === host)) {
+          resolvedHost = host;
+        } else {
+          dbgWarn("chat", "URL ?host= references unknown remote — ignoring", { host });
+          resolvedHost = null;
+        }
+        store.remoteHostName = resolvedHost;
+        setLastTarget(resolvedHost);
+      }
+      if (folder) {
+        if (resolvedHost) {
+          setStoredRemoteCwd(resolvedHost, folder);
+        } else {
+          try {
+            localStorage.setItem("ocv:project-cwd", folder);
+          } catch {
+            // localStorage may fail in restricted contexts
+          }
+        }
+        folderCwdOverride = folder;
+        store.loadRun("", xtermRef);
+      }
       const clean = new URL($page.url);
       clean.searchParams.delete("folder");
+      clean.searchParams.delete("host");
       replaceState(clean, {});
       requestAnimationFrame(() => promptRef?.focus());
     });
@@ -967,15 +1175,12 @@
       settings = await api.getUserSettings();
       store.authMode = settings.auth_mode ?? "cli";
       remoteHosts = settings.remote_hosts ?? [];
-      // Restore last target selection
+      // Restore last target selection (must validate against current settings — a
+      // configured host may have been removed since the value was persisted).
       if (!store.run && remoteHosts.length > 0) {
-        try {
-          const lastTarget = localStorage.getItem("ocv:last-target");
-          if (lastTarget && remoteHosts.some((h) => h.name === lastTarget)) {
-            store.remoteHostName = lastTarget;
-          }
-        } catch {
-          // localStorage access may fail in restricted contexts
+        const lastTarget = getLastTarget();
+        if (lastTarget && remoteHosts.some((h) => h.name === lastTarget)) {
+          store.remoteHostName = lastTarget;
         }
       }
       // Initialize per-session platform from global active
@@ -987,7 +1192,10 @@
       // Initialize model: for third-party platforms, use credential > preset default model
       // Only for new sessions — if runId is set, loadRun will handle model restoration.
       if (!store.model && !runId && store.phase !== "loading" && store.useStreamSession) {
-        const initCred = findCredential(settings.platform_credentials ?? [], store.platformId);
+        const initCred = findCredential(
+          settings.platform_credentials ?? [],
+          store.platformId ?? "",
+        );
         const initPreset = PLATFORM_PRESETS.find((p) => p.id === store.platformId);
         const initModels = initCred?.models?.length ? initCred.models : initPreset?.models;
         if (store.platformId !== "anthropic" && initModels?.[0]) {
@@ -1039,7 +1247,12 @@
     // Find most recent run with session_id for "Continue last session"
     try {
       const runs = await api.listRuns();
-      lastContinuableRun = runs.find((r) => r.session_id && r.status !== "running") ?? null;
+      lastContinuableRun =
+        runs.find(
+          (r) =>
+            r.session_id &&
+            (r.status === "completed" || r.status === "stopped" || r.status === "failed"),
+        ) ?? null;
     } catch (e) {
       dbgWarn("chat", "failed to load runs for continue:", e);
     }
@@ -1121,6 +1334,25 @@
     return () => window.removeEventListener("ocv:project-changed", handler);
   });
 
+  // Warm up file IPC chain: validate_file_path's first invocation walks several
+  // canonicalize() calls (data dir, claude dir, agents' working dirs, project cwd).
+  // Firing one stat at chat-page mount primes the OS FS cache so the user's first
+  // file click doesn't pay the cold-cache cost.
+  onMount(() => {
+    const cwd = localStorage.getItem("ocv:project-cwd") || "";
+    if (!cwd) return;
+    const t0 = performance.now();
+    api
+      .statTextFile(cwd, cwd)
+      .then(() => dbg("file-ipc", "warmup done", { ms: +(performance.now() - t0).toFixed(0) }))
+      .catch((e) =>
+        dbg("file-ipc", "warmup err (still warmed)", {
+          ms: +(performance.now() - t0).toFixed(0),
+          err: String(e),
+        }),
+      );
+  });
+
   // Sync run name when sidebar/history renames the current run
   onMount(() => {
     function onRunsChanged() {
@@ -1141,36 +1373,6 @@
     }
     window.addEventListener("ocv:runs-changed", onRunsChanged);
     return () => window.removeEventListener("ocv:runs-changed", onRunsChanged);
-  });
-
-  // Check for pending plan from ExitPlanMode "clear context"
-  onMount(() => {
-    const pendingPlan = sessionStorage.getItem("ocv:pending-plan-prompt");
-    const pendingCwd = sessionStorage.getItem("ocv:pending-plan-cwd");
-    if (pendingPlan && !store.run) {
-      sessionStorage.removeItem("ocv:pending-plan-prompt");
-      sessionStorage.removeItem("ocv:pending-plan-cwd");
-      const cwd = pendingCwd || localStorage.getItem("ocv:project-cwd") || "";
-      dbg("chat", "auto-sending pending plan from ExitPlanMode clear context");
-      // Use tick to ensure mount is complete
-      tick().then(async () => {
-        try {
-          const newRunId = await store.startSession(pendingPlan, cwd, []);
-          goto(`/chat?run=${newRunId}`);
-          // Set permission mode to acceptEdits in new session
-          // Wait for session to initialize first
-          setTimeout(async () => {
-            if (store.run) {
-              await api.setPermissionMode(store.run.id, "acceptEdits");
-              store.permissionMode = "acceptEdits";
-              dbg("chat", "new session permission mode set to acceptEdits");
-            }
-          }, 2000);
-        } catch (e) {
-          dbgWarn("chat", "auto-send pending plan failed:", e);
-        }
-      });
-    }
   });
 
   // Start middleware + register handlers
@@ -1394,6 +1596,12 @@
     keybindingStore.registerCallback("chat:undoLastTurn", () => {
       handleRewind();
     });
+    keybindingStore.registerCallback("app:exportChatHtml", () => void handleExportHtml());
+    const onExportHtmlEvent = () => {
+      window.dispatchEvent(new CustomEvent("ocv:export-html-ack"));
+      void handleExportHtml();
+    };
+    window.addEventListener("ocv:export-html", onExportHtmlEvent);
 
     // Screenshot event listener (global hotkey → attachment injection)
     const chatTransport = getTransport();
@@ -1468,6 +1676,8 @@
       keybindingStore.unregisterCallback("chat:toggleVerbose");
       keybindingStore.unregisterCallback("chat:toggleTasks");
       keybindingStore.unregisterCallback("chat:undoLastTurn");
+      keybindingStore.unregisterCallback("app:exportChatHtml");
+      window.removeEventListener("ocv:export-html", onExportHtmlEvent);
       screenshotUnlisten.then((fn) => fn());
       dragEnterUnlisten.then((fn) => fn());
       dragLeaveUnlisten.then((fn) => fn());
@@ -1662,6 +1872,12 @@
     const dist = chatAreaRef.scrollHeight - chatAreaRef.scrollTop - chatAreaRef.clientHeight;
     isChatAutoScroll = dist < SCROLL_BOTTOM_THRESHOLD;
     if (isChatAutoScroll) showChatScrollHint = false;
+    // Re-arm progressive load-more after a user-initiated scroll. The IntersectionObserver
+    // fires once per arm; this prevents short timelines from runaway-expanding while the
+    // sentinel remains in view after a prepend. Programmatic scrollTop adjustments
+    // (loadMoreEarlier's anchor compensation) raise `_suppressLoadMoreRearm` so the
+    // anchor-correction scroll doesn't immediately re-arm the observer.
+    if (!loadMoreArmed && !_suppressLoadMoreRearm) loadMoreArmed = true;
   }
 
   function scrollChatToBottom() {
@@ -1728,18 +1944,55 @@
 
     try {
       if (!store.run) {
-        // First message: create run
-        let cwd =
-          typeof window !== "undefined"
-            ? localStorage.getItem("ocv:project-cwd") ||
+        // First message: create run.
+        //
+        // Validate the remote target up-front. The host could have been
+        // removed/renamed since the chat tab was opened (or since
+        // `ocv:last-target` was persisted). Without this check, every
+        // downstream path — `getStoredRemoteCwd`, the folder picker (which
+        // silently falls back to local UI when its `loadRemoteHosts` clears
+        // the unknown host), and `startSession` — would still run with the
+        // stale `store.remoteHostName`, and the backend `start_run` would
+        // fail with an opaque "Remote host '...' not found".
+        if (
+          store.remoteHostName &&
+          remoteHosts.length > 0 &&
+          !remoteHosts.some((h) => h.name === store.remoteHostName)
+        ) {
+          dbgWarn("chat", "remote host no longer in settings — clearing target", {
+            host: store.remoteHostName,
+          });
+          showChatToast(t("toast_remoteHostMissing"));
+          store.remoteHostName = null;
+          setLastTarget(null);
+          return;
+        }
+        const isRemote = !!store.remoteHostName;
+        let cwd = "";
+        if (typeof window !== "undefined") {
+          if (isRemote) {
+            cwd = getStoredRemoteCwd(store.remoteHostName!);
+          } else {
+            cwd =
+              localStorage.getItem("ocv:project-cwd") ||
               localStorage.getItem("ocv:settings-cwd") ||
-              ""
-            : "";
+              "";
+          }
+        }
 
         if (!cwd || cwd === "/") {
           const transport = getTransport();
-          if (transport.isDesktop()) {
-            // Desktop: native folder picker
+          if (isRemote) {
+            // Remote: open FolderPicker for the selected host
+            const result = await openFolderPicker({
+              initialHost: store.remoteHostName,
+              hideTargetSelector: true,
+            });
+            if (!result || !result.path) return; // cancelled
+            cwd = result.path;
+            if (result.hostName) setStoredRemoteCwd(result.hostName, cwd);
+          } else if (transport.isDesktop()) {
+            // Desktop local: native folder picker (fast path)
             const { open } = await import("@tauri-apps/plugin-dialog");
             const selected = await open({
               directory: true,
@@ -1750,8 +2003,18 @@
             localStorage.setItem("ocv:project-cwd", cwd);
             window.dispatchEvent(new Event("ocv:cwd-changed"));
           } else {
-            // Browser: use server-configured working_directory from settings
-            cwd = settings?.working_directory || "/";
+            // Browser local: open FolderPicker (allows manual path or switching to remote)
+            const result = await openFolderPicker({ initialHost: null });
+            if (!result || !result.path) return;
+            cwd = result.path;
+            if (result.hostName) {
+              store.remoteHostName = result.hostName;
+              setLastTarget(result.hostName);
+              setStoredRemoteCwd(result.hostName, cwd);
+            } else {
+              localStorage.setItem("ocv:project-cwd", cwd);
+              window.dispatchEvent(new Event("ocv:cwd-changed"));
+            }
           }
         }
 
@@ -2112,6 +2375,76 @@
     }
 
     return seq === permissionModeChangeSeq;
+  }
+
+  // ── HTML Export ──
+
+  async function handleExportHtml() {
+    if (!store.run) {
+      dbgWarn("chat", "handleExportHtml: no run");
+      showChatToast(t("export_noConversation"));
+      return;
+    }
+    dbg("chat", "handleExportHtml: start");
+
+    let html: string;
+    let title: string;
+    const prevFilter = toolFilter;
+    const prevLimit = renderLimit;
+    try {
+      // Force full render (clear filter + unlimited)
+      toolFilter = null;
+      renderLimit = Infinity;
+      await tick();
+      await new Promise((r) => requestAnimationFrame(() => r(undefined)));
+
+      // Re-query after Svelte re-render (DOM may have been replaced)
+      const rootEl = document.querySelector<HTMLElement>("[data-conversation-root]");
+      if (!rootEl) {
+        dbgWarn("chat", "handleExportHtml: data-conversation-root not found");
+        showChatToast(t("export_noConversation"));
+        return;
+      }
+
+      const { exportConversationToHtml, buildExportFilename: buildFn } =
+        await import("$lib/utils/html-export");
+
+      title = store.run.name ?? store.run.prompt?.slice(0, 80) ?? "Untitled";
+      html = await exportConversationToHtml(rootEl, {
+        title,
+        sessionInfo: {
+          model: store.model,
+          cwd: store.effectiveCwd,
+          startedAt: store.run.started_at,
+          turnCount: store.numTurns || store.timeline.filter((e) => e.kind === "user").length,
+        },
+      });
+
+      // Restore UI immediately (HTML already captured, no need to keep filter cleared)
+      toolFilter = prevFilter;
+      renderLimit = prevLimit;
+
+      const { save } = await import("@tauri-apps/plugin-dialog");
+      const path = await save({
+        defaultPath: buildFn(title),
+        filters: [{ name: "HTML", extensions: ["html"] }],
+      });
+      if (!path) {
+        dbg("chat", "handleExportHtml: user cancelled");
+        return;
+      }
+
+      await api.writeHtmlExport(path, html);
+      dbg("chat", "handleExportHtml: done", { path });
+      showChatToast(t("export_htmlSuccess"));
+    } catch (e) {
+      dbgWarn("chat", "handleExportHtml failed", e);
+      showChatToast(t("export_htmlFailed"));
+    } finally {
+      // Ensure restore even on early return paths
+      toolFilter = prevFilter;
+      renderLimit = prevLimit;
+    }
   }
 
   async function handleModelChange(newModel: string) {
@@ -3136,49 +3469,63 @@
   }
 
   async function scrollToTool(toolUseId: string) {
-    // Cancel progressive rendering so full timeline is available
-    if (renderLimit !== Infinity) {
-      cancelProgressive();
-      await tick();
-    }
-    // Clear filter first (target tool may be filtered out)
+    // Clear filter first — target may be filtered out, and burst/visible indices
+    // depend on the unfiltered timeline.
     if (toolFilter) {
       toolFilter = null;
       await tick();
     }
+    // Locate target in the data layer (DOM may not be mounted yet under progressive render).
+    const ft = filteredTimeline;
+    const ftIdx = ft.findIndex((e) => e.kind === "tool" && e.tool.tool_use_id === toolUseId);
+    if (ftIdx < 0) return;
+    expandRenderLimitTo(ftIdx);
+    await tick();
+    // Re-map to visibleTimeline-local index for burst expansion.
+    const visibleIdx = visibleTimeline.findIndex(
+      (e) => e.kind === "tool" && e.tool.tool_use_id === toolUseId,
+    );
+    if (visibleIdx >= 0) await ensureBurstExpandedFor(visibleIdx);
     const el = document.getElementById("tool-" + toolUseId);
     if (el) {
+      // Temporarily disable content-visibility so the browser knows real heights and
+      // scrollIntoView lands at the correct offset (mirrors scrollToMessage).
+      const container = chatAreaRef;
+      const cvEls = container
+        ? Array.from(container.querySelectorAll<HTMLElement>(".cv-auto"))
+        : [];
+      for (const c of cvEls) c.style.contentVisibility = "visible";
+      el.getBoundingClientRect();
       el.scrollIntoView({ behavior: "smooth", block: "center" });
       el.classList.add("ring-2", "ring-primary/50");
+      requestAnimationFrame(() => {
+        for (const c of cvEls) c.style.contentVisibility = "";
+      });
       setTimeout(() => el.classList.remove("ring-2", "ring-primary/50"), 2000);
     }
   }
 
   async function scrollToMessage(ts: string) {
     dbg("chat", "scrollToMessage", { ts });
-    // Cancel progressive rendering so full timeline is available
-    if (renderLimit !== Infinity) {
-      cancelProgressive();
-      await tick();
-    }
-    // Clear filter first (target message may be filtered out)
     if (toolFilter) {
       toolFilter = null;
       await tick();
     }
-    // Primary: lookup by anchorId (stable event ID)
-    let el = document.getElementById("msg-" + ts);
-    // Fallback: search timeline by multiple fields (ts, anchorId, cliUuid, id)
-    if (!el) {
-      const match = store.timeline.find(
-        (e) =>
-          e.ts === ts ||
-          e.anchorId === ts ||
-          (e.kind === "user" && e.cliUuid === ts) ||
-          e.id === ts,
-      );
-      if (match) el = document.getElementById("msg-" + match.anchorId);
-    }
+    // Resolve target from data — `ts` may be ts, anchorId, cliUuid, or id.
+    const match = store.timeline.find(
+      (e) =>
+        e.ts === ts || e.anchorId === ts || (e.kind === "user" && e.cliUuid === ts) || e.id === ts,
+    );
+    if (!match) return;
+    const ft = filteredTimeline;
+    const ftIdx = ft.findIndex((e) => e.id === match.id);
+    if (ftIdx < 0) return;
+    expandRenderLimitTo(ftIdx);
+    await tick();
+    const visibleIdx = visibleTimeline.findIndex((e) => e.id === match.id);
+    if (visibleIdx >= 0) await ensureBurstExpandedFor(visibleIdx);
+    // DOM id uses anchorId (see `id="msg-{entry.anchorId}"` in the each block).
+    const el = document.getElementById("msg-" + match.anchorId);
     if (el) {
       // Temporarily disable content-visibility on ALL entries so the browser
       // knows real heights and scrollIntoView lands at the correct offset.
@@ -3429,12 +3776,18 @@
       await api.stopSession(runId);
       dbg("chat", "ExitPlanMode: session stopped");
 
-      // 5. Navigate to fresh chat and schedule plan sending
+      // 5. Navigate to fresh chat URL, then start a new session inline.
+      //    Using sessionStorage + onMount doesn't work: /chat?run=X → /chat
+      //    is the same route component and onMount won't re-fire.
+      //    permissionModeOverride threads through api.startSession → backend
+      //    adapter_settings, so the CLI spawns with --permission-mode acceptEdits
+      //    and the first "Implement..." turn runs in auto-accept (not plan).
       const planPrompt = `Implement the following plan:\n\n${planContent}`;
-      sessionStorage.setItem("ocv:pending-plan-prompt", planPrompt);
-      sessionStorage.setItem("ocv:pending-plan-cwd", cwd);
-      goto("/chat");
-      // The fresh chat page mount will detect sessionStorage items and auto-send
+      await goto("/chat", { replaceState: true });
+      await tick(); // let runId effect run loadRun("") → store.reset()
+      const newRunId = await store.startSession(planPrompt, cwd, [], "acceptEdits");
+      await goto(`/chat?run=${newRunId}`, { replaceState: true });
+      dbg("chat", "ExitPlanMode: new session started", { newRunId });
     } catch (e) {
       dbgWarn("chat", "ExitPlanMode clear context failed:", e);
       store.pendingClearContextPlan = null;
@@ -3579,11 +3932,7 @@
               : 'text-foreground/70 hover:bg-accent'} transition-colors"
             onclick={() => {
               store.remoteHostName = null;
-              try {
-                localStorage.setItem("ocv:last-target", "");
-              } catch {
-                // localStorage may fail in restricted contexts
-              }
+              setLastTarget(null);
               dbg("chat", "target changed", "local");
               targetDropdownOpen = false;
             }}
@@ -3598,11 +3947,7 @@
                 : 'text-foreground/70 hover:bg-accent'} transition-colors"
               onclick={() => {
                 store.remoteHostName = host.name;
-                try {
-                  localStorage.setItem("ocv:last-target", host.name);
-                } catch {
-                  // localStorage may fail in restricted contexts
-                }
+                setLastTarget(host.name);
                 dbg("chat", "target changed", host.name);
                 targetDropdownOpen = false;
               }}
@@ -3736,6 +4081,7 @@
         if (sidebarCollapsed) sidebarCollapsed = false;
         sidebarRequestedTab = "info";
       }}
+      onExportHtml={store.run ? () => void handleExportHtml() : undefined}
     />
 
     <!-- MCP panel (floating below status bar) -->
@@ -3747,7 +4093,7 @@
           sessionAlive={store.sessionAlive}
           onClose={() => (mcpPanelOpen = false)}
           onServersUpdate={(servers) => {
-            store.mcpServers = servers;
+            store.updateMcpServers(servers);
           }}
         />
       </div>
@@ -3910,9 +4256,9 @@
             </div>
           {:else}
             <!-- Timeline: chat messages + inline tool cards -->
-            <div>
+            <div data-conversation-root>
               {#if store.run?.parent_run_id}
-                <div class="chat-content-width py-2">
+                <div class="chat-content-width py-2" data-export-exclude>
                   <div
                     class="flex items-center gap-2 rounded-md border border-blue-500/20 bg-blue-500/5 px-3 py-2 text-xs text-blue-400"
                   >
@@ -3942,7 +4288,7 @@
                 </div>
               {/if}
               {#if notificationVisible && latestNotification}
-                <div class="chat-content-width py-1">
+                <div class="chat-content-width py-1" data-export-exclude>
                   <div
                     class="flex items-center gap-2 text-xs text-muted-foreground bg-teal-500/5 border border-teal-500/20 rounded px-3 py-1.5 animate-fade-in"
                   >
@@ -3952,7 +4298,7 @@
                 </div>
               {/if}
               {#if toolNamesInTimeline.length >= 2}
-                <div class="chat-content-width py-2">
+                <div class="chat-content-width py-2" data-export-exclude>
                   <div class="flex flex-wrap items-center gap-1.5">
                     <button
                       class="rounded-full px-2.5 py-0.5 text-xs font-medium transition-colors {!toolFilter
@@ -3986,11 +4332,15 @@
                   </div>
                 </div>
               {/if}
+              {#if filteredTimeline.length - renderLimit > 0}
+                <div bind:this={topSentinel} aria-hidden="true" class="h-px w-full"></div>
+              {/if}
               {#each visibleTimeline as entry, i (entry.id)}
                 {#if !(burstHiddenIndices.has(i) && !toolBursts.has(i))}
                   <div
                     id="msg-{entry.anchorId}"
-                    class:cv-auto={!IS_WEBKIT && entry.kind !== "tool"}
+                    data-entry-id={entry.id}
+                    class:cv-auto={true}
                     class="group/msg"
                     class:opacity-40={lastClearSepId !== null &&
                       (timelineIdIndex.get(entry.id) ?? 0) <
@@ -4103,6 +4453,7 @@
                                 entry.tool.tool_use_id === latestPlanToolId}
                               showPermissionInPanel={showPermissionPanel}
                               {agentDisplayName}
+                              onPreviewFile={openPreviewForPath}
                             />
                           </div>
                         </div>
@@ -4229,9 +4580,9 @@
                 </div>
               {/if}
 
-              <!-- Pending hook callbacks -->
+              <!-- Pending hook callbacks (runtime UI — excluded from export) -->
               {#each store.hookEvents.filter((h) => h.status === "hook_pending") as hookEvent (hookEvent.request_id)}
-                <div class="chat-content-width pl-7">
+                <div class="chat-content-width pl-7" data-export-exclude>
                   <HookReviewCard {hookEvent} onRespond={handleHookCallbackRespond} />
                 </div>
               {/each}
@@ -4267,6 +4618,7 @@
                         {#if store.isRunning && !store.streamingText}
                           <div
                             class="h-2.5 w-2.5 rounded-full border-2 border-blue-500/30 border-t-blue-400 animate-spin"
+                            data-export-exclude
                           ></div>
                         {/if}
                         <svg
@@ -4340,7 +4692,7 @@
 
               <!-- Slash command processing indicator (before thinking kicks in) -->
               {#if processingSlashCmd && !thinkingVisible && !store.streamingText && !store.thinkingText}
-                <div class="w-full animate-fade-in">
+                <div class="w-full animate-fade-in" data-export-exclude>
                   <div class="chat-content-width py-2">
                     <div class="flex items-center gap-2 text-sm text-muted-foreground">
                       <div
@@ -4354,7 +4706,7 @@
 
               <!-- Thinking indicator (debounced 300ms to avoid flash on fast CLI commands) -->
               {#if thinkingVisible && !store.thinkingText}
-                <div class="w-full animate-fade-in">
+                <div class="w-full animate-fade-in" data-export-exclude>
                   <div class="chat-content-width py-4">
                     <div class="mb-1.5 flex items-center gap-2">
                       <div
@@ -4742,6 +5094,13 @@
       </div>
     {/if}
 
+    <ScheduledTasksChip
+      tasks={store.scheduledTasks}
+      busy={store.isRunning}
+      onCancel={(id) => store.sendMessage(`Cancel scheduled task ${id}`, [])}
+      onList={() => store.sendMessage("Show me my scheduled tasks", [])}
+    />
+
     {#if store.sessionAlive || !store.run || store.phase === "empty" || store.phase === "ready" || TERMINAL_PHASES.includes(store.phase)}
       <PromptInput
         bind:this={promptRef}
@@ -4825,6 +5184,10 @@
       bind:requestedTab={sidebarRequestedTab}
       backgroundTasks={store.taskNotifications}
       activeBackgroundTasks={store.activeBackgroundTasks}
+      cwd={store.effectiveCwd}
+      runId={store.run?.id ?? ""}
+      isRemote={store.isRemote}
+      bind:requestedPreviewPath
     />
   {/if}
 
@@ -4859,6 +5222,23 @@
   />
 
   <ShortcutHelpPanel bind:open={shortcutHelpOpen} />
+
+  <FolderPicker
+    bind:open={folderPickerOpen}
+    initialHost={folderPickerInitialHost}
+    initialPath={folderPickerInitialPath}
+    hideTargetSelector={folderPickerHideTarget}
+    onConfirm={(result) => {
+      const fn = folderPickerResolve;
+      folderPickerResolve = null;
+      fn?.(result);
+    }}
+    onCancel={() => {
+      const fn = folderPickerResolve;
+      folderPickerResolve = null;
+      fn?.(null);
+    }}
+  />
 
   <!-- Chat toast (fixed bottom-center, auto-dismiss) -->
   {#if chatToast}

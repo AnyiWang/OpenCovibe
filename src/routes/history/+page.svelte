@@ -60,6 +60,8 @@
         return "bg-yellow-500";
       case "running":
         return "bg-blue-500";
+      case "idle":
+        return "bg-emerald-500";
       default:
         return "bg-gray-400";
     }
@@ -79,7 +81,15 @@
         // Explicitly set or clear statuses based on pill selection
         statuses:
           activeStatusFilter !== "all"
-            ? [activeStatusFilter as "completed" | "failed" | "stopped" | "running" | "pending"]
+            ? [
+                activeStatusFilter as
+                  | "completed"
+                  | "failed"
+                  | "stopped"
+                  | "running"
+                  | "pending"
+                  | "idle",
+              ]
             : undefined,
       };
 
@@ -254,7 +264,7 @@
 
     <!-- Status pills -->
     <div class="mb-4 flex flex-wrap gap-2">
-      {#each [{ key: "all", label: t("history_allStatuses") }, { key: "completed", label: t("history_statusCompleted") }, { key: "failed", label: t("history_statusFailed") }, { key: "stopped", label: t("history_statusStopped") }, { key: "running", label: t("history_statusRunning") }] as pill}
+      {#each [{ key: "all", label: t("history_allStatuses") }, { key: "completed", label: t("history_statusCompleted") }, { key: "failed", label: t("history_statusFailed") }, { key: "stopped", label: t("history_statusStopped") }, { key: "running", label: t("history_statusRunning") }, { key: "idle", label: t("history_statusDone") }] as pill}
         <button
           onclick={() => onStatusFilter(pill.key)}
           class="rounded-full px-3 py-1 text-xs font-medium transition-colors {activeStatusFilter ===

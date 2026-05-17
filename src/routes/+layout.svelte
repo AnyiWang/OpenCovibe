@@ -20,6 +20,7 @@
   import Modal from "$lib/components/Modal.svelte";
   import CliSessionBrowser from "$lib/components/CliSessionBrowser.svelte";
   import UpdateBanner from "$lib/components/UpdateBanner.svelte";
+  import FolderPicker from "$lib/components/FolderPicker.svelte";
   import type {
     TaskRun,
     UserSettings,
@@ -39,10 +40,17 @@
     type ConversationGroup,
   } from "$lib/utils/sidebar-groups";
   import { loadRemovedCwds } from "$lib/utils/removed-cwds";
+  import {
+    getLastTarget,
+    setLastTarget,
+    getStoredRemoteCwd,
+    setStoredRemoteCwd,
+  } from "$lib/utils/remote-cwd";
   import { page } from "$app/stores";
   import { goto, afterNavigate } from "$app/navigation";
   import { onMount, setContext, untrack } from "svelte";
   import { dbg, dbgWarn } from "$lib/utils/debug";
+  import { fpsCounter } from "$lib/utils/perf";
   import { PLATFORM_PRESETS } from "$lib/utils/platform-presets";
   import { loadAgentSettingsCache } from "$lib/stores/agent-settings-cache.svelte";
   import type { PlatformCredential } from "$lib/types";
@@ -130,41 +138,70 @@
   let searchRequestId = $state(0);
   let debounceTimer: ReturnType<typeof setTimeout> | undefined;
 
-  // ── Sidebar resize ──
+  // ── Sidebar resize (ghost-line strategy, same as right panel) ──
+  // chat-main reflow during drag is still expensive even with cv-auto: visible tool cards
+  // contain markdown / hljs code blocks that re-measure on every width change. Ghost line
+  // gives zero-reflow drag preview and commits once on release.
   function loadSidebarWidth(): number {
     if (typeof window === "undefined") return 280;
     const raw = parseInt(localStorage.getItem("ocv:sidebar-width") ?? "", 10);
     return Number.isFinite(raw) ? Math.min(500, Math.max(180, raw)) : 280;
   }
   let sidebarWidth = $state(loadSidebarWidth());
+  let sidebarResizing = $state(false);
+  let sidebarGhostX = $state(0);
   let resizeCleanup: (() => void) | null = null;
 
-  function startResize(e: MouseEvent) {
+  /** Ghost line DOM element — bound after sidebarResizing toggles true.
+   *  Used only for imperative DOM writes during drag, but declared as $state to satisfy
+   *  Svelte 5's bind:this reactivity contract (silences non_reactive_update warning). */
+  let sidebarGhostEl: HTMLElement | null = $state(null);
+
+  function startResize(e: PointerEvent) {
     e.preventDefault();
     const startX = e.clientX;
     const startWidth = sidebarWidth;
+    let pendingWidth = startWidth;
+    sidebarResizing = true;
+    sidebarGhostX = e.clientX; // initial position via Svelte (single render)
+    const handle = e.currentTarget as HTMLElement;
+    handle.setPointerCapture?.(e.pointerId);
     dbg("layout", "sidebar resize start", { startWidth });
     document.body.style.userSelect = "none";
     document.body.style.cursor = "col-resize";
+    const stopFps = fpsCounter("sidebar-drag");
 
-    function onMove(ev: MouseEvent) {
-      sidebarWidth = Math.min(500, Math.max(180, startWidth + (ev.clientX - startX)));
+    function onMove(ev: PointerEvent) {
+      pendingWidth = Math.min(500, Math.max(180, startWidth + (ev.clientX - startX)));
+      const x = startX + (pendingWidth - startWidth);
+      // BYPASS Svelte: write DOM directly. Svelte's reactive batching + WKWebView's pointer
+      // capture don't cooperate during drag — updates pile up until pointerup. Direct DOM
+      // write is synchronous and the browser repaints on the next frame regardless.
+      if (sidebarGhostEl) {
+        sidebarGhostEl.style.left = x - 1 + "px";
+      }
     }
     function cleanup() {
-      document.removeEventListener("mousemove", onMove);
-      document.removeEventListener("mouseup", onUp);
+      handle.removeEventListener("pointermove", onMove);
+      handle.removeEventListener("pointerup", onUp);
+      handle.removeEventListener("pointercancel", onUp);
       document.body.style.userSelect = "";
       document.body.style.cursor = "";
+      sidebarWidth = pendingWidth;
+      sidebarResizing = false;
+      sidebarGhostEl = null;
       resizeCleanup = null;
       localStorage.setItem("ocv:sidebar-width", String(sidebarWidth));
       dbg("layout", "sidebar resize end", { width: sidebarWidth });
+      stopFps();
     }
     function onUp() {
       cleanup();
     }
 
-    document.addEventListener("mousemove", onMove);
-    document.addEventListener("mouseup", onUp);
+    handle.addEventListener("pointermove", onMove);
+    handle.addEventListener("pointerup", onUp);
+    handle.addEventListener("pointercancel", onUp);
     resizeCleanup = cleanup;
   }
 
@@ -767,8 +804,24 @@
     }
     window.addEventListener("ocv:explorer-file-selected", onExplorerFileSelected);
 
+    // Listen for run status changes (idle↔running) from backend
+    let unlistenStatus: (() => void) | undefined;
+    transport
+      .listen("ocv:status-changed", (payload: unknown) => {
+        dbg("layout", "status-changed", payload);
+        loadRuns();
+      })
+      .then((fn) => {
+        if (destroyed) {
+          fn();
+          return;
+        }
+        unlistenStatus = fn;
+      });
+
     return () => {
       resizeCleanup?.(); // Clean up resize drag if component unmounts mid-drag
+      unlistenStatus?.();
       clearInterval(interval);
       clearInterval(teamPollInterval);
       if (debounceTimer) clearTimeout(debounceTimer);
@@ -1021,39 +1074,53 @@
     expandedProjects = next;
   }
 
+  // ── Folder picker (sidebar "+ Open folder") ──
+  let folderPickerOpen = $state(false);
+  let folderPickerInitialHost = $state<string | null>(null);
+  let folderPickerInitialPath = $state("");
+
   async function pickFolder() {
-    if (getTransport().isDesktop()) {
-      try {
-        const { open } = await import("@tauri-apps/plugin-dialog");
-        const selected = await open({ directory: true, title: t("layout_selectProjectFolder") });
-        if (selected) {
-          const normalized = normalizeCwd(selected as string) || "";
-          if (normalized && removedCwds.includes(normalized)) {
-            removedCwds = removedCwds.filter((c) => c !== normalized);
-            persistRemovedCwds();
-            dbg("layout", "pickFolder: un-removed cwd", { cwd: normalized });
-          }
-          projectCwd = normalized;
-        }
-      } catch (e) {
-        dbgWarn("layout", "failed to open folder dialog:", e);
-      }
+    // Pre-fill from last-target so remote-using users don't lose their target.
+    // Validate against current settings — a host removed/renamed since the
+    // value was persisted should not silently leak through to the picker.
+    const lastTarget = getLastTarget();
+    const validatedTarget =
+      lastTarget && (settings?.remote_hosts ?? []).some((h) => h.name === lastTarget)
+        ? lastTarget
+        : null;
+    if (lastTarget && !validatedTarget) {
+      dbgWarn("layout", "lastTarget references unknown remote — falling back to local", {
+        lastTarget,
+      });
+    }
+    folderPickerInitialHost = validatedTarget;
+    folderPickerInitialPath = validatedTarget
+      ? getStoredRemoteCwd(validatedTarget)
+      : projectCwd || settings?.working_directory || "";
+    folderPickerOpen = true;
+  }
+
+  function onFolderPicked(result: { hostName: string | null; path: string }) {
+    const { hostName, path } = result;
+    if (!path) return;
+    if (hostName) {
+      // Remote: persist and navigate to chat with host+folder
+      setStoredRemoteCwd(hostName, path);
+      setLastTarget(hostName);
+      // Clear local projectCwd so the local file tree doesn't try to list a remote path
+      projectCwd = "";
+      dbg("layout", "pickFolder (remote)", { hostName, path });
+      goto(`/chat?host=${encodeURIComponent(hostName)}&folder=${encodeURIComponent(path)}`);
     } else {
-      // Browser mode: no native file picker, prompt for path
-      const input = window.prompt(
-        t("layout_selectProjectFolder"),
-        projectCwd || settings?.working_directory || "/",
-      );
-      dbg("layout", "pickFolder (browser)", { input });
-      if (input) {
-        const normalized = normalizeCwd(input.trim()) || "";
-        if (normalized && removedCwds.includes(normalized)) {
-          removedCwds = removedCwds.filter((c) => c !== normalized);
-          persistRemovedCwds();
-          dbg("layout", "pickFolder: un-removed cwd", { cwd: normalized });
-        }
-        projectCwd = normalized;
+      // Local target
+      const normalized = normalizeCwd(path) || "";
+      if (normalized && removedCwds.includes(normalized)) {
+        removedCwds = removedCwds.filter((c) => c !== normalized);
+        persistRemovedCwds();
+        dbg("layout", "pickFolder: un-removed cwd", { cwd: normalized });
       }
+      projectCwd = normalized;
+      setLastTarget(null);
     }
   }
 
@@ -1716,9 +1783,12 @@
           {#if explorerTab === "files"}
             <div class="flex-1 overflow-y-auto px-1 py-1">
               {#if !projectCwd}
+                {@const lastRemote = getLastTarget()}
                 <div class="flex items-center justify-center px-3 py-12">
                   <p class="text-xs text-muted-foreground text-center">
-                    {t("sidebar_selectProjectBrowse")}
+                    {lastRemote
+                      ? t("layout_remoteFileTreeUnavailable")
+                      : t("sidebar_selectProjectBrowse")}
                   </p>
                 </div>
               {:else if treeLoading}
@@ -2205,10 +2275,20 @@
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <div
           class="absolute right-0 top-0 bottom-0 w-1 cursor-col-resize hover:bg-primary/20 active:bg-primary/30 transition-colors z-10"
-          onmousedown={startResize}
+          onpointerdown={startResize}
         ></div>
       </div>
     </aside>
+  {/if}
+
+  <!-- Ghost line during sidebar drag (zero-reflow preview) -->
+  {#if sidebarResizing}
+    <div
+      bind:this={sidebarGhostEl}
+      class="fixed top-0 bottom-0 z-[9999] pointer-events-none bg-primary"
+      style="left: {sidebarGhostX -
+        1}px; width: 3px; box-shadow: 0 0 8px hsl(var(--primary) / 0.6);"
+    ></div>
   {/if}
 
   <!-- Main content -->
@@ -2268,6 +2348,13 @@
 <AboutModal bind:open={showAbout} />
 
 <PermissionsModal bind:open={permissionsModalOpen} cwd={projectCwd} />
+
+<FolderPicker
+  bind:open={folderPickerOpen}
+  initialHost={folderPickerInitialHost}
+  initialPath={folderPickerInitialPath}
+  onConfirm={onFolderPicked}
+/>
 
 {#if showCliBrowser}
   <CliSessionBrowser

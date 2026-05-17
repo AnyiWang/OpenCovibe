@@ -13,9 +13,15 @@ pub fn shell_escape(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
-/// Shell-escape a path, preserving leading `~/` for shell tilde expansion on the remote host.
-/// `~/projects/my app` → `~/'projects/my app'` (tilde outside quotes, rest escaped).
-fn shell_escape_path(s: &str) -> String {
+/// Shell-escape a path, preserving a leading tilde so the remote shell expands it.
+/// `~/projects/my app` → `~/'projects/my app'`, bare `~` → `~`.
+/// Without the bare-`~` carve-out, `shell_escape("~")` would emit `'~'` and POSIX
+/// shells skip tilde expansion inside quotes, so `cd '~'` would look for a literal
+/// directory named `~`.
+pub fn shell_escape_path(s: &str) -> String {
+    if s == "~" {
+        return "~".to_string();
+    }
     if let Some(rest) = s.strip_prefix("~/") {
         format!("~/{}", shell_escape(rest))
     } else {
@@ -149,4 +155,33 @@ pub fn build_remote_claude_command(
     );
 
     full_cmd
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shell_escape_path_bare_tilde_stays_unquoted() {
+        // Quoting `~` would block the remote shell's tilde expansion.
+        assert_eq!(shell_escape_path("~"), "~");
+    }
+
+    #[test]
+    fn shell_escape_path_tilde_prefix_preserved() {
+        assert_eq!(shell_escape_path("~/projects"), "~/'projects'");
+        assert_eq!(shell_escape_path("~/my app"), "~/'my app'");
+    }
+
+    #[test]
+    fn shell_escape_path_absolute_quoted() {
+        assert_eq!(shell_escape_path("/home/user"), "'/home/user'");
+        assert_eq!(shell_escape_path("/path with space"), "'/path with space'");
+    }
+
+    #[test]
+    fn shell_escape_path_handles_embedded_quote() {
+        // POSIX-safe: end quote, escaped quote, start quote.
+        assert_eq!(shell_escape_path("/it's"), "'/it'\\''s'");
+    }
 }

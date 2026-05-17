@@ -222,6 +222,12 @@ pub async fn dispatch_command(
             let content = crate::commands::files::read_text_file(path, cwd)?;
             Ok(json!(content))
         }
+        "stat_text_file" => {
+            let path = extract_str(&params, "path")?;
+            let cwd = params.get("cwd").and_then(|v| v.as_str()).map(String::from);
+            let size = crate::commands::files::stat_text_file(path, cwd)?;
+            Ok(json!(size))
+        }
         "write_text_file" => {
             let path = extract_str(&params, "path")?;
             let content = extract_str(&params, "content")?;
@@ -256,6 +262,20 @@ pub async fn dispatch_command(
             let cwd = params.get("cwd").and_then(|v| v.as_str()).map(String::from);
             let result = crate::commands::fs::read_file_base64(path, cwd)?;
             serde_json::to_value(result).map_err(|e| e.to_string())
+        }
+        "list_remote_directory" => {
+            let host_name = extract_str(&params, "host_name")?;
+            let path = extract_str(&params, "path")?;
+            let show_hidden = params.get("show_hidden").and_then(|v| v.as_bool());
+            let result =
+                crate::commands::remote_fs::list_remote_directory(host_name, path, show_hidden)
+                    .await?;
+            serde_json::to_value(result).map_err(|e| e.to_string())
+        }
+        "resolve_remote_home" => {
+            let host_name = extract_str(&params, "host_name")?;
+            let result = crate::commands::remote_fs::resolve_remote_home(host_name).await?;
+            Ok(json!(result))
         }
 
         // ── Git ──
@@ -897,6 +917,10 @@ pub async fn dispatch_command(
                 .get("platform_id")
                 .and_then(|v| v.as_str())
                 .map(String::from);
+            let permission_mode_override = params
+                .get("permission_mode_override")
+                .and_then(|v| v.as_str())
+                .map(String::from);
             crate::commands::session::start_session_impl(
                 &state.emitter,
                 &state.sessions,
@@ -908,6 +932,7 @@ pub async fn dispatch_command(
                 initial_message,
                 attachments,
                 platform_id,
+                permission_mode_override,
             )
             .await?;
             Ok(json!(true))
@@ -1092,11 +1117,13 @@ pub async fn dispatch_command(
             let run_id = extract_str(&params, "run_id")?;
             let request_id = extract_str(&params, "request_id")?;
             let decision = extract_str(&params, "decision")?;
+            let updated_input = params.get("updated_input").cloned();
             log::debug!(
-                "[dispatch] respond_hook_callback: run_id={}, req_id={}, decision={}",
+                "[dispatch] respond_hook_callback: run_id={}, req_id={}, decision={}, has_updated_input={}",
                 run_id,
                 request_id,
-                decision
+                decision,
+                updated_input.is_some(),
             );
             let cmd_tx = {
                 let map = state.sessions.lock().await;
@@ -1104,7 +1131,12 @@ pub async fn dispatch_command(
                     .map(|h| h.cmd_tx.clone())
                     .ok_or_else(|| format!("Session {} not found", run_id))?
             };
-            let response = json!({ "decision": decision });
+            let mut response = json!({ "decision": decision });
+            if decision == "allow" {
+                if let Some(input) = updated_input {
+                    response["updatedInput"] = input;
+                }
+            }
             let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
             cmd_tx
                 .send(ActorCommand::RespondHookCallback {

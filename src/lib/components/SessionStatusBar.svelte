@@ -58,6 +58,7 @@
     onPreviewToggle,
     previewOpen = false,
     onStatusClick,
+    onExportHtml,
   }: {
     run?: TaskRun | null;
     agent?: string;
@@ -107,6 +108,7 @@
     onPreviewToggle?: () => void;
     previewOpen?: boolean;
     onStatusClick?: () => void;
+    onExportHtml?: () => void;
   } = $props();
 
   $effect(() => {
@@ -347,9 +349,21 @@
           : "bg-emerald-500",
   );
 
-  let currentModelInfo = $derived(models.find((m) => m.value === model));
-  let effortLevels = $derived(currentModelInfo?.supportedEffortLevels ?? []);
-  let showEffort = $derived(currentModelInfo?.supportsEffort === true && effortLevels.length > 0);
+  // Find model info: exact match first, then fuzzy (model ID contains alias)
+  let currentModelInfo = $derived.by(() => {
+    const exact = models.find((m) => m.value === model);
+    if (exact) return exact;
+    return models.find((m) => model.includes(m.value) && m.value !== "default");
+  });
+  // Effort: always collect levels from any model that supports them (for always-visible UI)
+  let anyModelEffortLevels = $derived.by(() => {
+    const supporting = models.find(
+      (m) => m.supportsEffort === true && m.supportedEffortLevels?.length,
+    );
+    return supporting?.supportedEffortLevels ?? [];
+  });
+  let effortLevels = $derived(currentModelInfo?.supportedEffortLevels ?? anyModelEffortLevels);
+  let effortDisabled = $derived(currentModelInfo?.supportsEffort !== true);
 
   let modelLabel = $derived.by(() => {
     // Check agent-specific models first, then platform/CLI models
@@ -462,7 +476,7 @@
             onclick={toggleModelDropdown}
           >
             {modelLabel}
-            {#if showEffort && effort}
+            {#if !effortDisabled && effort}
               <span class="text-foreground/60 text-[10px]">{effort}</span>
             {/if}
             <svg
@@ -538,6 +552,28 @@
 
     <!-- Right: actions + chevron -->
     <div class="flex items-center gap-2">
+      {#if onExportHtml}
+        <button
+          class="flex items-center gap-1 rounded px-2 py-0.5 text-foreground/50 hover:text-foreground hover:bg-accent transition-colors"
+          onclick={onExportHtml}
+          title={t("export_htmlButton")}
+          data-export-exclude
+        >
+          <svg
+            class="h-3 w-3"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            ><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8" /><polyline
+              points="16 6 12 2 8 6"
+            /><line x1="12" x2="12" y1="2" y2="15" /></svg
+          >
+          Export
+        </button>
+      {/if}
       {#if onPreviewToggle}
         <button
           class="flex items-center gap-1 rounded px-2 py-0.5 transition-colors
@@ -862,7 +898,7 @@
         </button>
       {/each}
     </div>
-    {#if showEffort && onEffortChange}
+    {#if effortLevels.length > 0 && onEffortChange}
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div
         onkeydown={(e) => {
@@ -873,14 +909,21 @@
       >
         <div class="border-t mx-1 my-1"></div>
         <div class="px-3 py-2">
-          <div class="text-[10px] text-muted-foreground mb-1.5">{t("effort_label")}</div>
+          <div class="text-[10px] text-muted-foreground mb-1.5">
+            {t("effort_label")}{#if effortDisabled}<span class="ml-1 opacity-50"
+                >— {currentModelInfo?.displayName ?? model} not supported</span
+              >{/if}
+          </div>
           <div class="flex gap-1">
             {#each effortLevels as level}
               <button
                 class="flex-1 rounded px-2 py-1 text-xs transition-colors
-                  {effort === level
-                  ? 'bg-primary text-primary-foreground font-medium'
-                  : 'bg-muted/50 text-muted-foreground hover:bg-accent'}"
+                  {effortDisabled
+                  ? 'bg-muted/30 text-muted-foreground/40 cursor-not-allowed'
+                  : effort === level
+                    ? 'bg-primary text-primary-foreground font-medium'
+                    : 'bg-muted/50 text-muted-foreground hover:bg-accent'}"
+                disabled={effortDisabled}
                 onclick={() => onEffortChange(level)}>{level}</button
               >
             {/each}

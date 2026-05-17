@@ -186,6 +186,36 @@ const toolColors: Record<string, ToolColor> = {
     icon: "M5 3l7 9-7 9M14 21h7",
     border: "border-blue-500/30",
   },
+  Monitor: {
+    bg: "bg-cyan-500/10",
+    text: "text-cyan-600 dark:text-cyan-400",
+    icon: "M12 20v-6M6 20V10M18 20V4",
+    border: "border-cyan-500/30",
+  },
+  CronCreate: {
+    bg: "bg-emerald-500/10",
+    text: "text-emerald-600 dark:text-emerald-400",
+    icon: "M8 2v4M16 2v4M3 10h18M5 4h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zM12 14v4M10 16h4",
+    border: "border-emerald-500/30",
+  },
+  CronList: {
+    bg: "bg-sky-500/10",
+    text: "text-sky-600 dark:text-sky-400",
+    icon: "M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01",
+    border: "border-sky-500/30",
+  },
+  CronDelete: {
+    bg: "bg-red-500/10",
+    text: "text-red-600 dark:text-red-400",
+    icon: "M8 2v4M16 2v4M3 10h18M5 4h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zM9 15l6 0",
+    border: "border-red-500/30",
+  },
+  ScheduleWakeup: {
+    bg: "bg-amber-500/10",
+    text: "text-amber-600 dark:text-amber-400",
+    icon: "M12 8v4l3 2M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2z",
+    border: "border-amber-500/30",
+  },
 };
 
 const defaultToolColor: ToolColor = {

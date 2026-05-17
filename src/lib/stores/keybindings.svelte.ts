@@ -167,6 +167,14 @@ export const APP_DEFAULTS: KeyBinding[] = [
     editable: true,
     source: "app",
   },
+  {
+    command: "app:exportChatHtml",
+    label: "Export Chat as HTML",
+    key: "Cmd+Shift+H",
+    context: "global",
+    editable: true,
+    source: "app",
+  },
 ];
 
 // ── Default CLI keybindings (read-only, best-effort) ──
