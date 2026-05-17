@@ -308,10 +308,18 @@ impl CodexStdoutParser {
             .get("output_tokens")
             .and_then(|v| v.as_u64())
             .unwrap_or(0);
+        // Codex v0.130+ reports reasoning tokens separately. Merge into output_tokens so
+        // reasoning-model sessions don't undercount usage (mirrors Claude's thinking-token
+        // handling, which also folds them into output_tokens).
+        let reasoning_out = usage
+            .get("reasoning_output_tokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let output_total = output.saturating_add(reasoning_out);
         vec![BusEvent::UsageUpdate {
             run_id: run_id.to_string(),
             input_tokens: input,
-            output_tokens: output,
+            output_tokens: output_total,
             cache_read_tokens: if cached > 0 { Some(cached) } else { None },
             cache_write_tokens: None,
             total_cost_usd: 0.0, // Codex doesn't provide cost
@@ -369,7 +377,10 @@ impl PipeStdoutParser for CodexStdoutParser {
             "item.started" => self.map_item_started(run_id, raw),
             "item.completed" => self.map_item_completed(run_id, raw),
             "item.updated" => {
-                // item.updated is only emitted for todo_list items (plan updates)
+                // Codex v0.130 only emits item.updated for todo_list. Other item types
+                // go item.started → item.completed directly. Emit Raw for unknown types
+                // so future upstream additions (e.g. streaming command output) aren't
+                // silently dropped.
                 let item = raw.get("item");
                 let item_type = item
                     .and_then(|i| i.get("type").and_then(|v| v.as_str()))
@@ -382,6 +393,13 @@ impl PipeStdoutParser for CodexStdoutParser {
                             data: item.clone(),
                         }];
                     }
+                }
+                if let Some(item) = item {
+                    return vec![BusEvent::Raw {
+                        run_id: run_id.to_string(),
+                        source: "codex_item_updated_unknown".to_string(),
+                        data: item.clone(),
+                    }];
                 }
                 vec![]
             }
@@ -640,7 +658,12 @@ mod tests {
         p.turn_counter = 1;
         let raw = json!({
             "type": "turn.completed",
-            "usage": {"input_tokens": 500, "cached_input_tokens": 100, "output_tokens": 200}
+            "usage": {
+                "input_tokens": 500,
+                "cached_input_tokens": 100,
+                "output_tokens": 200,
+                "reasoning_output_tokens": 50
+            }
         });
         let events = p.parse_line("run-1", &raw);
         assert_eq!(events.len(), 1);
@@ -653,10 +676,27 @@ mod tests {
                 ..
             } => {
                 assert_eq!(*input_tokens, 500);
-                assert_eq!(*output_tokens, 200);
+                // reasoning_output_tokens (50) folded into output_tokens (200) → 250
+                assert_eq!(*output_tokens, 250);
                 assert_eq!(*cache_read_tokens, Some(100));
                 assert_eq!(*turn_index, Some(1));
             }
+            other => panic!("expected UsageUpdate, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn turn_completed_without_reasoning_tokens() {
+        // Backward compat: usage without reasoning_output_tokens treats it as 0.
+        let mut p = parser();
+        let raw = json!({
+            "type": "turn.completed",
+            "usage": {"input_tokens": 100, "output_tokens": 30}
+        });
+        let events = p.parse_line("run-1", &raw);
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            BusEvent::UsageUpdate { output_tokens, .. } => assert_eq!(*output_tokens, 30),
             other => panic!("expected UsageUpdate, got {:?}", other),
         }
     }
@@ -728,7 +768,9 @@ mod tests {
     }
 
     #[test]
-    fn item_updated_non_todo_is_ignored() {
+    fn item_updated_unknown_emits_raw() {
+        // Defensive: unknown item.updated types must produce a Raw event so future
+        // upstream additions are not silently dropped.
         let mut p = parser();
         let events = p.parse_line(
             "run-1",
@@ -737,6 +779,18 @@ mod tests {
                 "item": { "type": "agent_message", "id": "m1", "text": "hello" }
             }),
         );
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            BusEvent::Raw { source, .. } => assert_eq!(source, "codex_item_updated_unknown"),
+            other => panic!("expected Raw, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn item_updated_missing_item_returns_empty() {
+        // Boundary: item.updated with no item field is unparseable, return empty.
+        let mut p = parser();
+        let events = p.parse_line("run-1", &json!({ "type": "item.updated" }));
         assert!(events.is_empty());
     }
 
