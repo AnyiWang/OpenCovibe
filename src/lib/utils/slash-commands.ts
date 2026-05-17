@@ -428,6 +428,16 @@ export function isSubViewInputValid(inputText: string, activeCmdName: string): b
   return pattern.test(inputText);
 }
 
+/**
+ * Extract the slash-command query from input text.
+ * Supports both ASCII slash (/) and Chinese dun (、) as trigger prefixes.
+ * Returns the query (text after trigger), or null if input doesn't start with a trigger.
+ */
+export function extractSlashQuery(inputText: string): string | null {
+  const m = inputText.match(/^([/、])([a-zA-Z0-9_-]*)$/);
+  return m ? m[2] : null;
+}
+
 // ── Quick action pills (L3) ──
 
 /** Ordered list of command names shown as quick-action pills above the action bar. */
