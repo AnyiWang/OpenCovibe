@@ -1202,9 +1202,11 @@ export async function checkAuthStatus(): Promise<import("./types").AuthCheckResu
   return invoke<import("./types").AuthCheckResult>("check_auth_status");
 }
 
-export async function detectInstallMethods(): Promise<import("./types").InstallMethod[]> {
-  dbg("api", "detectInstallMethods");
-  return invoke<import("./types").InstallMethod[]>("detect_install_methods");
+export async function detectInstallMethods(
+  agent: "claude" | "codex" = "claude",
+): Promise<import("./types").InstallMethod[]> {
+  dbg("api", "detectInstallMethods", { agent });
+  return invoke<import("./types").InstallMethod[]>("detect_install_methods", { agent });
 }
 
 export async function runClaudeLogin(): Promise<boolean> {

@@ -2,8 +2,10 @@
   import {
     checkAgentCli,
     checkAuthStatus,
+    checkCodexAuth,
     detectInstallMethods,
     runClaudeLogin,
+    runCodexLogin,
     updateUserSettings,
   } from "$lib/api";
   import type { InstallMethod, PlatformPreset } from "$lib/types";
@@ -16,6 +18,7 @@
   let { onComplete }: { onComplete: () => void } = $props();
 
   type WizardStep =
+    | "agent_choice"
     | "checking"
     | "cli_not_found"
     | "auth_choice"
@@ -23,7 +26,8 @@
     | "api_key_setup"
     | "done";
 
-  let step = $state<WizardStep>("checking");
+  let step = $state<WizardStep>("agent_choice");
+  let targetAgent = $state<"claude" | "codex">("claude");
   let error = $state("");
 
   // CLI install state
@@ -57,27 +61,35 @@
   });
 
   async function runInitialCheck() {
-    dbg("wizard", "starting initial check");
+    dbg("wizard", "starting initial check", { targetAgent });
     try {
-      const [cliResult, authResult] = await Promise.all([
-        checkAgentCli("claude"),
-        checkAuthStatus(),
-      ]);
+      const cliResult = await checkAgentCli(targetAgent);
+      let authed = false;
+      if (targetAgent === "codex") {
+        // Codex auth lives in `codex login status`, not the Anthropic-specific auth_mode.
+        try {
+          authed = (await checkCodexAuth()).logged_in;
+        } catch (e) {
+          dbgWarn("wizard", "checkCodexAuth failed", e);
+          authed = false;
+        }
+      } else {
+        const a = await checkAuthStatus();
+        authed = a.has_oauth || a.has_api_key;
+      }
 
       dbg("wizard", "check results", {
+        targetAgent,
         cliFound: cliResult.found,
-        hasOAuth: authResult.has_oauth,
-        hasApiKey: authResult.has_api_key,
+        authed,
       });
 
-      if (cliResult.found && (authResult.has_oauth || authResult.has_api_key)) {
-        // Fully configured — mark onboarding done and skip
+      if (cliResult.found && authed) {
         await completeOnboarding();
         return;
       }
 
-      if (cliResult.found && !authResult.has_oauth && !authResult.has_api_key) {
-        // CLI found but no auth — go to auth choice
+      if (cliResult.found && !authed) {
         step = "auth_choice";
         return;
       }
@@ -95,8 +107,8 @@
 
   async function loadInstallMethods() {
     try {
-      installMethods = await detectInstallMethods();
-      dbg("wizard", "install methods", installMethods);
+      installMethods = await detectInstallMethods(targetAgent);
+      dbg("wizard", "install methods", { targetAgent, methods: installMethods });
     } catch (e) {
       dbgWarn("wizard", "detect methods error", e);
       installMethods = [];
@@ -118,8 +130,8 @@
   async function recheckCli() {
     rechecking = true;
     try {
-      const result = await checkAgentCli("claude");
-      dbg("wizard", "recheck result", result);
+      const result = await checkAgentCli(targetAgent);
+      dbg("wizard", "recheck result", { targetAgent, result });
       if (result.found) {
         step = "auth_choice";
       }
@@ -156,7 +168,7 @@
     };
 
     try {
-      const success = await runClaudeLogin();
+      const success = targetAgent === "codex" ? await runCodexLogin() : await runClaudeLogin();
       unlisten();
 
       if (success) {
@@ -232,11 +244,46 @@
 
   let availableMethods = $derived(installMethods.filter((m) => m.available));
   let unavailableMethods = $derived(installMethods.filter((m) => !m.available));
+
+  // Display names used in agent-aware i18n strings (setup_cliNotFound,
+  // setup_authDesc, setup_oauthDesc).
+  let agentDisplayName = $derived(targetAgent === "codex" ? "Codex" : "Claude Code");
+  let accountDisplayName = $derived(targetAgent === "codex" ? "ChatGPT" : "Anthropic");
 </script>
 
 <div class="fixed inset-0 z-50 flex items-center justify-center bg-background">
   <div class="w-full max-w-xl mx-auto px-6">
-    {#if step === "checking"}
+    {#if step === "agent_choice"}
+      <!-- Agent choice step — user picks which CLI to set up -->
+      <div class="flex flex-col gap-6">
+        <div class="text-center">
+          <h2 class="text-xl font-semibold">{t("setup_agentChoiceTitle")}</h2>
+          <p class="text-sm text-muted-foreground mt-2">{t("setup_agentChoiceDesc")}</p>
+        </div>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <button
+            class="flex flex-col items-start gap-1 rounded-lg border border-border bg-card px-4 py-3 text-left hover:bg-accent transition-colors"
+            onclick={() => {
+              targetAgent = "claude";
+              step = "checking";
+            }}
+          >
+            <span class="text-sm font-medium">{t("setup_agentClaudeName")}</span>
+            <span class="text-xs text-muted-foreground">{t("setup_agentClaudeDesc")}</span>
+          </button>
+          <button
+            class="flex flex-col items-start gap-1 rounded-lg border border-border bg-card px-4 py-3 text-left hover:bg-accent transition-colors"
+            onclick={() => {
+              targetAgent = "codex";
+              step = "checking";
+            }}
+          >
+            <span class="text-sm font-medium">{t("setup_agentCodexName")}</span>
+            <span class="text-xs text-muted-foreground">{t("setup_agentCodexDesc")}</span>
+          </button>
+        </div>
+      </div>
+    {:else if step === "checking"}
       <!-- Checking step -->
       <div class="flex flex-col items-center gap-4 py-16">
         <div
@@ -248,7 +295,9 @@
       <!-- CLI not found — show install commands to copy -->
       <div class="flex flex-col gap-6">
         <div class="text-center">
-          <h2 class="text-xl font-semibold">{t("setup_cliNotFound")}</h2>
+          <h2 class="text-xl font-semibold">
+            {t("setup_cliNotFound", { agentName: agentDisplayName })}
+          </h2>
           <p class="text-sm text-muted-foreground mt-2">{t("setup_cliNotFoundDesc")}</p>
         </div>
 
@@ -321,14 +370,17 @@
               {t("setup_recheck")}
             {/if}
           </button>
-          <button
-            class="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors"
-            onclick={() => {
-              step = "api_key_setup";
-            }}
-          >
-            {t("setup_skipCli")}
-          </button>
+          {#if targetAgent !== "codex"}
+            <!-- API key fallback is Anthropic-only; Codex doesn't use OpenCovibe's API key flow. -->
+            <button
+              class="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors"
+              onclick={() => {
+                step = "api_key_setup";
+              }}
+            >
+              {t("setup_skipCli")}
+            </button>
+          {/if}
         </div>
 
         <!-- Setup hint -->
@@ -341,10 +393,16 @@
       <div class="flex flex-col gap-6">
         <div class="text-center">
           <h2 class="text-xl font-semibold">{t("setup_authTitle")}</h2>
-          <p class="text-sm text-muted-foreground mt-2">{t("setup_authDesc")}</p>
+          <p class="text-sm text-muted-foreground mt-2">
+            {t("setup_authDesc", { agentName: agentDisplayName })}
+          </p>
         </div>
 
-        <div class="grid grid-cols-2 gap-4">
+        <div
+          class={targetAgent === "codex"
+            ? "grid grid-cols-1 gap-4 max-w-sm mx-auto"
+            : "grid grid-cols-2 gap-4"}
+        >
           <!-- OAuth -->
           <button
             class="flex flex-col items-center gap-3 rounded-lg border border-border p-6 text-center transition-colors hover:border-primary/50 hover:bg-accent/50"
@@ -364,7 +422,9 @@
             >
             <div>
               <p class="font-medium text-sm">{t("setup_oauthTitle")}</p>
-              <p class="text-xs text-muted-foreground mt-1">{t("setup_oauthDesc")}</p>
+              <p class="text-xs text-muted-foreground mt-1">
+                {t("setup_oauthDesc", { accountName: accountDisplayName })}
+              </p>
             </div>
             <span
               class="rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary"
@@ -372,30 +432,32 @@
             >
           </button>
 
-          <!-- API Key -->
-          <button
-            class="flex flex-col items-center gap-3 rounded-lg border border-border p-6 text-center transition-colors hover:border-primary/50 hover:bg-accent/50"
-            onclick={() => {
-              step = "api_key_setup";
-            }}
-          >
-            <svg
-              class="h-8 w-8 text-muted-foreground"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="1.5"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              ><path
-                d="m21 2-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0 3 3L22 7l-3-3m-3.5 3.5L19 4"
-              /></svg
+          <!-- API Key (Anthropic-only — Codex auth runs through `codex login`, not OpenCovibe) -->
+          {#if targetAgent !== "codex"}
+            <button
+              class="flex flex-col items-center gap-3 rounded-lg border border-border p-6 text-center transition-colors hover:border-primary/50 hover:bg-accent/50"
+              onclick={() => {
+                step = "api_key_setup";
+              }}
             >
-            <div>
-              <p class="font-medium text-sm">{t("setup_apiKeyTitle")}</p>
-              <p class="text-xs text-muted-foreground mt-1">{t("setup_apiKeyDesc")}</p>
-            </div>
-          </button>
+              <svg
+                class="h-8 w-8 text-muted-foreground"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.5"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                ><path
+                  d="m21 2-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0 3 3L22 7l-3-3m-3.5 3.5L19 4"
+                /></svg
+              >
+              <div>
+                <p class="font-medium text-sm">{t("setup_apiKeyTitle")}</p>
+                <p class="text-xs text-muted-foreground mt-1">{t("setup_apiKeyDesc")}</p>
+              </div>
+            </button>
+          {/if}
         </div>
       </div>
     {:else if step === "oauth_login"}

@@ -802,7 +802,8 @@ pub async fn dispatch_command(
             serde_json::to_value(result).map_err(|e| e.to_string())
         }
         "detect_install_methods" => {
-            let result = crate::commands::onboarding::detect_install_methods().await?;
+            let agent = extract_str(&params, "agent").unwrap_or_else(|_| "claude".into());
+            let result = crate::commands::onboarding::detect_install_methods(agent).await?;
             serde_json::to_value(result).map_err(|e| e.to_string())
         }
         "get_auth_overview" => {
