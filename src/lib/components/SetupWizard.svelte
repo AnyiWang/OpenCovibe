@@ -244,6 +244,11 @@
 
   let availableMethods = $derived(installMethods.filter((m) => m.available));
   let unavailableMethods = $derived(installMethods.filter((m) => !m.available));
+
+  // Display names used in agent-aware i18n strings (setup_cliNotFound,
+  // setup_authDesc, setup_oauthDesc).
+  let agentDisplayName = $derived(targetAgent === "codex" ? "Codex" : "Claude Code");
+  let accountDisplayName = $derived(targetAgent === "codex" ? "ChatGPT" : "Anthropic");
 </script>
 
 <div class="fixed inset-0 z-50 flex items-center justify-center bg-background">
@@ -290,7 +295,9 @@
       <!-- CLI not found — show install commands to copy -->
       <div class="flex flex-col gap-6">
         <div class="text-center">
-          <h2 class="text-xl font-semibold">{t("setup_cliNotFound")}</h2>
+          <h2 class="text-xl font-semibold">
+            {t("setup_cliNotFound", { agentName: agentDisplayName })}
+          </h2>
           <p class="text-sm text-muted-foreground mt-2">{t("setup_cliNotFoundDesc")}</p>
         </div>
 
@@ -386,7 +393,9 @@
       <div class="flex flex-col gap-6">
         <div class="text-center">
           <h2 class="text-xl font-semibold">{t("setup_authTitle")}</h2>
-          <p class="text-sm text-muted-foreground mt-2">{t("setup_authDesc")}</p>
+          <p class="text-sm text-muted-foreground mt-2">
+            {t("setup_authDesc", { agentName: agentDisplayName })}
+          </p>
         </div>
 
         <div
@@ -413,7 +422,9 @@
             >
             <div>
               <p class="font-medium text-sm">{t("setup_oauthTitle")}</p>
-              <p class="text-xs text-muted-foreground mt-1">{t("setup_oauthDesc")}</p>
+              <p class="text-xs text-muted-foreground mt-1">
+                {t("setup_oauthDesc", { accountName: accountDisplayName })}
+              </p>
             </div>
             <span
               class="rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary"
