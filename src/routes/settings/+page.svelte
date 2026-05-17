@@ -6,6 +6,7 @@
   import { loadCliInfo, KeybindingStore } from "$lib/stores";
   import type {
     UserSettings,
+    AgentSettings,
     CliConfigSettingDef,
     RemoteHost,
     RemoteTestResult,
@@ -571,6 +572,30 @@
     }
   }
 
+  // ── Codex per-session flags (AgentSettings on codex agent) ──
+  let codexAgentSettings = $state<AgentSettings | null>(null);
+
+  async function loadCodexAgentSettings() {
+    try {
+      codexAgentSettings = await api.getAgentSettings("codex");
+      dbg("settings", "codex agent settings loaded", codexAgentSettings);
+    } catch (e) {
+      dbgWarn("settings", "loadCodexAgentSettings failed", e);
+      codexAgentSettings = null;
+    }
+  }
+
+  async function saveCodexAgentPatch(patch: Partial<AgentSettings>) {
+    if (!codexAgentSettings) return;
+    try {
+      const updated = await api.updateAgentSettings("codex", patch);
+      codexAgentSettings = updated;
+      dbg("settings", "codex agent settings saved", patch);
+    } catch (e) {
+      dbgWarn("settings", "saveCodexAgentPatch failed", e);
+    }
+  }
+
   // ── Codex hooks count ──
   let codexHooksCount = $state<number | null>(null);
 
@@ -594,8 +619,10 @@
     await loadCodexStatus();
     if (codexStatus?.installed) {
       loadCodexHooksCount();
+      loadCodexAgentSettings();
     } else {
       codexHooksCount = null;
+      codexAgentSettings = null;
     }
   }
 
@@ -1292,9 +1319,12 @@
     } catch (e) {
       dbgWarn("settings", "error", e);
     }
-    // Load Codex status + hooks
+    // Load Codex status + hooks + per-session agent settings
     loadCodexStatus().then(() => {
-      if (codexStatus?.installed) loadCodexHooksCount();
+      if (codexStatus?.installed) {
+        loadCodexHooksCount();
+        loadCodexAgentSettings();
+      }
     });
     // Load auth overview
     api
@@ -3308,6 +3338,138 @@
           <p class="text-[10px] text-muted-foreground px-1">
             {t("settings_codexConfig_footer")}
           </p>
+
+          <!-- Codex per-session flags (OpenCovibe layer, overrides config.toml) -->
+          {#if codexAgentSettings}
+            <Card class="p-5 space-y-4">
+              <div class="flex items-center justify-between gap-2">
+                <div>
+                  <h3 class="text-sm font-semibold">
+                    {t("settings_codexFlags_title")}
+                  </h3>
+                  <p class="text-xs text-muted-foreground mt-0.5">
+                    {t("settings_codexFlags_subtitle")}
+                  </p>
+                </div>
+              </div>
+
+              <!-- Reasoning effort (per-session override) -->
+              <div class="flex items-center justify-between gap-4 py-1">
+                <div class="flex-1 min-w-0">
+                  <p class="text-sm font-medium">{t("settings_codexFlags_effortLabel")}</p>
+                  <p class="text-xs text-muted-foreground mt-0.5">
+                    {t("settings_codexFlags_effortDesc")}
+                  </p>
+                </div>
+                <div class="flex items-center gap-1.5 shrink-0 flex-wrap">
+                  {#each [{ val: "", labelKey: "settings_codexConfig_optInherit" }, { val: "none", labelKey: "settings_codexConfig_optNone" }, { val: "minimal", labelKey: "settings_codexConfig_optMinimal" }, { val: "low", labelKey: "settings_codexConfig_optLow" }, { val: "medium", labelKey: "settings_codexConfig_optMedium" }, { val: "high", labelKey: "settings_codexConfig_optHigh" }, { val: "xhigh", labelKey: "settings_codexConfig_optXHigh" }] as opt (opt.val)}
+                    <button
+                      class="rounded-md border px-3 py-1.5 text-xs transition-all duration-150
+                        {(codexAgentSettings.effort ?? '') === opt.val
+                        ? 'bg-primary text-primary-foreground'
+                        : 'hover:bg-accent hover:border-ring/30'}"
+                      onclick={() =>
+                        saveCodexAgentPatch({
+                          effort: opt.val === "" ? null : opt.val,
+                        } as Partial<AgentSettings>)}
+                    >
+                      {t(opt.labelKey as Parameters<typeof t>[0])}
+                    </button>
+                  {/each}
+                </div>
+              </div>
+
+              <!-- Profile -->
+              <div class="flex items-center justify-between gap-4 py-1">
+                <div class="flex-1 min-w-0">
+                  <p class="text-sm font-medium">{t("settings_codexFlags_profileLabel")}</p>
+                  <p class="text-xs text-muted-foreground mt-0.5">
+                    {t("settings_codexFlags_profileDesc")}
+                  </p>
+                </div>
+                <input
+                  class="w-40 shrink-0 rounded-md border bg-transparent px-3 py-1.5 text-sm placeholder:text-muted-foreground focus:border-ring focus:outline-none"
+                  value={codexAgentSettings.profile ?? ""}
+                  placeholder={t("settings_codexFlags_profilePlaceholder")}
+                  onblur={(e) => {
+                    const val = (e.target as HTMLInputElement).value.trim();
+                    saveCodexAgentPatch({ profile: val });
+                  }}
+                />
+              </div>
+
+              <!-- Ephemeral toggle -->
+              <div class="flex items-center justify-between gap-4 py-1">
+                <div class="flex-1 min-w-0">
+                  <p class="text-sm font-medium">{t("settings_codexFlags_ephemeralLabel")}</p>
+                  <p class="text-xs text-muted-foreground mt-0.5">
+                    {t("settings_codexFlags_ephemeralDesc")}
+                  </p>
+                </div>
+                <button
+                  class="rounded-md border px-3 py-1.5 text-xs shrink-0 transition-all
+                    {codexAgentSettings.ephemeral
+                    ? 'bg-primary text-primary-foreground'
+                    : 'hover:bg-accent hover:border-ring/30'}"
+                  onclick={() => saveCodexAgentPatch({ ephemeral: !codexAgentSettings?.ephemeral })}
+                >
+                  {codexAgentSettings.ephemeral
+                    ? t("settings_codexFlags_on")
+                    : t("settings_codexFlags_off")}
+                </button>
+              </div>
+
+              <!-- Ignore user config -->
+              <div class="flex items-center justify-between gap-4 py-1">
+                <div class="flex-1 min-w-0">
+                  <p class="text-sm font-medium">
+                    {t("settings_codexFlags_ignoreUserConfigLabel")}
+                  </p>
+                  <p class="text-xs text-amber-400/80 mt-0.5">
+                    {t("settings_codexFlags_ignoreUserConfigDesc")}
+                  </p>
+                </div>
+                <button
+                  class="rounded-md border px-3 py-1.5 text-xs shrink-0 transition-all
+                    {codexAgentSettings.ignore_user_config
+                    ? 'bg-primary text-primary-foreground'
+                    : 'hover:bg-accent hover:border-ring/30'}"
+                  onclick={() =>
+                    saveCodexAgentPatch({
+                      ignore_user_config: !codexAgentSettings?.ignore_user_config,
+                    })}
+                >
+                  {codexAgentSettings.ignore_user_config
+                    ? t("settings_codexFlags_on")
+                    : t("settings_codexFlags_off")}
+                </button>
+              </div>
+
+              <!-- Ignore rules -->
+              <div class="flex items-center justify-between gap-4 py-1">
+                <div class="flex-1 min-w-0">
+                  <p class="text-sm font-medium">
+                    {t("settings_codexFlags_ignoreRulesLabel")}
+                  </p>
+                  <p class="text-xs text-amber-400/80 mt-0.5">
+                    {t("settings_codexFlags_ignoreRulesDesc")}
+                  </p>
+                </div>
+                <button
+                  class="rounded-md border px-3 py-1.5 text-xs shrink-0 transition-all
+                    {codexAgentSettings.ignore_rules
+                    ? 'bg-primary text-primary-foreground'
+                    : 'hover:bg-accent hover:border-ring/30'}"
+                  onclick={() =>
+                    saveCodexAgentPatch({ ignore_rules: !codexAgentSettings?.ignore_rules })}
+                >
+                  {codexAgentSettings.ignore_rules
+                    ? t("settings_codexFlags_on")
+                    : t("settings_codexFlags_off")}
+                </button>
+              </div>
+            </Card>
+          {/if}
         </div>
       {/if}
 

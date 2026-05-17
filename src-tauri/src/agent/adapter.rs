@@ -33,6 +33,11 @@ pub struct AdapterSettings {
     pub effort: Option<String>,
     pub betas: Vec<String>,
     pub agents_json: Option<String>,
+    /// Codex per-session flags. Ignored by Claude spawn path.
+    pub ephemeral: bool,
+    pub profile: Option<String>,
+    pub ignore_user_config: bool,
+    pub ignore_rules: bool,
 }
 
 /// Map OpenCovibe permission mode names to Claude CLI `--permission-mode` values.
@@ -147,6 +152,12 @@ pub fn build_adapter_settings(
     let effort = agent.effort.clone();
     let betas = agent.betas.clone().unwrap_or_default();
     let agents_json = agent.agents_json.clone();
+    // Codex per-session flags. `profile` empty string is treated as unset
+    // (UI saves "" to clear the value).
+    let ephemeral = agent.ephemeral.unwrap_or(false);
+    let profile = agent.profile.clone().filter(|s| !s.is_empty());
+    let ignore_user_config = agent.ignore_user_config.unwrap_or(false);
+    let ignore_rules = agent.ignore_rules.unwrap_or(false);
 
     // Mutual exclusion: system_prompt takes priority over append_system_prompt
     if system_prompt.is_some() && append_system_prompt.is_some() {
@@ -154,7 +165,7 @@ pub fn build_adapter_settings(
     }
 
     log::debug!(
-        "[adapter] build_adapter_settings: model={:?}, perm={:?}, allowed={}, disallowed={}, budget={:?}, fallback={:?}, sys_prompt={}chars, append_sys={}chars, tool_set={:?}, add_dirs={}, json_schema={}, partial={}, debug={:?}, no_persist={}, max_turns={:?}, effort={:?}, betas={}, agents_json={}",
+        "[adapter] build_adapter_settings: model={:?}, perm={:?}, allowed={}, disallowed={}, budget={:?}, fallback={:?}, sys_prompt={}chars, append_sys={}chars, tool_set={:?}, add_dirs={}, json_schema={}, partial={}, debug={:?}, no_persist={}, max_turns={:?}, effort={:?}, betas={}, agents_json={}, codex_flags={{ephemeral={}, profile={:?}, ignore_user_config={}, ignore_rules={}}}",
         model,
         permission_mode,
         allowed_tools.len(),
@@ -173,6 +184,10 @@ pub fn build_adapter_settings(
         effort,
         betas.len(),
         agents_json.is_some(),
+        ephemeral,
+        profile,
+        ignore_user_config,
+        ignore_rules,
     );
 
     AdapterSettings {
@@ -194,6 +209,10 @@ pub fn build_adapter_settings(
         effort,
         betas,
         agents_json,
+        ephemeral,
+        profile,
+        ignore_user_config,
+        ignore_rules,
     }
 }
 
@@ -374,6 +393,10 @@ mod tests {
             effort: None,
             betas: vec![],
             agents_json: None,
+            ephemeral: false,
+            profile: None,
+            ignore_user_config: false,
+            ignore_rules: false,
         }
     }
 
@@ -690,5 +713,41 @@ mod tests {
         let adapter = build_adapter_settings(&agent, &user, None);
         // Empty agent.permission_mode → None → falls through to user
         assert_eq!(adapter.permission_mode.as_deref(), Some("default"));
+    }
+
+    #[test]
+    fn test_adapter_propagates_codex_flags() {
+        let mut agent = AgentSettings::default_for("codex");
+        agent.ephemeral = Some(true);
+        agent.profile = Some("dev".into());
+        agent.ignore_user_config = Some(true);
+        agent.ignore_rules = Some(true);
+        let user = make_user_settings();
+
+        let adapter = build_adapter_settings(&agent, &user, None);
+        assert!(adapter.ephemeral);
+        assert_eq!(adapter.profile.as_deref(), Some("dev"));
+        assert!(adapter.ignore_user_config);
+        assert!(adapter.ignore_rules);
+    }
+
+    #[test]
+    fn test_adapter_codex_flags_default_off() {
+        let agent = AgentSettings::default_for("codex");
+        let user = make_user_settings();
+        let adapter = build_adapter_settings(&agent, &user, None);
+        assert!(!adapter.ephemeral);
+        assert_eq!(adapter.profile, None);
+        assert!(!adapter.ignore_user_config);
+        assert!(!adapter.ignore_rules);
+    }
+
+    #[test]
+    fn test_adapter_codex_profile_empty_filtered_to_none() {
+        let mut agent = AgentSettings::default_for("codex");
+        agent.profile = Some(String::new()); // empty string from UI clear
+        let user = make_user_settings();
+        let adapter = build_adapter_settings(&agent, &user, None);
+        assert_eq!(adapter.profile, None);
     }
 }

@@ -37,6 +37,48 @@ pub fn build_agent_command(
             }
             args.push("--json".to_string());
             args.push("--skip-git-repo-check".to_string());
+
+            // Codex per-session flags (AgentSettings).
+            // `--ephemeral` MUST go before resume target rejection — but since
+            // resume_thread_id was already added earlier, ordering here just
+            // affects ergonomics. Codex parses flags positionally before the
+            // optional prompt.
+            if settings.ephemeral {
+                args.push("--ephemeral".to_string());
+            }
+            if settings.ignore_user_config {
+                args.push("--ignore-user-config".to_string());
+            }
+            if settings.ignore_rules {
+                args.push("--ignore-rules".to_string());
+            }
+            // `codex exec resume` does NOT accept --profile (only --json,
+            // --skip-git-repo-check, --ephemeral, --ignore-user-config,
+            // --ignore-rules, --model, -c, --enable/--disable, --image,
+            // --dangerously-bypass-approvals-and-sandbox, --last, --all).
+            // Injecting --profile on a resume call would make Codex exit with
+            // "error: unexpected argument '--profile' found". Only emit it for
+            // new sessions; the profile applied when the session was first
+            // created is persisted on disk and reused automatically.
+            if resume_thread_id.is_none() {
+                if let Some(p) = &settings.profile {
+                    args.push("--profile".to_string());
+                    args.push(p.clone());
+                }
+            } else if settings.profile.is_some() {
+                log::debug!(
+                    "[spawn] skipping --profile on codex resume (not supported by exec resume)"
+                );
+            }
+            // model_reasoning_effort overrides config.toml on a per-session
+            // basis. Empty string treated as unset (UI sends "" to clear).
+            if let Some(e) = &settings.effort {
+                if !e.is_empty() {
+                    args.push("-c".to_string());
+                    args.push(format!("model_reasoning_effort=\"{}\"", e));
+                }
+            }
+
             // Only pass --model if it's a Codex-compatible model.
             // The adapter fallback chain (agent.model → user.default_model) may
             // resolve to a Claude model name (e.g. "opus", "claude-*") which Codex
@@ -53,15 +95,27 @@ pub fn build_agent_command(
                 }
             }
 
-            // Map permission_mode → Codex sandbox/approval flags
+            // Map permission_mode → Codex sandbox/approval flags.
+            // `codex exec resume` does NOT accept --sandbox (verified against
+            // codex v0.130 --help); the sandbox mode of the original session is
+            // persisted on disk and reused. Only --dangerously-bypass-... is
+            // accepted by both `exec` and `exec resume`.
+            let is_resume = resume_thread_id.is_some();
             let is_read_only = matches!(settings.permission_mode.as_deref(), Some("plan"));
             if let Some(ref perm) = settings.permission_mode {
                 match perm.as_str() {
                     "plan" => {
-                        args.push("--sandbox".to_string());
-                        args.push("read-only".to_string());
+                        if !is_resume {
+                            args.push("--sandbox".to_string());
+                            args.push("read-only".to_string());
+                        } else {
+                            log::debug!(
+                                "[spawn] skipping --sandbox read-only on codex resume (not supported by exec resume)"
+                            );
+                        }
                     }
                     "bypassPermissions" | "dontAsk" => {
+                        // --dangerously-bypass-approvals-and-sandbox IS supported by exec resume.
                         args.push("--dangerously-bypass-approvals-and-sandbox".to_string());
                     }
                     // "default" / "acceptEdits" / "auto" → Codex default (workspace-write sandbox)
@@ -69,14 +123,21 @@ pub fn build_agent_command(
                 }
             }
 
-            // Inject --add-dir (skip in read-only/plan mode — Codex ignores writable dirs when read-only)
-            if !is_read_only {
+            // Inject --add-dir. Skip on resume because `codex exec resume` does
+            // NOT accept --add-dir (verified against codex v0.130 --help).
+            // Also skip in read-only/plan mode — Codex ignores writable dirs
+            // when sandbox=read-only.
+            if !is_resume && !is_read_only {
                 for dir in &settings.add_dirs {
                     args.push("--add-dir".to_string());
                     args.push(dir.clone());
                 }
             } else if !settings.add_dirs.is_empty() {
-                log::debug!("[spawn] skipping --add-dir in read-only/plan mode");
+                log::debug!(
+                    "[spawn] skipping --add-dir (resume={}, read_only={})",
+                    is_resume,
+                    is_read_only
+                );
             }
 
             // Prompt must always be the last arg
@@ -118,6 +179,10 @@ mod tests {
             effort: None,
             betas: vec![],
             agents_json: None,
+            ephemeral: false,
+            profile: None,
+            ignore_user_config: false,
+            ignore_rules: false,
         }
     }
 
@@ -199,5 +264,157 @@ mod tests {
         let (_, args) = build_agent_command("codex", "q", &s, false, None).unwrap();
         assert!(!args.contains(&"--sandbox".to_string()));
         assert!(!args.contains(&"--dangerously-bypass-approvals-and-sandbox".to_string()));
+    }
+
+    // ── Codex per-session flags ──
+
+    #[test]
+    fn codex_no_per_session_flags_by_default() {
+        let s = make_settings();
+        let (_, args) = build_agent_command("codex", "q", &s, false, None).unwrap();
+        assert!(!args.contains(&"--ephemeral".to_string()));
+        assert!(!args.contains(&"--profile".to_string()));
+        assert!(!args.contains(&"--ignore-user-config".to_string()));
+        assert!(!args.contains(&"--ignore-rules".to_string()));
+        assert!(!args.iter().any(|a| a.contains("model_reasoning_effort")));
+    }
+
+    #[test]
+    fn codex_ephemeral_flag() {
+        let mut s = make_settings();
+        s.ephemeral = true;
+        let (_, args) = build_agent_command("codex", "q", &s, false, None).unwrap();
+        assert!(args.contains(&"--ephemeral".to_string()));
+    }
+
+    #[test]
+    fn codex_ignore_user_config_flag() {
+        let mut s = make_settings();
+        s.ignore_user_config = true;
+        let (_, args) = build_agent_command("codex", "q", &s, false, None).unwrap();
+        assert!(args.contains(&"--ignore-user-config".to_string()));
+    }
+
+    #[test]
+    fn codex_ignore_rules_flag() {
+        let mut s = make_settings();
+        s.ignore_rules = true;
+        let (_, args) = build_agent_command("codex", "q", &s, false, None).unwrap();
+        assert!(args.contains(&"--ignore-rules".to_string()));
+    }
+
+    #[test]
+    fn codex_profile_flag() {
+        let mut s = make_settings();
+        s.profile = Some("dev".into());
+        let (_, args) = build_agent_command("codex", "q", &s, false, None).unwrap();
+        let idx = args
+            .iter()
+            .position(|a| a == "--profile")
+            .expect("--profile");
+        assert_eq!(args[idx + 1], "dev");
+    }
+
+    #[test]
+    fn codex_profile_skipped_on_resume() {
+        // `codex exec resume` rejects --profile; the profile from session
+        // creation is persisted and reused automatically. Regression guard:
+        // verify spawn does NOT emit --profile when resume_thread_id is set.
+        let mut s = make_settings();
+        s.profile = Some("dev".into());
+        let (_, args) = build_agent_command("codex", "q", &s, false, Some("tid_42")).unwrap();
+        assert!(args.contains(&"resume".to_string()));
+        assert!(args.contains(&"tid_42".to_string()));
+        assert!(!args.contains(&"--profile".to_string()));
+    }
+
+    #[test]
+    fn codex_sandbox_skipped_on_resume() {
+        // `codex exec resume` rejects --sandbox; the sandbox mode of the
+        // original session is persisted on disk. Without this guard, resuming
+        // a plan-mode Codex run would fail with "unexpected argument
+        // '--sandbox' found".
+        let mut s = make_settings();
+        s.permission_mode = Some("plan".into());
+        let (_, args) = build_agent_command("codex", "q", &s, false, Some("tid_x")).unwrap();
+        assert!(args.contains(&"resume".to_string()));
+        assert!(!args.contains(&"--sandbox".to_string()));
+        assert!(!args.contains(&"read-only".to_string()));
+    }
+
+    #[test]
+    fn codex_bypass_still_emitted_on_resume() {
+        // --dangerously-bypass-approvals-and-sandbox IS supported by
+        // `codex exec resume` — keep emitting it.
+        let mut s = make_settings();
+        s.permission_mode = Some("bypassPermissions".into());
+        let (_, args) = build_agent_command("codex", "q", &s, false, Some("tid_x")).unwrap();
+        assert!(args.contains(&"--dangerously-bypass-approvals-and-sandbox".to_string()));
+    }
+
+    #[test]
+    fn codex_add_dir_skipped_on_resume() {
+        // `codex exec resume` rejects --add-dir; the workspace of the original
+        // session is persisted on disk. Without this guard, resuming a run
+        // configured with add_dirs would fail with "unexpected argument
+        // '--add-dir' found".
+        let mut s = make_settings();
+        s.add_dirs = vec!["/tmp/a".into(), "/tmp/b".into()];
+        let (_, args) = build_agent_command("codex", "q", &s, false, Some("tid_x")).unwrap();
+        assert!(args.contains(&"resume".to_string()));
+        assert!(!args.contains(&"--add-dir".to_string()));
+    }
+
+    #[test]
+    fn codex_profile_empty_string_skipped() {
+        // build_adapter_settings filters empty strings to None, but spawn.rs only
+        // checks Some(&p) without re-validating. Guard against future regressions
+        // by asserting spawn doesn't emit --profile when the value is None.
+        let mut s = make_settings();
+        s.profile = None;
+        let (_, args) = build_agent_command("codex", "q", &s, false, None).unwrap();
+        assert!(!args.contains(&"--profile".to_string()));
+    }
+
+    #[test]
+    fn codex_effort_emits_config_override() {
+        for effort in ["none", "minimal", "low", "medium", "high", "xhigh"] {
+            let mut s = make_settings();
+            s.effort = Some(effort.into());
+            let (_, args) = build_agent_command("codex", "q", &s, false, None).unwrap();
+            let expected = format!("model_reasoning_effort=\"{}\"", effort);
+            assert!(
+                args.iter().any(|a| a == &expected),
+                "expected {} in args for effort={}",
+                expected,
+                effort
+            );
+        }
+    }
+
+    #[test]
+    fn codex_effort_empty_skipped() {
+        let mut s = make_settings();
+        s.effort = Some("".into());
+        let (_, args) = build_agent_command("codex", "q", &s, false, None).unwrap();
+        assert!(!args.iter().any(|a| a.contains("model_reasoning_effort")));
+    }
+
+    #[test]
+    fn codex_all_per_session_flags_together() {
+        let mut s = make_settings();
+        s.ephemeral = true;
+        s.ignore_user_config = true;
+        s.ignore_rules = true;
+        s.profile = Some("ci".into());
+        s.effort = Some("high".into());
+        let (_, args) = build_agent_command("codex", "q", &s, false, None).unwrap();
+        assert!(args.contains(&"--ephemeral".to_string()));
+        assert!(args.contains(&"--ignore-user-config".to_string()));
+        assert!(args.contains(&"--ignore-rules".to_string()));
+        assert!(args.contains(&"--profile".to_string()));
+        assert!(args.contains(&"ci".to_string()));
+        assert!(args.iter().any(|a| a == "model_reasoning_effort=\"high\""));
+        assert_eq!(args.last().unwrap(), "q"); // prompt still last
     }
 }
