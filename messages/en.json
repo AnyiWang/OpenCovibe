@@ -1107,6 +1107,12 @@
   "settings_shortcuts_conflictsWith": "Conflicts with: {label}",
   "settings_shortcuts_cliDefaults": "CLI defaults",
 
+  "setup_agentChoiceTitle": "Which CLI do you want to set up?",
+  "setup_agentChoiceDesc": "Pick one to start. You can install the other later from Settings.",
+  "setup_agentClaudeName": "Claude Code",
+  "setup_agentClaudeDesc": "Anthropic's coding agent (OAuth or API key).",
+  "setup_agentCodexName": "Codex",
+  "setup_agentCodexDesc": "OpenAI's coding agent (ChatGPT login required).",
   "setup_checking": "Checking environment...",
   "setup_cliNotFound": "Claude Code CLI Not Detected",
   "setup_cliNotFoundDesc": "Install it in your terminal using one of these commands:",

@@ -39,11 +39,28 @@ pub async fn check_auth_status() -> Result<AuthCheckResult, String> {
     })
 }
 
-/// Detect which CLI installation methods are available on this system.
+/// Detect which CLI installation methods are available for the given agent.
+/// Unknown agent values fall back to Claude (preserves old behavior for callers
+/// that haven't been updated yet).
 #[tauri::command]
-pub async fn detect_install_methods() -> Result<Vec<InstallMethod>, String> {
-    log::debug!("[onboarding] detect_install_methods");
+pub async fn detect_install_methods(agent: String) -> Result<Vec<InstallMethod>, String> {
+    log::debug!("[onboarding] detect_install_methods: agent={}", agent);
+    let methods = match agent.as_str() {
+        "codex" => detect_codex_install_methods().await,
+        _ => detect_claude_install_methods().await,
+    };
+    log::debug!(
+        "[onboarding] install methods ({}): {:?}",
+        agent,
+        methods
+            .iter()
+            .map(|m| format!("{}={}", m.id, m.available))
+            .collect::<Vec<_>>()
+    );
+    Ok(methods)
+}
 
+async fn detect_claude_install_methods() -> Vec<InstallMethod> {
     let mut methods = Vec::new();
 
     // 1. Homebrew — macOS/Linux only (not relevant on Windows)
@@ -153,14 +170,46 @@ pub async fn detect_install_methods() -> Result<Vec<InstallMethod>, String> {
         });
     }
 
-    log::debug!(
-        "[onboarding] install methods: {:?}",
-        methods
-            .iter()
-            .map(|m| format!("{}={}", m.id, m.available))
-            .collect::<Vec<_>>()
-    );
-    Ok(methods)
+    methods
+}
+
+async fn detect_codex_install_methods() -> Vec<InstallMethod> {
+    let mut methods = Vec::new();
+
+    // Homebrew — macOS/Linux only
+    #[cfg(not(windows))]
+    {
+        let has_brew = which_binary("brew");
+        methods.push(InstallMethod {
+            id: "brew".into(),
+            name: "Homebrew".into(),
+            command: "brew install codex".into(),
+            available: has_brew,
+            unavailable_reason: if has_brew {
+                None
+            } else {
+                Some("Homebrew not installed".into())
+            },
+            note: None,
+        });
+    }
+
+    // npm — official cross-platform install path for Codex CLI
+    let has_npm = check_npm_available().await;
+    methods.push(InstallMethod {
+        id: "npm".into(),
+        name: "npm (Node.js)".into(),
+        command: "npm install -g @openai/codex".into(),
+        available: has_npm,
+        unavailable_reason: if has_npm {
+            None
+        } else {
+            Some("Requires Node.js 18+".into())
+        },
+        note: None,
+    });
+
+    methods
 }
 
 /// Run `claude login` to start the OAuth flow. The CLI opens a browser automatically.
@@ -694,5 +743,46 @@ mod tests {
         assert_eq!(preset_name("ollama"), "Ollama");
         // Unknown falls back to pid
         assert_eq!(preset_name("unknown-xyz"), "unknown-xyz");
+    }
+
+    #[tokio::test]
+    async fn detect_install_methods_codex_includes_npm() {
+        // npm install path is cross-platform and must always be listed for Codex.
+        let methods = detect_install_methods("codex".into()).await.unwrap();
+        let npm = methods
+            .iter()
+            .find(|m| m.id == "npm")
+            .expect("codex npm method");
+        assert_eq!(npm.command, "npm install -g @openai/codex");
+    }
+
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn detect_install_methods_codex_includes_brew_on_unix() {
+        let methods = detect_install_methods("codex".into()).await.unwrap();
+        let brew = methods
+            .iter()
+            .find(|m| m.id == "brew")
+            .expect("codex brew method");
+        assert_eq!(brew.command, "brew install codex");
+    }
+
+    #[tokio::test]
+    async fn detect_install_methods_claude_default() {
+        // Claude path keeps its existing commands (regression guard).
+        let methods = detect_install_methods("claude".into()).await.unwrap();
+        let npm = methods
+            .iter()
+            .find(|m| m.id == "npm")
+            .expect("claude npm method");
+        assert_eq!(npm.command, "npm install -g @anthropic-ai/claude-code");
+    }
+
+    #[tokio::test]
+    async fn detect_install_methods_invalid_falls_back_to_claude() {
+        // Unknown agent values fall back to Claude to preserve old callers.
+        let methods = detect_install_methods("nonsense".into()).await.unwrap();
+        let npm = methods.iter().find(|m| m.id == "npm").expect("npm method");
+        assert!(npm.command.contains("@anthropic-ai/claude-code"));
     }
 }

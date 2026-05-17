@@ -1107,6 +1107,12 @@
   "settings_shortcuts_conflictsWith": "冲突于：{label}",
   "settings_shortcuts_cliDefaults": "CLI 默认值",
 
+  "setup_agentChoiceTitle": "你想配置哪个 CLI？",
+  "setup_agentChoiceDesc": "先选一个开始。完成后可以在设置里继续安装另一个。",
+  "setup_agentClaudeName": "Claude Code",
+  "setup_agentClaudeDesc": "Anthropic 的编程 Agent（OAuth 或 API key）。",
+  "setup_agentCodexName": "Codex",
+  "setup_agentCodexDesc": "OpenAI 的编程 Agent（需要 ChatGPT 登录）。",
   "setup_checking": "正在检查环境...",
   "setup_cliNotFound": "未检测到 Claude Code CLI",
   "setup_cliNotFoundDesc": "请在终端中使用以下命令安装：",
