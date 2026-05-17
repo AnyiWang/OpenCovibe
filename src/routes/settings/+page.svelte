@@ -3362,24 +3362,18 @@
                   </p>
                 </div>
                 <div class="flex items-center gap-1.5 shrink-0 flex-wrap">
-                  {#each ["", "minimal", "low", "medium", "high", "xhigh"] as opt (opt)}
+                  {#each [{ val: "", labelKey: "settings_codexConfig_optInherit" }, { val: "none", labelKey: "settings_codexConfig_optNone" }, { val: "minimal", labelKey: "settings_codexConfig_optMinimal" }, { val: "low", labelKey: "settings_codexConfig_optLow" }, { val: "medium", labelKey: "settings_codexConfig_optMedium" }, { val: "high", labelKey: "settings_codexConfig_optHigh" }, { val: "xhigh", labelKey: "settings_codexConfig_optXHigh" }] as opt (opt.val)}
                     <button
                       class="rounded-md border px-3 py-1.5 text-xs transition-all duration-150
-                        {(codexAgentSettings.effort ?? '') === opt
+                        {(codexAgentSettings.effort ?? '') === opt.val
                         ? 'bg-primary text-primary-foreground'
                         : 'hover:bg-accent hover:border-ring/30'}"
                       onclick={() =>
                         saveCodexAgentPatch({
-                          effort: opt === "" ? null : opt,
+                          effort: opt.val === "" ? null : opt.val,
                         } as Partial<AgentSettings>)}
                     >
-                      {opt === ""
-                        ? t("settings_codexConfig_optInherit")
-                        : t(
-                            `settings_codexConfig_opt${opt[0].toUpperCase()}${opt.slice(1)}` as Parameters<
-                              typeof t
-                            >[0],
-                          )}
+                      {t(opt.labelKey as Parameters<typeof t>[0])}
                     </button>
                   {/each}
                 </div>

@@ -52,9 +52,23 @@ pub fn build_agent_command(
             if settings.ignore_rules {
                 args.push("--ignore-rules".to_string());
             }
-            if let Some(p) = &settings.profile {
-                args.push("--profile".to_string());
-                args.push(p.clone());
+            // `codex exec resume` does NOT accept --profile (only --json,
+            // --skip-git-repo-check, --ephemeral, --ignore-user-config,
+            // --ignore-rules, --model, -c, --enable/--disable, --image,
+            // --dangerously-bypass-approvals-and-sandbox, --last, --all).
+            // Injecting --profile on a resume call would make Codex exit with
+            // "error: unexpected argument '--profile' found". Only emit it for
+            // new sessions; the profile applied when the session was first
+            // created is persisted on disk and reused automatically.
+            if resume_thread_id.is_none() {
+                if let Some(p) = &settings.profile {
+                    args.push("--profile".to_string());
+                    args.push(p.clone());
+                }
+            } else if settings.profile.is_some() {
+                log::debug!(
+                    "[spawn] skipping --profile on codex resume (not supported by exec resume)"
+                );
             }
             // model_reasoning_effort overrides config.toml on a per-session
             // basis. Empty string treated as unset (UI sends "" to clear).
@@ -280,6 +294,19 @@ mod tests {
             .position(|a| a == "--profile")
             .expect("--profile");
         assert_eq!(args[idx + 1], "dev");
+    }
+
+    #[test]
+    fn codex_profile_skipped_on_resume() {
+        // `codex exec resume` rejects --profile; the profile from session
+        // creation is persisted and reused automatically. Regression guard:
+        // verify spawn does NOT emit --profile when resume_thread_id is set.
+        let mut s = make_settings();
+        s.profile = Some("dev".into());
+        let (_, args) = build_agent_command("codex", "q", &s, false, Some("tid_42")).unwrap();
+        assert!(args.contains(&"resume".to_string()));
+        assert!(args.contains(&"tid_42".to_string()));
+        assert!(!args.contains(&"--profile".to_string()));
     }
 
     #[test]
