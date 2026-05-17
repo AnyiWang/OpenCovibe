@@ -35,7 +35,7 @@
   import { dbg, dbgWarn } from "$lib/utils/debug";
   import { IS_MAC } from "$lib/utils/platform";
   import { t } from "$lib/i18n/index.svelte";
-  import { formatPasteSize } from "$lib/utils/format";
+  import { formatPasteSize, spliceText } from "$lib/utils/format";
   import {
     BINARY_ATTACHMENT_TYPES,
     MAX_ATTACHMENTS,
@@ -348,6 +348,8 @@
   let textareaEl: HTMLTextAreaElement | undefined = $state();
   let lastEscTime = 0;
   let histState: HistoryState = createHistoryState();
+  let hasShownPasteTip = $state(false);
+  let hoveredBlock: string | null = $state(null);
 
   $effect(() => {
     if (checkAndReset(histState, userHistory.length, runId)) {
@@ -371,13 +373,13 @@
   let toastMessage = $state<string | null>(null);
   let toastVariant = $state<"error" | "info">("error");
   let toastTimeout: ReturnType<typeof setTimeout> | null = null;
-  function showFileToast(msg: string, variant: "error" | "info" = "error") {
+  function showFileToast(msg: string, variant: "error" | "info" = "error", duration = 3500) {
     toastMessage = msg;
     toastVariant = variant;
     if (toastTimeout) clearTimeout(toastTimeout);
     toastTimeout = setTimeout(() => {
       toastMessage = null;
-    }, 3500);
+    }, duration);
   }
 
   // ── Slash menu state ──
@@ -850,6 +852,25 @@
   function handleKeydown(e: KeyboardEvent) {
     // Skip during IME composition (e.g., Chinese input confirming with Enter)
     if (e.isComposing || e.keyCode === 229) return;
+
+    // ── Plain-text paste: Cmd+Shift+V / Ctrl+Shift+V ──
+    // Uses Tauri IPC (read_clipboard_text) to read the clipboard natively,
+    // bypassing the browser Clipboard API which is unreliable in WKWebView.
+    if ((e.key === "V" || e.key === "v") && e.shiftKey && (IS_MAC ? e.metaKey : e.ctrlKey)) {
+      e.preventDefault();
+      api
+        .readClipboardText()
+        .then((text) => {
+          if (text) {
+            insertTextAtCursor(text);
+            dbg("prompt", "plain-text-paste", { len: text.length });
+          }
+        })
+        .catch(() => {
+          dbg("prompt", "plain-text-paste clipboard read failed");
+        });
+      return;
+    }
 
     // ── @-mention menu ──
     if (atMenuOpen) {
@@ -1434,6 +1455,11 @@
     ];
 
     dbg("prompt", "paste-compressed", { lineCount, charCount, blocks: pastedBlocks.length });
+
+    if (!hasShownPasteTip) {
+      hasShownPasteTip = true;
+      showFileToast(IS_MAC ? t("prompt_pasteToastMac") : t("prompt_pasteToastOther"), "info", 5000);
+    }
   }
 
   function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
@@ -1610,12 +1636,33 @@
     pastedBlocks = pastedBlocks.filter((b) => b.id !== id);
   }
 
+  function insertBlockToInput(id: string) {
+    const block = pastedBlocks.find((b) => b.id === id);
+    if (!block) return;
+    insertTextAtCursor(block.text);
+    pastedBlocks = pastedBlocks.filter((b) => b.id !== id);
+    dbg("prompt", "insert-block-to-input", { id });
+  }
+
   function handleSkillSelect(skillName: string) {
     dbg("prompt", "skill-select fill", { skillName });
     inputText = `/${skillName} `;
     requestAnimationFrame(() => {
       autoResize();
       textareaEl?.focus();
+    });
+  }
+
+  function insertTextAtCursor(text: string) {
+    const start = textareaEl?.selectionStart ?? inputText.length;
+    const end = textareaEl?.selectionEnd ?? start;
+    const result = spliceText(inputText, text, start, end);
+    inputText = result.text;
+    requestAnimationFrame(() => {
+      if (textareaEl) {
+        textareaEl.selectionStart = textareaEl.selectionEnd = result.cursorPos;
+        autoResize();
+      }
     });
   }
 
@@ -1745,7 +1792,7 @@
   export function restoreSnapshot(snapshot: PromptInputSnapshot): void {
     inputText = snapshot.text;
     pendingAttachments = snapshot.attachments;
-    pastedBlocks = snapshot.pastedBlocks as PastedBlock[];
+    pastedBlocks = snapshot.pastedBlocks;
     pendingPathRefs = snapshot.pathRefs ?? [];
     resetHistory(histState);
     requestAnimationFrame(() => {
@@ -1838,7 +1885,11 @@
       {#each pastedBlocks as block (block.id)}
         {@const isSpreadsheet = block.ext ? isSpreadsheetExt(block.ext) : false}
         <span
+          role="group"
+          aria-label={block.preview}
           class="inline-flex items-center gap-1.5 rounded-md border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-950/50 text-blue-700 dark:text-blue-300 px-2 py-1 text-xs"
+          onmouseenter={() => (hoveredBlock = block.id)}
+          onmouseleave={() => (hoveredBlock = null)}
         >
           {#if isSpreadsheet}
             <!-- Table/spreadsheet icon -->
@@ -1874,23 +1925,42 @@
           <span class="text-blue-400 dark:text-blue-500"
             >{formatPasteSize(block.lineCount, block.charCount)}</span
           >
-          <button
-            onclick={() => removePastedBlock(block.id)}
-            class="ml-0.5 rounded p-0.5 transition-colors hover:bg-blue-200/50 dark:hover:bg-blue-800/50"
-            title={t("prompt_removePaste")}
-          >
-            <svg
-              class="h-3 w-3"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
+          {#if hoveredBlock === block.id}
+            <button
+              onclick={() => insertBlockToInput(block.id)}
+              class="rounded p-0.5 transition-colors hover:bg-blue-200/50 dark:hover:bg-blue-800/50"
+              title={t("prompt_pasteBlockInsert")}
             >
-              <path d="M18 6 6 18" /><path d="m6 6 12 12" />
-            </svg>
-          </button>
+              <svg
+                class="h-3 w-3"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <path d="M12 5v14" /><path d="M5 12h14" />
+              </svg>
+            </button>
+            <button
+              onclick={() => removePastedBlock(block.id)}
+              class="rounded p-0.5 transition-colors hover:bg-blue-200/50 dark:hover:bg-blue-800/50"
+              title={t("prompt_removePaste")}
+            >
+              <svg
+                class="h-3 w-3"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <path d="M18 6 6 18" /><path d="m6 6 12 12" />
+              </svg>
+            </button>
+          {/if}
         </span>
       {/each}
     </div>
