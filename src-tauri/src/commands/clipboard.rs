@@ -373,7 +373,7 @@ return txt as text
             ("xsel", &["--clipboard", "--output"]),
         ];
         for (bin, args) in tools {
-            if let Ok(output) = std::process::Command::new(bin).args(args).output() {
+            if let Ok(output) = std::process::Command::new(bin).args(*args).output() {
                 if output.status.success() {
                     return Ok(String::from_utf8_lossy(&output.stdout).into_owned());
                 }
