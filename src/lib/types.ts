@@ -513,10 +513,17 @@ export interface ProjectDiagnostics {
   cwd: string;
   has_claude_md: boolean;
   claude_md_files: ClaudeMdInfo[];
+  has_agents_md: boolean;
+  agents_md_files: AgentsMdInfo[];
   skipped_project_scope: boolean;
 }
 
 export interface ClaudeMdInfo {
+  path: string;
+  size_chars: number;
+}
+
+export interface AgentsMdInfo {
   path: string;
   size_chars: number;
 }

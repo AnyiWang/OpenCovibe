@@ -106,6 +106,19 @@ function formatReport(r: DiagnosticsReport, mcpServers?: McpServerInfo[]): strin
       );
     }
   }
+  // Codex AGENTS.md — section hidden entirely when none exist (matches doctor convention).
+  if (r.project.has_agents_md) {
+    lines.push("");
+    lines.push(`### ${t("doctor_projectAgentsMdTitle")}`);
+    for (const f of r.project.agents_md_files) {
+      lines.push(`- ${f.path} (${f.size_chars} chars)`);
+      if (f.size_chars > LARGE_FILE_THRESHOLD) {
+        lines.push(
+          `⚠️ ${t("doctor_projectLargeFile", { path: f.path, size: String(f.size_chars) })}`,
+        );
+      }
+    }
+  }
 
   // ── Configuration ──
   lines.push("");

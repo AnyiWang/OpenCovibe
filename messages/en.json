@@ -1386,6 +1386,7 @@
   "doctor_projectNoClaudeMd": "No CLAUDE.md found",
   "doctor_projectSkipped": "No project directory — project-scope checks skipped",
   "doctor_projectLargeFile": "Large file: {path} ({size} chars)",
+  "doctor_projectAgentsMdTitle": "AGENTS.md (Codex)",
   "doctor_configSettingsOk": "Settings files: valid JSON",
   "doctor_configKeybindingsOk": "Keybindings: valid",
   "doctor_configMcpOk": "MCP config: valid",
