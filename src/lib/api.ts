@@ -1232,6 +1232,11 @@ export async function runCodexLogin(): Promise<boolean> {
   return invoke<boolean>("run_codex_login");
 }
 
+export async function runCodexLogout(): Promise<boolean> {
+  dbg("api", "runCodexLogout");
+  return invoke<boolean>("run_codex_logout");
+}
+
 export async function getAuthOverview(): Promise<import("./types").AuthOverview> {
   dbg("api", "getAuthOverview");
   return invoke<import("./types").AuthOverview>("get_auth_overview");

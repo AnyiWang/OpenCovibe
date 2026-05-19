@@ -204,6 +204,33 @@ export const VIRTUAL_COMMANDS: CliCommand[] = [
     _navigate: "/plugins",
   },
   {
+    name: "mcp",
+    description: "Manage MCP servers",
+    aliases: [],
+    _virtual: true,
+    _navigate: "/plugins?section=mcp&source=configured",
+    // Intentional behaviour change: even when Claude CLI passes through /mcp,
+    // OpenCovibe intercepts and opens the in-app Extend page. Same pattern as
+    // /memory — the app owns this UI rather than delegating to CLI TUI.
+  },
+  {
+    name: "agents",
+    description: "Manage agent configurations",
+    // Codex CLI uses singular `/agent`; OpenCovibe treats `/agent` as an alias
+    // for `/agents` on both agents so the routing is uniform. A future Claude
+    // CLI `/agent` would also be intercepted — locked by tests.
+    aliases: ["agent"],
+    _virtual: true,
+    _navigate: "/plugins?section=agents",
+  },
+  {
+    name: "hooks",
+    description: "Manage hook configurations",
+    aliases: [],
+    _virtual: true,
+    _navigate: "/plugins?section=hooks",
+  },
+  {
     name: "btw",
     description: "Ask a side question without interrupting the current task",
     aliases: [],
@@ -228,6 +255,24 @@ export const VIRTUAL_COMMANDS: CliCommand[] = [
     aliases: [],
     _virtual: true,
     _navigate: "/memory",
+  },
+  {
+    name: "login",
+    description: "Sign in to Codex",
+    aliases: [],
+    _virtual: true,
+    _action: "codex-login",
+    // Claude CLI's /login is handled by Claude itself (interactive TUI).
+    // OpenCovibe only intervenes for Codex (exec mode has no slash dispatch).
+    _excludeAgents: ["claude"],
+  },
+  {
+    name: "logout",
+    description: "Sign out of Codex",
+    aliases: [],
+    _virtual: true,
+    _action: "codex-logout",
+    _excludeAgents: ["claude"],
   },
   {
     name: "stickers",

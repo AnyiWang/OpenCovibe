@@ -1378,6 +1378,18 @@
       });
   });
 
+  // Cross-page sync: when in-chat /login or /logout finishes, the chat page
+  // dispatches `ocv:codex-auth-changed`. Refresh Codex status here so this
+  // Settings tab doesn't show stale auth state. Strictly one-way
+  // (chat → settings) to avoid double-refresh loops with handleCodexLogin.
+  onMount(() => {
+    const handler = () => {
+      void refreshCodexAll();
+    };
+    window.addEventListener("ocv:codex-auth-changed", handler);
+    return () => window.removeEventListener("ocv:codex-auth-changed", handler);
+  });
+
   async function saveGeneralPatch(patch: Record<string, unknown>) {
     dbg("settings", "saveGeneralPatch", redactSensitive(patch));
     try {

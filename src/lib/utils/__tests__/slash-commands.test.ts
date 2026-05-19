@@ -352,6 +352,34 @@ describe("mergeWithVirtual", () => {
     expect(mem["_virtual"]).toBe(true);
     expect(mem["_navigate"]).toBe("/memory");
   });
+
+  // ── Codex P2: /mcp /agents /hooks Extend-page virtuals ──
+  // Same pattern as /memory: OpenCovibe owns these UIs; CLI passthrough is
+  // intercepted on both agents.
+
+  it("keeps /mcp virtual navigate even when CLI also returns mcp", () => {
+    const cli: CliCommand[] = [{ name: "mcp", description: "Manage MCP", aliases: [] }];
+    const merged = mergeWithVirtual(cli, "claude");
+    const mcp = merged.find((c) => c.name === "mcp")!;
+    expect(mcp["_virtual"]).toBe(true);
+    expect(mcp["_navigate"]).toContain("section=mcp");
+  });
+
+  it("keeps /agents virtual navigate even when CLI also returns agents", () => {
+    const cli: CliCommand[] = [{ name: "agents", description: "Manage agents", aliases: [] }];
+    const merged = mergeWithVirtual(cli, "claude");
+    const agents = merged.find((c) => c.name === "agents")!;
+    expect(agents["_virtual"]).toBe(true);
+    expect(agents["_navigate"]).toBe("/plugins?section=agents");
+  });
+
+  it("keeps /hooks virtual navigate even when CLI also returns hooks", () => {
+    const cli: CliCommand[] = [{ name: "hooks", description: "Manage hooks", aliases: [] }];
+    const merged = mergeWithVirtual(cli, "claude");
+    const hooks = merged.find((c) => c.name === "hooks")!;
+    expect(hooks["_virtual"]).toBe(true);
+    expect(hooks["_navigate"]).toBe("/plugins?section=hooks");
+  });
 });
 
 // ── isVirtualCommand ──
@@ -416,6 +444,43 @@ describe("parseVirtualAction", () => {
     expect(parseVirtualAction("/ralph foo")).toEqual({
       name: "ralph",
       args: "foo",
+    });
+  });
+
+  // ── Codex P2 ──
+
+  it("/agent (singular) resolves to /agents virtual via alias", () => {
+    // Codex CLI uses singular `/agent`. Lock the alias mapping so a future
+    // alias change doesn't silently send users to CLI passthrough instead.
+    expect(parseVirtualAction("/agent foo", "claude")).toEqual({
+      name: "agents",
+      args: "foo",
+    });
+    expect(parseVirtualAction("/agent", "codex")).toEqual({
+      name: "agents",
+      args: "",
+    });
+  });
+
+  it("excludes /login for Claude (Claude CLI handles its own /login)", () => {
+    expect(parseVirtualAction("/login", "claude")).toBeNull();
+  });
+
+  it("activates /login for Codex", () => {
+    expect(parseVirtualAction("/login", "codex")).toEqual({
+      name: "login",
+      args: "",
+    });
+  });
+
+  it("excludes /logout for Claude (CLI passthrough)", () => {
+    expect(parseVirtualAction("/logout", "claude")).toBeNull();
+  });
+
+  it("activates /logout for Codex", () => {
+    expect(parseVirtualAction("/logout", "codex")).toEqual({
+      name: "logout",
+      args: "",
     });
   });
 });

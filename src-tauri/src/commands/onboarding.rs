@@ -255,11 +255,19 @@ pub async fn run_claude_login(app: AppHandle) -> Result<bool, String> {
     Ok(success)
 }
 
+/// Resolve the `codex` CLI binary path. Shared between `run_codex_login` and
+/// `run_codex_logout` so both commands use the same resolution strategy
+/// (falling back to a bare `"codex"` literal when `which_binary` fails so the
+/// OS PATH lookup still has a chance).
+fn resolve_codex_binary() -> String {
+    claude_stream::which_binary("codex").unwrap_or_else(|| "codex".into())
+}
+
 /// Run `codex login` to start the OAuth flow. The CLI opens a browser automatically.
 #[tauri::command]
 pub async fn run_codex_login(app: AppHandle) -> Result<bool, String> {
     let aug_path = claude_stream::augmented_path();
-    let codex_bin = claude_stream::which_binary("codex").unwrap_or_else(|| "codex".into());
+    let codex_bin = resolve_codex_binary();
     log::debug!("[onboarding] run_codex_login: binary={}", codex_bin);
 
     let mut child = Command::new(&codex_bin)
@@ -308,6 +316,46 @@ pub async fn run_codex_login(app: AppHandle) -> Result<bool, String> {
     }
 
     Ok(true)
+}
+
+/// Run `codex logout` to clear stored credentials. Non-interactive, returns
+/// quickly. Mirrors `run_codex_login`'s binary resolution.
+#[tauri::command]
+pub async fn run_codex_logout() -> Result<bool, String> {
+    let aug_path = claude_stream::augmented_path();
+    let codex_bin = resolve_codex_binary();
+    log::debug!("[onboarding] run_codex_logout: binary={}", codex_bin);
+
+    let output = Command::new(&codex_bin)
+        .arg("logout")
+        .env("PATH", &aug_path)
+        .hide_console()
+        .output()
+        .await
+        .map_err(|e| format!("Failed to spawn codex logout: {}", e))?;
+
+    log::debug!(
+        "[onboarding] run_codex_logout: exit={:?}, success={}",
+        output.status.code(),
+        output.status.success()
+    );
+
+    if output.status.success() {
+        Ok(true)
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        Err(if stderr.is_empty() {
+            format!(
+                "Codex logout exited with code {}",
+                output
+                    .status
+                    .code()
+                    .map_or("unknown".into(), |c: i32| c.to_string())
+            )
+        } else {
+            stderr
+        })
+    }
 }
 
 /// Get an overview of all authentication sources (configuration state only).

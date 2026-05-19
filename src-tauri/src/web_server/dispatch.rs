@@ -1298,6 +1298,7 @@ pub async fn dispatch_command(
         | "get_clipboard_files"
         | "run_claude_login"
         | "run_codex_login"
+        | "run_codex_logout"
         | "check_for_updates"
         | "send_chat_message" => Err("desktop only".to_string()),
 

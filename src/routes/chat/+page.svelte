@@ -3263,6 +3263,38 @@
         return;
       }
       await sendMessage(CODEX_INIT_PROMPT, []);
+    } else if (action === "codex-login") {
+      if (effectiveAgent !== "codex") return; // defensive (generic gate already blocks)
+      if (store.isRunning) {
+        appendCommandOutput(t("codexLogin_busy"));
+        return;
+      }
+      appendCommandOutput(t("codexLogin_opening"));
+      try {
+        await api.runCodexLogin();
+        appendCommandOutput(t("codexLogin_success"));
+        // Settings page may be open — let it refresh its auth status.
+        window.dispatchEvent(new Event("ocv:codex-auth-changed"));
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        dbgWarn("chat", "codex login failed", err);
+        appendCommandOutput(t("codexLogin_failed", { error: msg }));
+      }
+    } else if (action === "codex-logout") {
+      if (effectiveAgent !== "codex") return;
+      if (store.isRunning) {
+        appendCommandOutput(t("codexLogin_busy"));
+        return;
+      }
+      try {
+        await api.runCodexLogout();
+        appendCommandOutput(t("codexLogout_success"));
+        window.dispatchEvent(new Event("ocv:codex-auth-changed"));
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        dbgWarn("chat", "codex logout failed", err);
+        appendCommandOutput(t("codexLogout_failed", { error: msg }));
+      }
     }
   }
 
