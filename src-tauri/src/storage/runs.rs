@@ -121,6 +121,7 @@ pub fn create_run(
         execution_path: None,   // Caller sets after create_run
         conversation_ref: None, // Written by runtime events (session_init / thread.started)
         codex_process_seq: if agent == "codex" { Some(0) } else { None },
+        codex_imported_rollouts: None,
     };
 
     save_meta(&meta)?;

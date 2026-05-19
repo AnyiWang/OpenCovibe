@@ -29,6 +29,21 @@
   let error = $state<string | null>(null);
   let warning = $state<string | null>(null);
   let importingAll = $state(false);
+  // Agent toggle: localStorage-backed, defaults to "claude" for new users.
+  let agent = $state<"claude" | "codex">(
+    (typeof localStorage !== "undefined" &&
+      (localStorage.getItem("cliImport_agent") as "claude" | "codex")) ||
+      "claude",
+  );
+
+  function setAgent(next: "claude" | "codex") {
+    if (next === agent) return;
+    agent = next;
+    if (typeof localStorage !== "undefined") {
+      localStorage.setItem("cliImport_agent", next);
+    }
+    discoverSessions();
+  }
 
   // ── Project filter ──
   const isShowAll = $derived(!cwd || cwd === "/");
@@ -83,7 +98,7 @@
     error = null;
     dbg("cli-browser", "discovering sessions", { cwd });
     try {
-      const result = await invoke<DiscoverResult>("discover_cli_sessions", { cwd });
+      const result = await invoke<DiscoverResult>("discover_cli_sessions", { cwd, agent });
       sessions = result.sessions;
       totalSessions = result.total;
       truncated = result.truncated;
@@ -112,6 +127,7 @@
       const result = await invoke<ImportResult>("import_cli_session", {
         sessionId: session.sessionId,
         cwd: sessionCwd,
+        agent,
       });
       dbg("cli-browser", "import success", { runId: result.runId, events: result.eventsImported });
       if (result.usageIncomplete) {
@@ -135,9 +151,14 @@
     dbg("cli-browser", "syncing session", { runId });
     try {
       const result = await invoke<SyncResult>("sync_cli_session", { runId });
-      dbg("cli-browser", "sync success", { newEvents: result.newEvents });
+      dbg("cli-browser", "sync success", {
+        newEvents: result.newEvents,
+        newRollouts: result.newRollouts?.length ?? 0,
+      });
       if (result.usageIncomplete) {
         warning = t("cliSync_usageIncomplete");
+      } else if (result.newRollouts && result.newRollouts.length > 0) {
+        warning = t("cliSync_newRollouts", { count: String(result.newRollouts.length) });
       }
       await discoverSessions();
     } catch (e) {
@@ -165,6 +186,7 @@
         const result = await invoke<ImportResult>("import_cli_session", {
           sessionId: s.sessionId,
           cwd: sessionCwd,
+          agent,
         });
         dbg("cli-browser", "imported", { sessionId: s.sessionId, runId: result.runId });
         lastRunId = result.runId;
@@ -219,11 +241,35 @@
     <div class="border-b border-border px-6 py-4">
       <div class="flex items-center justify-between">
         <div>
-          <h2 class="text-base font-semibold text-foreground">{t("cliSync_title")}</h2>
+          <h2 class="text-base font-semibold text-foreground">
+            {agent === "codex" ? t("cliSync_title_codex") : t("cliSync_title_claude")}
+          </h2>
           <p class="mt-0.5 text-xs text-muted-foreground">
             {#if isShowAll}
               {t("cliSync_allProjects")} &middot;
               {#if truncated}
+                {#if agent === "codex"}
+                  {t("cliSync_foundTruncated_codex", {
+                    threads: String(sessions.length),
+                    files: String(totalSessions),
+                  })}
+                {:else}
+                  {t("cliSync_foundTruncated", {
+                    shown: String(sessions.length),
+                    total: String(totalSessions),
+                  })}
+                {/if}
+              {:else}
+                {t("cliSync_found", { count: String(sessions.length) })}
+              {/if}
+            {:else}
+              {cwd} &middot;
+              {#if truncated && agent === "codex"}
+                {t("cliSync_foundTruncated_codex_filtered", {
+                  threads: String(sessions.length),
+                  files: String(totalSessions),
+                })}
+              {:else if truncated}
                 {t("cliSync_foundTruncated", {
                   shown: String(sessions.length),
                   total: String(totalSessions),
@@ -231,8 +277,6 @@
               {:else}
                 {t("cliSync_found", { count: String(sessions.length) })}
               {/if}
-            {:else}
-              {cwd} &middot; {t("cliSync_found", { count: String(sessions.length) })}
             {/if}
           </p>
         </div>
@@ -248,6 +292,28 @@
             stroke="currentColor"
             stroke-width="2"><path d="M18 6 6 18M6 6l12 12" /></svg
           >
+        </button>
+      </div>
+
+      <!-- Agent toggle -->
+      <div class="mt-3 inline-flex rounded-md border border-border p-0.5">
+        <button
+          class="rounded px-3 py-1 text-xs font-medium transition-colors
+            {agent === 'claude'
+            ? 'bg-accent text-accent-foreground'
+            : 'text-muted-foreground hover:text-foreground'}"
+          onclick={() => setAgent("claude")}
+        >
+          {t("cliImport_agent_claude")}
+        </button>
+        <button
+          class="rounded px-3 py-1 text-xs font-medium transition-colors
+            {agent === 'codex'
+            ? 'bg-accent text-accent-foreground'
+            : 'text-muted-foreground hover:text-foreground'}"
+          onclick={() => setAgent("codex")}
+        >
+          {t("cliImport_agent_codex")}
         </button>
       </div>
 
@@ -338,7 +404,9 @@
               d="M3 7v10a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-6l-2-2H5a2 2 0 0 0-2 2z"
             />
           </svg>
-          <p class="text-sm text-muted-foreground">{t("cliSync_noSessions")}</p>
+          <p class="text-sm text-muted-foreground">
+            {agent === "codex" ? t("cliSync_noSessions_codex") : t("cliSync_noSessions_claude")}
+          </p>
         </div>
       {:else}
         <div class="space-y-2">
@@ -380,7 +448,19 @@
                     {session.firstPrompt || "\u2014"}
                   </p>
                   <div class="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
-                    <span>{t("cliSync_messages", { count: String(session.messageCount) })}</span>
+                    {#if session.agent === "codex"}
+                      <span>{t("cliSync_turns", { count: String(session.messageCount) })}</span>
+                      {#if session.rolloutPaths && session.rolloutPaths.length > 1}
+                        <span>&middot;</span>
+                        <span
+                          >{t("cliSync_rollouts", {
+                            count: String(session.rolloutPaths.length),
+                          })}</span
+                        >
+                      {/if}
+                    {:else}
+                      <span>{t("cliSync_messages", { count: String(session.messageCount) })}</span>
+                    {/if}
                     <span>&middot;</span>
                     <span>{formatSize(session.fileSize)}</span>
                     {#if session.hasSubagents}

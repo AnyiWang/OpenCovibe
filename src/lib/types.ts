@@ -61,6 +61,8 @@ export interface TaskRun {
   execution_path: ExecutionPath;
   /** Unified resume identity. Undefined = not resumable. */
   conversation_ref?: ConversationRef;
+  /** Codex CLI import: rollout files imported into this run. Used by sync to detect new rollouts. */
+  codex_imported_rollouts?: CodexImportedRollout[];
 }
 
 export interface ImportWatermark {
@@ -71,16 +73,24 @@ export interface ImportWatermark {
 }
 
 export interface CliSessionSummary {
+  /** "claude" or "codex" */
+  agent: string;
+  /** Claude session UUID or Codex thread_id */
   sessionId: string;
   cwd: string;
   firstPrompt: string;
   startedAt: string;
   lastActivityAt: string;
+  /** Claude: message count; Codex: completed turn count */
   messageCount: number;
   model?: string;
   cliVersion?: string;
+  /** Claude: file size; Codex: sum of all rollout sizes */
   fileSize: number;
+  /** Claude: JSONL path; Codex: latest rollout path */
   filePath: string;
+  /** Codex-only: list of all rollout files (asc by mtime). Empty/absent for Claude. */
+  rolloutPaths?: string[];
   hasSubagents: boolean;
   alreadyImported: boolean;
   existingRunId?: string;
@@ -103,8 +113,20 @@ export interface DiscoverResult {
 
 export interface SyncResult {
   newEvents: number;
-  newWatermark: ImportWatermark;
+  /** Claude-only: watermark for next incremental sync. Undefined for Codex. */
+  newWatermark?: ImportWatermark;
+  /** Codex-only: rollout files imported in this sync. Empty/absent for Claude. */
+  newRollouts?: string[];
   usageIncomplete: boolean;
+}
+
+/** Codex rollout file imported into a run. Codex-only. */
+export interface CodexImportedRollout {
+  path: string;
+  size: number;
+  /** Stringified nanoseconds since epoch (u128 unsafe for JS number). */
+  mtimeNs: string;
+  lastEventTs?: string;
 }
 
 export interface RunEvent {

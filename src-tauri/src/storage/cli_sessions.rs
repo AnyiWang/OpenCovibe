@@ -5,72 +5,19 @@
 
 use crate::agent::claude_protocol::{validate_bus_event, ProtocolState};
 use crate::models::{BusEvent, ImportWatermark, RunMeta, RunSource, RunStatus};
+use crate::storage::cli_sessions_common::{event_key, sha256_short};
 use crate::storage::events::{is_replayable, EventWriter};
-use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, BufWriter, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
-// ── Types ────────────────────────────────────────────────────────────
-
-/// CLI session summary (discovery phase output).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CliSessionSummary {
-    pub session_id: String,
-    pub cwd: String,
-    pub first_prompt: String,
-    pub started_at: String,
-    pub last_activity_at: String,
-    pub message_count: u32,
-    pub model: Option<String>,
-    pub cli_version: Option<String>,
-    pub file_size: u64,
-    pub file_path: String,
-    pub has_subagents: bool,
-    pub already_imported: bool,
-    pub existing_run_id: Option<String>,
-}
-
-/// Import result.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ImportResult {
-    pub run_id: String,
-    pub session_id: String,
-    pub events_imported: u64,
-    pub events_skipped: u64,
-    pub usage_incomplete: bool,
-    pub skipped_subtypes: HashMap<String, u64>,
-}
-
-/// Discovery result with truncation metadata.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DiscoverResult {
-    pub sessions: Vec<CliSessionSummary>,
-    pub total: usize,
-    pub truncated: bool,
-}
-
-/// Incremental sync result.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SyncResult {
-    pub new_events: u64,
-    pub new_watermark: ImportWatermark,
-    pub usage_incomplete: bool,
-}
+pub use crate::storage::cli_sessions_common::{
+    encode_cwd, CliSessionSummary, DiscoverResult, ImportResult, SyncResult,
+};
 
 // ── Helpers ──────────────────────────────────────────────────────────
-
-/// Encode cwd for Claude CLI directory naming: '/' and '\' → '-'.
-pub fn encode_cwd(cwd: &str) -> String {
-    cwd.replace(['/', '\\'], "-")
-}
 
 fn claude_projects_dir() -> Option<PathBuf> {
     super::dirs_next().map(|h| h.join(".claude").join("projects"))
@@ -97,17 +44,6 @@ fn validate_cli_path(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// SHA-256 hash of a string, returning first 12 hex chars.
-fn sha256_short(s: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(s.as_bytes());
-    let result = hasher.finalize();
-    result[..6]
-        .iter()
-        .map(|b| format!("{:02x}", b))
-        .collect::<String>()
-}
-
 /// Generate a source_key for a transcript line.
 fn line_key(raw: &Value, byte_offset: u64, raw_trim: &str) -> String {
     let hash = sha256_short(raw_trim);
@@ -125,11 +61,6 @@ fn line_key(raw: &Value, byte_offset: u64, raw_trim: &str) -> String {
     }
     // byte offset fallback
     format!("v1:{}:{}:{}", byte_offset, etype, hash)
-}
-
-/// Generate an event-level key from line_key + event type + index.
-fn event_key(lk: &str, event_type: &str, n: usize) -> String {
-    format!("v1:{}#{}#{}", lk, event_type, n)
 }
 
 /// Get the serde tag of a BusEvent.
@@ -155,24 +86,7 @@ fn import_index_path(run_id: &str) -> PathBuf {
     super::run_dir(run_id).join("import-index.jsonl")
 }
 
-/// Load source_key set from an import-index file for dedup.
-fn load_import_skip_set(index_path: &Path) -> HashSet<String> {
-    let mut skip_set = HashSet::new();
-    if let Ok(content) = fs::read_to_string(index_path) {
-        for line in content.lines() {
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            if let Ok(val) = serde_json::from_str::<Value>(trimmed) {
-                if let Some(key) = val.get("source_key").and_then(|v| v.as_str()) {
-                    skip_set.insert(key.to_string());
-                }
-            }
-        }
-    }
-    skip_set
-}
+use crate::storage::cli_sessions_common::load_import_skip_set;
 
 // ── Schema Normalization ──────────────────────────────────────────
 
@@ -708,12 +622,11 @@ use once_cell::sync::Lazy;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-type ImportedIndex = HashMap<(String, String), String>;
 type CacheEntry = (ImportedIndex, Instant);
 
 static IMPORTED_CACHE: Lazy<Mutex<Option<CacheEntry>>> = Lazy::new(|| Mutex::new(None));
 
-fn build_imported_index_cached(max_age: Duration) -> ImportedIndex {
+pub(crate) fn build_imported_index_cached(max_age: Duration) -> ImportedIndex {
     // Short lock: check cache hit
     {
         let cache = IMPORTED_CACHE.lock().unwrap();
@@ -879,8 +792,15 @@ fn collect_jsonl_files(dir: &Path, out: &mut Vec<(PathBuf, u64, std::time::Syste
     }
 }
 
-fn build_imported_index() -> HashMap<(String, String), String> {
-    // Map (session_id, cwd) → run_id
+/// Imported-run index keyed by (agent, session_id, cwd) → run_id.
+///
+/// Claude rows use the run's actual cwd; Codex rows use `""` so dedup is
+/// thread-agnostic across cwds (a Codex thread that resumed in different cwds
+/// is still the same conversation).
+pub(crate) type ImportedIndexKey = (String, String, String);
+pub(crate) type ImportedIndex = HashMap<ImportedIndexKey, String>;
+
+pub(crate) fn build_imported_index() -> ImportedIndex {
     let mut index = HashMap::new();
     let runs_dir = super::runs_dir();
     if let Ok(entries) = fs::read_dir(&runs_dir) {
@@ -890,7 +810,15 @@ fn build_imported_index() -> HashMap<(String, String), String> {
                 if let Ok(meta) = serde_json::from_str::<RunMeta>(&content) {
                     if meta.source == Some(RunSource::CliImport) {
                         if let Some(ref sid) = meta.session_id {
-                            index.insert((sid.clone(), meta.cwd.clone()), meta.id.clone());
+                            let cwd_key = if meta.agent == "codex" {
+                                String::new()
+                            } else {
+                                meta.cwd.clone()
+                            };
+                            index.insert(
+                                (meta.agent.clone(), sid.clone(), cwd_key),
+                                meta.id.clone(),
+                            );
                         }
                     }
                 }
@@ -912,7 +840,7 @@ fn extract_summary(
     path: &Path,
     size: u64,
     target_cwd: &str,
-    imported: &HashMap<(String, String), String>,
+    imported: &ImportedIndex,
 ) -> Result<Option<CliSessionSummary>, String> {
     let file = File::open(path).map_err(|e| format!("open: {}", e))?;
     let reader = BufReader::new(&file);
@@ -1099,7 +1027,11 @@ fn extract_summary(
         _ => return Ok(None),
     };
 
-    let key = (session_id.clone(), matched_cwd.clone());
+    let key = (
+        "claude".to_string(),
+        session_id.clone(),
+        matched_cwd.clone(),
+    );
     let (already_imported, existing_run_id) = if let Some(rid) = imported.get(&key) {
         (true, Some(rid.clone()))
     } else {
@@ -1107,6 +1039,7 @@ fn extract_summary(
     };
 
     Ok(Some(CliSessionSummary {
+        agent: "claude".to_string(),
         session_id,
         cwd: matched_cwd,
         first_prompt: first_prompt.unwrap_or_default(),
@@ -1117,6 +1050,7 @@ fn extract_summary(
         cli_version,
         file_size: size,
         file_path: path.to_string_lossy().to_string(),
+        rollout_paths: Vec::new(),
         has_subagents,
         already_imported,
         existing_run_id,
@@ -1140,7 +1074,11 @@ pub fn import_session(
 
     // 1. Dedup check
     let imported = build_imported_index();
-    let key = (session_id.to_string(), cwd.to_string());
+    let key = (
+        "claude".to_string(),
+        session_id.to_string(),
+        cwd.to_string(),
+    );
     if let Some(existing_run_id) = imported.get(&key) {
         return Err(format!(
             "session already imported as run {}",
@@ -1296,6 +1234,7 @@ pub fn import_session(
             session_id.to_string(),
         )),
         codex_process_seq: None,
+        codex_imported_rollouts: None,
     };
 
     let run_dir = super::run_dir(&run_id);
@@ -1493,12 +1432,13 @@ pub fn sync_session(
         // No new data
         return Ok(SyncResult {
             new_events: 0,
-            new_watermark: ImportWatermark {
+            new_watermark: Some(ImportWatermark {
                 offset: current_size,
                 mtime_ns: current_mtime_ns,
                 file_size: current_size,
                 last_uuid: watermark.last_uuid,
-            },
+            }),
+            new_rollouts: Vec::new(),
             usage_incomplete: meta.cli_usage_incomplete.unwrap_or(false),
         });
     }
@@ -1621,7 +1561,8 @@ pub fn sync_session(
 
     Ok(SyncResult {
         new_events: importer.events_imported,
-        new_watermark,
+        new_watermark: Some(new_watermark),
+        new_rollouts: Vec::new(),
         usage_incomplete: importer.usage_incomplete,
     })
 }
@@ -1728,7 +1669,8 @@ fn sync_reconcile(
 
     Ok(SyncResult {
         new_events: importer.events_imported,
-        new_watermark,
+        new_watermark: Some(new_watermark),
+        new_rollouts: Vec::new(),
         usage_incomplete: importer.usage_incomplete,
     })
 }

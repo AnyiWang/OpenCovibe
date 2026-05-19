@@ -864,7 +864,11 @@ pub async fn dispatch_command(
         // ── CLI Sync ──
         "discover_cli_sessions" => {
             let cwd = extract_str(&params, "cwd")?;
-            let result = crate::commands::cli_sync::discover_cli_sessions(cwd).await?;
+            let agent = params
+                .get("agent")
+                .and_then(|v| v.as_str())
+                .map(String::from);
+            let result = crate::commands::cli_sync::discover_cli_sessions(cwd, agent).await?;
             serde_json::to_value(result).map_err(|e| e.to_string())
         }
 
@@ -1248,9 +1252,14 @@ pub async fn dispatch_command(
         // ── CLI Sync (additional) ──
         "sync_cli_session" => {
             let run_id = extract_str(&params, "run_id")?;
+            // Dispatch by RunMeta.agent — Codex runs use codex_sessions::sync_session.
+            let meta = crate::storage::runs::get_run(&run_id)
+                .ok_or_else(|| format!("run {} not found", run_id))?;
+            let agent = meta.agent.clone();
             let writer = state.writer.clone();
-            let result = tokio::task::spawn_blocking(move || {
-                crate::storage::cli_sessions::sync_session(&run_id, writer)
+            let result = tokio::task::spawn_blocking(move || match agent.as_str() {
+                "codex" => crate::storage::codex_sessions::sync_session(&run_id, writer),
+                _ => crate::storage::cli_sessions::sync_session(&run_id, writer),
             })
             .await
             .map_err(|e| format!("spawn_blocking: {}", e))?;
@@ -1260,9 +1269,17 @@ pub async fn dispatch_command(
         "import_cli_session" => {
             let session_id = extract_str(&params, "session_id")?;
             let cwd = extract_str(&params, "cwd")?;
+            let agent = params
+                .get("agent")
+                .and_then(|v| v.as_str())
+                .map(String::from)
+                .unwrap_or_else(|| "claude".to_string());
             let writer = state.writer.clone();
-            let result = tokio::task::spawn_blocking(move || {
-                crate::storage::cli_sessions::import_session(&session_id, &cwd, writer)
+            let result = tokio::task::spawn_blocking(move || match agent.as_str() {
+                "codex" => {
+                    crate::storage::codex_sessions::import_session(&session_id, &cwd, writer)
+                }
+                _ => crate::storage::cli_sessions::import_session(&session_id, &cwd, writer),
             })
             .await
             .map_err(|e| format!("spawn_blocking: {}", e))?;

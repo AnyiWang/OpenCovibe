@@ -548,6 +548,26 @@ pub struct RunMeta {
     /// Used to scope item IDs across resume processes. None = not a Codex run or legacy.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub codex_process_seq: Option<u32>,
+    /// Codex CLI import: list of rollout files imported into this run.
+    /// Used by `sync_cli_session` to detect newly produced rollout files for the
+    /// same thread (Codex resume produces a new rollout file rather than appending).
+    /// None for Claude or non-imported runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codex_imported_rollouts: Option<Vec<CodexImportedRollout>>,
+}
+
+/// Codex rollout file that has been imported into a run.
+///
+/// `mtime_ns` is a stringified u128 (nanoseconds since UNIX epoch) — JS can't
+/// safely represent u128 as a number, so we serialize as decimal string.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexImportedRollout {
+    pub path: String,
+    pub size: u64,
+    pub mtime_ns: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_event_ts: Option<String>,
 }
 
 impl RunMeta {
