@@ -244,21 +244,25 @@ describe("mergeWithVirtual", () => {
   it("appends virtual commands to CLI commands", () => {
     const cli: CliCommand[] = [{ name: "compact", description: "Compact", aliases: [] }];
     const merged = mergeWithVirtual(cli);
-    expect(merged.length).toBe(1 + VIRTUAL_COMMANDS.length);
-    // All virtual commands are appended (order matches VIRTUAL_COMMANDS)
+    // Default agent is "claude" — exclude virtuals gated against Claude.
+    const applicableVirtuals = VIRTUAL_COMMANDS.filter(
+      (v) => !((v as { _excludeAgents?: string[] })._excludeAgents ?? []).includes("claude"),
+    );
+    expect(merged.length).toBe(1 + applicableVirtuals.length);
     const appended = merged.slice(1);
-    expect(appended.map((c) => c.name)).toEqual(VIRTUAL_COMMANDS.map((v) => v.name));
+    expect(appended.map((c) => c.name)).toEqual(applicableVirtuals.map((v) => v.name));
   });
 
   it("merges virtual metadata onto CLI command with same name", () => {
     const cli: CliCommand[] = [{ name: "model", description: "CLI model", aliases: [] }];
     const merged = mergeWithVirtual(cli);
-    // 1 merged (model) + remaining virtuals not in CLI
-    const novelVirtuals = VIRTUAL_COMMANDS.filter((v) => v.name !== "model").length;
+    const novelVirtuals = VIRTUAL_COMMANDS.filter(
+      (v) =>
+        v.name !== "model" &&
+        !((v as { _excludeAgents?: string[] })._excludeAgents ?? []).includes("claude"),
+    ).length;
     expect(merged.length).toBe(1 + novelVirtuals);
-    // CLI description takes priority over empty virtual description
     expect(merged[0].description).toBe("CLI model");
-    // Virtual metadata is injected
     expect(merged[0]["_virtual"]).toBe(true);
     expect(merged[0]["_enum"]).toBe(true);
   });
@@ -279,7 +283,11 @@ describe("mergeWithVirtual", () => {
 
   it("returns only virtuals when CLI list is empty", () => {
     const merged = mergeWithVirtual([]);
-    expect(merged.length).toBe(VIRTUAL_COMMANDS.length);
+    // Default agent "claude" — `init` virtual is gated to Codex.
+    const applicable = VIRTUAL_COMMANDS.filter(
+      (v) => !((v as { _excludeAgents?: string[] })._excludeAgents ?? []).includes("claude"),
+    );
+    expect(merged.length).toBe(applicable.length);
     expect(merged.every((c) => c["_virtual"] === true)).toBe(true);
   });
 
@@ -305,6 +313,44 @@ describe("mergeWithVirtual", () => {
     const merged = mergeWithVirtual(cli);
     const cmd = merged.find((c) => c.name === "my-custom-skill");
     expect(cmd?.description).toBe("");
+  });
+
+  // ── Codex P1 agent filtering ──
+
+  it("excludes /ralph and /cancel-ralph for Codex agent", () => {
+    const merged = mergeWithVirtual([], "codex");
+    const names = merged.map((c) => c.name);
+    expect(names).not.toContain("ralph");
+    expect(names).not.toContain("cancel-ralph");
+    // sanity: still includes commands valid for both agents
+    expect(names).toContain("copy");
+    expect(names).toContain("plan");
+  });
+
+  it("excludes /init virtual for Claude (CLI passthrough handles it)", () => {
+    const merged = mergeWithVirtual([], "claude");
+    const initEntry = merged.find((c) => c.name === "init");
+    expect(initEntry).toBeUndefined();
+  });
+
+  it("includes /init virtual for Codex", () => {
+    const merged = mergeWithVirtual([], "codex");
+    const initEntry = merged.find((c) => c.name === "init");
+    expect(initEntry).toBeDefined();
+    expect(initEntry?.["_virtual"]).toBe(true);
+    expect(initEntry?.["_action"]).toBe("init-project");
+  });
+
+  it("keeps /memory virtual navigate even when CLI also returns memory", () => {
+    // Claude CLI has its own /memory command (opens $EDITOR on CLAUDE.md).
+    // OpenCovibe intentionally intercepts /memory to route to the in-app
+    // memory page on BOTH agents — this test locks that behaviour so a future
+    // refactor can't silently revert to CLI passthrough.
+    const cli: CliCommand[] = [{ name: "memory", description: "Edit memory", aliases: [] }];
+    const merged = mergeWithVirtual(cli, "claude");
+    const mem = merged.find((c) => c.name === "memory")!;
+    expect(mem["_virtual"]).toBe(true);
+    expect(mem["_navigate"]).toBe("/memory");
   });
 });
 
@@ -345,6 +391,32 @@ describe("parseVirtualAction", () => {
 
   it("returns null for plain text", () => {
     expect(parseVirtualAction("hello world")).toBeNull();
+  });
+
+  // ── Codex P1 agent-gated virtuals ──
+
+  it("excludes /init for Claude (lets CLI passthrough handle it)", () => {
+    // Claude CLI has its own /init that writes CLAUDE.md; OpenCovibe must not
+    // intercept it as a virtual.
+    expect(parseVirtualAction("/init", "claude")).toBeNull();
+  });
+
+  it("activates /init for Codex (OpenCovibe handles via init-project action)", () => {
+    expect(parseVirtualAction("/init", "codex")).toEqual({ name: "init", args: "" });
+  });
+
+  it("excludes /ralph for Codex (Ralph requires stream-session, Codex is pipe-exec)", () => {
+    expect(parseVirtualAction("/ralph foo", "codex")).toBeNull();
+    expect(parseVirtualAction("/cancel-ralph", "codex")).toBeNull();
+  });
+
+  it("default agent treats request as Claude — guards against regression", () => {
+    // If we ever flip the default to "codex" by mistake, Ralph silently breaks
+    // for the entire Claude population. Lock the default behaviour.
+    expect(parseVirtualAction("/ralph foo")).toEqual({
+      name: "ralph",
+      args: "foo",
+    });
   });
 });
 

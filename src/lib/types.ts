@@ -323,6 +323,7 @@ export interface CliCheckResult {
 export interface ProjectInitStatus {
   cwd: string;
   has_claude_md: boolean;
+  has_agents_md?: boolean;
 }
 
 export interface CliDistTags {

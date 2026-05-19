@@ -213,6 +213,23 @@ export const VIRTUAL_COMMANDS: CliCommand[] = [
     // Codex: ephemeral single-shot (no fork, read-only sandbox)
   },
   {
+    name: "init",
+    description: "Create an AGENTS.md with project instructions",
+    aliases: [],
+    _virtual: true,
+    _action: "init-project",
+    // Claude CLI handles /init itself (writes CLAUDE.md). For Codex (exec mode),
+    // OpenCovibe replicates Codex TUI's /init: inject upstream init prompt.
+    _excludeAgents: ["claude"],
+  },
+  {
+    name: "memory",
+    description: "Edit project memory files (CLAUDE.md / AGENTS.md)",
+    aliases: [],
+    _virtual: true,
+    _navigate: "/memory",
+  },
+  {
     name: "stickers",
     description: "Get Claude Code stickers",
     aliases: ["sticker"],
@@ -241,6 +258,8 @@ export const VIRTUAL_COMMANDS: CliCommand[] = [
     _virtual: true,
     _action: "start-ralph-loop",
     argumentHint: "<prompt> [--max-iterations N] [--completion-promise TEXT]",
+    // session_actor Ralph binds stream-session; Codex pipe-exec path not yet implemented
+    _excludeAgents: ["codex"],
   },
   {
     name: "cancel-ralph",
@@ -248,6 +267,7 @@ export const VIRTUAL_COMMANDS: CliCommand[] = [
     aliases: ["stop-ralph"],
     _virtual: true,
     _action: "cancel-ralph-loop",
+    _excludeAgents: ["codex"],
   },
 ];
 

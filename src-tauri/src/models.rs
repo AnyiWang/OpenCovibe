@@ -698,6 +698,8 @@ pub struct CliDistTags {
 pub struct ProjectInitStatus {
     pub cwd: String,
     pub has_claude_md: bool,
+    #[serde(default)]
+    pub has_agents_md: bool,
 }
 
 // ── Diagnostics report (run_diagnostics command) ──

@@ -216,6 +216,11 @@ pub async fn dispatch_command(
         }
 
         // ── Files ──
+        "agents_md_exists" => {
+            let cwd = extract_str(&params, "cwd")?;
+            let exists = crate::commands::files::agents_md_exists(cwd)?;
+            Ok(json!(exists))
+        }
         "read_text_file" => {
             let path = extract_str(&params, "path")?;
             let cwd = params.get("cwd").and_then(|v| v.as_str()).map(String::from);

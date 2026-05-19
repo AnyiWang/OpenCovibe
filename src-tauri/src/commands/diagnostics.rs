@@ -629,6 +629,7 @@ pub fn check_project_init(cwd: String) -> Result<ProjectInitStatus, String> {
         return Ok(ProjectInitStatus {
             cwd,
             has_claude_md: false,
+            has_agents_md: false,
         });
     }
     // Canonicalize path (resolve symlinks + normalize case)
@@ -636,14 +637,17 @@ pub fn check_project_init(cwd: String) -> Result<ProjectInitStatus, String> {
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|_| cwd.clone());
     let has_claude_md = root.join("CLAUDE.md").is_file();
+    let has_agents_md = root.join("AGENTS.md").is_file();
     log::debug!(
-        "[diagnostics] check_project_init: canonical={}, has_claude_md={}",
+        "[diagnostics] check_project_init: canonical={}, has_claude_md={}, has_agents_md={}",
         canonical,
-        has_claude_md
+        has_claude_md,
+        has_agents_md
     );
     Ok(ProjectInitStatus {
         cwd: canonical,
         has_claude_md,
+        has_agents_md,
     })
 }
 

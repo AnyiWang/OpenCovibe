@@ -713,11 +713,7 @@ impl CodexRolloutImporter {
             }
             "event_msg" => self.handle_event_msg(payload, inner_type),
             "response_item" => self.handle_response_item(payload, inner_type),
-            "compacted" => vec![BusEvent::Raw {
-                run_id: self.run_id.clone(),
-                source: "codex_compacted".to_string(),
-                data: payload.cloned().unwrap_or(Value::Null),
-            }],
+            "compacted" => self.handle_top_level_compacted(payload),
             _ => {
                 *self
                     .skipped_subtypes
@@ -744,6 +740,20 @@ impl CodexRolloutImporter {
             )?;
         }
         Ok(())
+    }
+
+    /// Map a top-level `compacted` rollout record to BusEvents. Codex doesn't
+    /// surface pre-compaction token counts, and the summary `message` field is
+    /// left for Phase 2; v1 emits a bare divider matching Claude's
+    /// `CompactBoundary` rendering.
+    ///
+    /// Pure-ish (takes `&self` for run_id only) — testable without touching disk.
+    fn handle_top_level_compacted(&self, _payload: Option<&Value>) -> Vec<BusEvent> {
+        vec![BusEvent::CompactBoundary {
+            run_id: self.run_id.clone(),
+            trigger: "codex_auto".to_string(),
+            pre_tokens: None,
+        }]
     }
 
     fn handle_event_msg(&mut self, payload: Option<&Value>, inner: &str) -> Vec<BusEvent> {
@@ -921,10 +931,13 @@ impl CodexRolloutImporter {
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string()),
             }],
-            "context_compacted"
-            | "entered_review_mode"
-            | "exited_review_mode"
-            | "item_completed" => {
+            "context_compacted" => vec![BusEvent::CompactBoundary {
+                run_id: self.run_id.clone(),
+                trigger: "codex_auto".to_string(),
+                // Codex doesn't surface pre-compaction token count.
+                pre_tokens: None,
+            }],
+            "entered_review_mode" | "exited_review_mode" | "item_completed" => {
                 vec![BusEvent::Raw {
                     run_id: self.run_id.clone(),
                     source: format!("codex_{}", inner),
@@ -1491,6 +1504,49 @@ mod tests {
         );
         assert_eq!(events.len(), 1);
         assert!(matches!(events[0], BusEvent::ThinkingDelta { .. }));
+    }
+
+    #[test]
+    fn event_msg_context_compacted_emits_compact_boundary() {
+        let mut imp = importer();
+        let events = imp.handle_event_msg(
+            Some(&json!({"type": "context_compacted"})),
+            "context_compacted",
+        );
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            BusEvent::CompactBoundary {
+                trigger,
+                pre_tokens,
+                ..
+            } => {
+                assert_eq!(trigger, "codex_auto");
+                assert!(pre_tokens.is_none());
+            }
+            other => panic!("expected CompactBoundary, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn top_level_compacted_emits_compact_boundary() {
+        // Top-level rollout `compacted` records carry summary text in `message`,
+        // but v1 ignores it — assert the divider fires regardless.
+        let imp = importer();
+        let payload = json!({
+            "message": "Summary of older turns…",
+            "replacement_history": []
+        });
+        let events = imp.handle_top_level_compacted(Some(&payload));
+        assert_eq!(events.len(), 1);
+        assert!(matches!(events[0], BusEvent::CompactBoundary { .. }));
+    }
+
+    #[test]
+    fn top_level_compacted_without_payload_still_emits_divider() {
+        let imp = importer();
+        let events = imp.handle_top_level_compacted(None);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(events[0], BusEvent::CompactBoundary { .. }));
     }
 
     #[test]

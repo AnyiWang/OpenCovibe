@@ -92,6 +92,7 @@
     VIRTUAL_COMMANDS,
   } from "$lib/utils/slash-commands";
   import { executeAddDir } from "$lib/utils/add-dir";
+  import { CODEX_INIT_PROMPT } from "$lib/utils/codex-init-prompt";
   import { buildDoctorReport } from "$lib/utils/doctor";
   import type { RewindCandidate, RewindMarker } from "$lib/utils/rewind";
   import { truncate, cwdDisplayLabel, formatTokenCount } from "$lib/utils/format";
@@ -2060,8 +2061,15 @@
   }
 
   // ── Project init detection ──
+  // For Claude session: check CLAUDE.md; for Codex: check AGENTS.md.
+  // Hint only fires before a session starts (when `!store.run`), so `effectiveAgent`
+  // reflects the user's selected agent from settings.
   let showInitHint = $derived(
-    projectInitStatus !== null && !projectInitStatus.has_claude_md && !store.run,
+    projectInitStatus !== null &&
+      !store.run &&
+      (effectiveAgent === "codex"
+        ? !projectInitStatus.has_agents_md
+        : !projectInitStatus.has_claude_md),
   );
 
   /** Reload project-level data (skills, agents, commands) with race guard. */
@@ -2760,12 +2768,21 @@
 
   async function handleVirtualCommand(action: string, args: string) {
     dbg("chat", "virtualCommand", { action, args });
-    // Guard: block excluded virtual commands for the current agent
+    // Guard: block excluded virtual commands for the current agent.
+    // Emits user-visible feedback so gated commands don't fail silently when
+    // typed directly (the menu already hides them, but direct invocation,
+    // history replay, and tests can still reach here).
     const vDef = VIRTUAL_COMMANDS.find((v) => v["_action"] === action);
     if (vDef) {
       const excluded = vDef["_excludeAgents"];
       if (Array.isArray(excluded) && excluded.includes(effectiveAgent)) {
         dbg("chat", "virtualCommand blocked for agent", { action, agent: effectiveAgent });
+        appendCommandOutput(
+          t("slash_notSupportedForAgent", {
+            command: vDef.name,
+            agent: effectiveAgent === "codex" ? "Codex" : "Claude",
+          }),
+        );
         return;
       }
     }
@@ -3145,6 +3162,12 @@
       }
       appendCommandOutput("Opening sticker page in browser…");
     } else if (action === "start-ralph-loop") {
+      // Defense-in-depth: even if menu/parse layers miss it, Ralph requires
+      // a long-lived stream-session — Codex pipe-exec is incompatible.
+      if (effectiveAgent === "codex") {
+        appendCommandOutput("Ralph loop is not supported for Codex sessions yet.");
+        return;
+      }
       const parsed = parseRalphArgs(args);
       if (!parsed.prompt) {
         appendCommandOutput(
@@ -3182,6 +3205,10 @@
         );
       }
     } else if (action === "cancel-ralph-loop") {
+      if (effectiveAgent === "codex") {
+        appendCommandOutput("Ralph loop is not supported for Codex sessions yet.");
+        return;
+      }
       await handleRalphCancel();
     } else if (action === "toggle-preview") {
       if (args) {
@@ -3197,6 +3224,45 @@
           appendCommandOutput(t("preview_usage"));
         }
       }
+    } else if (action === "init-project") {
+      // Codex-only: mirror Codex TUI's /init by injecting the upstream init
+      // prompt as a user message. The model runs git ls-files and writes
+      // AGENTS.md via its file tools. Claude CLI handles /init itself.
+      if (effectiveAgent !== "codex") return;
+      // Resolve cwd matching the welcome-page hint flow: session cwd if a
+      // run is alive, otherwise fall back to the project picker / hint's
+      // own detection result / persisted localStorage.
+      const projectCwd =
+        store.effectiveCwd ||
+        store.sessionCwd ||
+        store.run?.cwd ||
+        folderCwdOverride ||
+        projectInitStatus?.cwd ||
+        (typeof localStorage !== "undefined"
+          ? (localStorage.getItem("ocv:project-cwd") ?? "")
+          : "");
+      if (!projectCwd) {
+        appendCommandOutput(t("init_noCwd"));
+        return;
+      }
+      if (store.isRunning) {
+        appendCommandOutput(t("init_busy"));
+        return;
+      }
+      try {
+        const exists = await api.agentsMdExists(projectCwd);
+        if (exists) {
+          appendCommandOutput(t("init_alreadyExists"));
+          return;
+        }
+      } catch (err) {
+        dbgWarn("chat", "init: agentsMdExists failed", err);
+        appendCommandOutput(
+          `Failed to check AGENTS.md: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        return;
+      }
+      await sendMessage(CODEX_INIT_PROMPT, []);
     }
   }
 
@@ -3833,9 +3899,20 @@
         Run
         <button
           class="font-mono text-amber-300 hover:text-amber-200 underline underline-offset-2 transition-colors"
-          onclick={() => sendMessage("/init", [])}>{t("chat_initHintAction")}</button
+          onclick={() => {
+            // Codex /init is a virtual handled by OpenCovibe (writes AGENTS.md
+            // via injected prompt). Claude /init is a CLI command — sending
+            // "/init" as a message lets Claude CLI handle it natively.
+            if (effectiveAgent === "codex") {
+              void handleVirtualCommand("init-project", "");
+            } else {
+              void sendMessage("/init", []);
+            }
+          }}>{t("chat_initHintAction")}</button
         >
-        to create CLAUDE.md
+        {effectiveAgent === "codex"
+          ? t("chat_initHintTargetAgents")
+          : t("chat_initHintTargetClaude")}
       </span>
       <button
         class="ml-auto text-muted-foreground/40 hover:text-muted-foreground/70 transition-colors"

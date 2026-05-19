@@ -175,6 +175,7 @@ pub fn run() {
             commands::git::get_git_status,
             commands::export::export_conversation,
             commands::export::write_html_export,
+            commands::files::agents_md_exists,
             commands::files::read_text_file,
             commands::files::stat_text_file,
             commands::files::write_text_file,

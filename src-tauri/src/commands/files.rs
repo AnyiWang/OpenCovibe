@@ -173,6 +173,34 @@ pub(crate) fn validate_file_path(
     ))
 }
 
+/// Check whether `{cwd}/AGENTS.md` exists. Lightweight existence query for
+/// the Codex `/init` slash command, which needs to skip rather than overwrite.
+///
+/// Deliberately narrow — no general `path` parameter — so this IPC can't be
+/// abused as a filesystem probe. The filename is hardcoded; the only attacker
+/// surface is `cwd`, which still must be sanitised (reject `..` traversal,
+/// reject empty/relative cwds). Existence of an `AGENTS.md` file at an
+/// arbitrary directory is low-sensitivity, but we still limit the API to
+/// "directories the caller already pretends to know about".
+///
+/// Does NOT reuse `validate_file_path`: that resolves relative paths against
+/// the process `current_dir()` rather than the supplied cwd.
+#[tauri::command]
+pub fn agents_md_exists(cwd: String) -> Result<bool, String> {
+    log::debug!("[files] agents_md_exists: cwd={}", cwd);
+    if cwd.is_empty() {
+        return Err("cwd is required".to_string());
+    }
+    if cwd.contains("..") {
+        return Err("Path traversal not allowed in cwd".to_string());
+    }
+    let cwd_path = std::path::Path::new(&cwd);
+    if !cwd_path.is_absolute() {
+        return Err("cwd must be an absolute path".to_string());
+    }
+    Ok(cwd_path.join("AGENTS.md").exists())
+}
+
 #[tauri::command]
 pub fn read_text_file(path: String, cwd: Option<String>) -> Result<String, String> {
     log::debug!("[files] read_text_file: path={}, cwd={:?}", path, cwd);
@@ -780,5 +808,57 @@ mod tests {
         let files = scan_memory_md_files(&mem, &mem, 3, 50);
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].label, "real.md");
+    }
+
+    // ── path_exists ──
+
+    // ── agents_md_exists ──
+
+    #[test]
+    fn agents_md_exists_returns_true_when_file_present() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("AGENTS.md"), "hi").unwrap();
+        let r = agents_md_exists(tmp.path().to_string_lossy().to_string()).unwrap();
+        assert!(r);
+    }
+
+    #[test]
+    fn agents_md_exists_returns_false_when_file_absent() {
+        // /init's primary path depends on this.
+        let tmp = tempfile::tempdir().unwrap();
+        let r = agents_md_exists(tmp.path().to_string_lossy().to_string()).unwrap();
+        assert!(!r);
+    }
+
+    #[test]
+    fn agents_md_exists_rejects_traversal_in_cwd() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cwd_with_traversal = format!("{}/..", tmp.path().to_string_lossy());
+        assert!(agents_md_exists(cwd_with_traversal).is_err());
+    }
+
+    #[test]
+    fn agents_md_exists_rejects_empty_cwd() {
+        assert!(agents_md_exists(String::new()).is_err());
+    }
+
+    #[test]
+    fn agents_md_exists_rejects_relative_cwd() {
+        // Forces callers to pass canonical absolute paths and prevents
+        // implicit fallback to the process cwd.
+        assert!(agents_md_exists("relative/path".to_string()).is_err());
+    }
+
+    #[test]
+    fn agents_md_exists_does_not_probe_other_files() {
+        // The IPC must not be a general filesystem probe. Even with cwd="/"
+        // (which an attacker could supply), the only path checked is
+        // "/AGENTS.md" — never "/etc/passwd" or any other attacker-chosen
+        // file. Verify by writing a non-AGENTS file in the temp dir and
+        // confirming the command reports false.
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("etc-passwd-stand-in"), "secret").unwrap();
+        let r = agents_md_exists(tmp.path().to_string_lossy().to_string()).unwrap();
+        assert!(!r, "command must not return true for non-AGENTS.md files");
     }
 }

@@ -330,6 +330,19 @@ export async function listMemoryFiles(
 }
 
 // Files
+
+/** Check whether `{cwd}/AGENTS.md` exists.
+ *
+ * Narrow by design — only the AGENTS.md filename is checkable (hardcoded
+ * backend-side). Used by the Codex `/init` flow to decide whether to skip
+ * rather than overwrite. Backend rejects empty / relative / `..`-containing
+ * cwds; this is not a general filesystem probe.
+ */
+export async function agentsMdExists(cwd: string): Promise<boolean> {
+  dbg("api", "agentsMdExists", { cwd });
+  return invoke<boolean>("agents_md_exists", { cwd });
+}
+
 export async function readTextFile(path: string, cwd?: string): Promise<string> {
   dbg("api", "readTextFile", path, { cwd });
   return perfMarkAsync(
