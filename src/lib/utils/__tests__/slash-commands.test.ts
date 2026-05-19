@@ -380,6 +380,63 @@ describe("mergeWithVirtual", () => {
     expect(hooks["_virtual"]).toBe(true);
     expect(hooks["_navigate"]).toBe("/plugins?section=hooks");
   });
+
+  // ── Codex Wave 3: /skills /resume /theme /feedback ──
+
+  it("/skills virtual navigates to plugins skills section", () => {
+    const merged = mergeWithVirtual([]);
+    const skills = merged.find((c) => c.name === "skills")!;
+    expect(skills["_virtual"]).toBe(true);
+    expect(skills["_navigate"]).toContain("?section=skills");
+  });
+
+  it("/resume virtual navigates to /history", () => {
+    const merged = mergeWithVirtual([]);
+    const resume = merged.find((c) => c.name === "resume")!;
+    expect(resume["_virtual"]).toBe(true);
+    expect(resume["_navigate"]).toBe("/history");
+  });
+
+  it("/theme virtual navigates to settings general tab", () => {
+    const merged = mergeWithVirtual([]);
+    const theme = merged.find((c) => c.name === "theme")!;
+    expect(theme["_virtual"]).toBe(true);
+    expect(theme["_navigate"]).toContain("tab=general");
+  });
+
+  it("/feedback virtual carries open-feedback action", () => {
+    // Direct mergeWithVirtual check ensures the virtual carries the right
+    // _action metadata — `parseVirtualAction` only returns name+args.
+    const merged = mergeWithVirtual([]);
+    const fb = merged.find((c) => c.name === "feedback")!;
+    expect(fb["_virtual"]).toBe(true);
+    expect(fb["_action"]).toBe("open-feedback");
+  });
+
+  // CLI passthrough override locks — same pattern as /memory /mcp.
+  it("keeps /skills virtual navigate even when CLI also returns skills", () => {
+    const cli: CliCommand[] = [{ name: "skills", description: "List skills", aliases: [] }];
+    const merged = mergeWithVirtual(cli, "claude");
+    const s = merged.find((c) => c.name === "skills")!;
+    expect(s["_virtual"]).toBe(true);
+    expect(s["_navigate"]).toContain("?section=skills");
+  });
+
+  it("keeps /resume virtual navigate even when CLI also returns resume", () => {
+    const cli: CliCommand[] = [{ name: "resume", description: "Resume", aliases: [] }];
+    const merged = mergeWithVirtual(cli, "claude");
+    const r = merged.find((c) => c.name === "resume")!;
+    expect(r["_virtual"]).toBe(true);
+    expect(r["_navigate"]).toBe("/history");
+  });
+
+  it("keeps /theme virtual navigate even when CLI also returns theme", () => {
+    const cli: CliCommand[] = [{ name: "theme", description: "Change theme", aliases: [] }];
+    const merged = mergeWithVirtual(cli, "claude");
+    const t = merged.find((c) => c.name === "theme")!;
+    expect(t["_virtual"]).toBe(true);
+    expect(t["_navigate"]).toContain("tab=general");
+  });
 });
 
 // ── isVirtualCommand ──
@@ -482,6 +539,40 @@ describe("parseVirtualAction", () => {
       name: "logout",
       args: "",
     });
+  });
+
+  // ── Codex Wave 3: /feedback parse + alias mappings ──
+
+  it("/feedback parses as feedback virtual", () => {
+    expect(parseVirtualAction("/feedback")).toEqual({
+      name: "feedback",
+      args: "",
+    });
+  });
+
+  it("/keymap resolves to /keybindings via alias", () => {
+    // Codex CLI names this `/keymap`; OpenCovibe routes both to the same
+    // navigate target.
+    expect(parseVirtualAction("/keymap")).toEqual({
+      name: "keybindings",
+      args: "",
+    });
+  });
+
+  it("/side resolves to /btw via alias, preserving args", () => {
+    // Codex CLI's `/side` is OpenCovibe's `/btw` (ephemeral side question).
+    expect(parseVirtualAction("/side what is X")).toEqual({
+      name: "btw",
+      args: "what is X",
+    });
+  });
+
+  it("/new and /exit both resolve to /clear via alias", () => {
+    // GUI parity: /new starts a new chat (same as /clear). /exit doesn't
+    // quit the app — it leaves the current chat back to the welcome page,
+    // again identical to /clear semantics.
+    expect(parseVirtualAction("/new")).toEqual({ name: "clear", args: "" });
+    expect(parseVirtualAction("/exit")).toEqual({ name: "clear", args: "" });
   });
 });
 

@@ -520,6 +520,7 @@
   "codexLogin_busy": "A turn is in progress. Wait for it to finish before /login or /logout.",
   "codexLogout_success": "Signed out of Codex.",
   "codexLogout_failed": "Sign-out failed: {error}",
+  "feedback_opening": "Opening OpenCovibe issue tracker in browser...",
   "chat_sessionRenamed": "Session renamed to: {name}",
   "chat_noSessionToRename": "No active session to rename",
   "chat_roleYou": "You",
@@ -1186,7 +1187,6 @@
   "chat_cliChannelDisabledHint": "Only takes effect on new sessions",
   "chat_cliUpdateAvailable": "{version} available",
 
-  "chat_initHintTitle": "Project not initialized",
   "chat_initHintAction": "/init",
   "chat_initHintDismiss": "Dismiss",
   "chat_initHintTargetClaude": "to create CLAUDE.md",

@@ -183,7 +183,10 @@ export const VIRTUAL_COMMANDS: CliCommand[] = [
   {
     name: "clear",
     description: "Clear conversation history and free up context",
-    aliases: [],
+    // Codex parity: `/new` and `/exit` are aliases — both fall through to the
+    // same clear-context action. In a GUI app "exit" means leave the current
+    // chat (not quit the app), which matches clear semantics.
+    aliases: ["new", "exit"],
     _virtual: true,
     _action: "clear-context",
     // Codex: navigates to fresh chat (new thread on next message)
@@ -231,9 +234,42 @@ export const VIRTUAL_COMMANDS: CliCommand[] = [
     _navigate: "/plugins?section=hooks",
   },
   {
+    name: "skills",
+    description: "Browse and manage skills",
+    aliases: [],
+    _virtual: true,
+    _navigate: "/plugins?section=skills&source=installed",
+  },
+  {
+    name: "resume",
+    // Honest framing: navigates to /history rather than auto-resuming the
+    // most recent session (Codex TUI's /resume picks last). Users choose.
+    description: "Open conversation history to resume a previous chat",
+    aliases: [],
+    _virtual: true,
+    _navigate: "/history",
+  },
+  {
+    name: "theme",
+    description: "Change the theme",
+    aliases: [],
+    _virtual: true,
+    // Theme controls live within General tab (SettingsTab union has no
+    // separate `appearance`). Verified at settings/+page.svelte:45,734.
+    _navigate: "/settings?tab=general",
+  },
+  {
+    name: "feedback",
+    description: "Open the OpenCovibe issue tracker",
+    aliases: [],
+    _virtual: true,
+    _action: "open-feedback",
+  },
+  {
     name: "btw",
     description: "Ask a side question without interrupting the current task",
-    aliases: [],
+    // Codex CLI names this `/side`; we accept both.
+    aliases: ["side"],
     _virtual: true,
     _action: "side-question",
     argumentHint: "<question>",
@@ -284,7 +320,8 @@ export const VIRTUAL_COMMANDS: CliCommand[] = [
   {
     name: "keybindings",
     description: "Open keybindings settings",
-    aliases: [],
+    // Codex CLI names this `/keymap`; we accept both.
+    aliases: ["keymap"],
     _virtual: true,
     _navigate: "/settings?tab=shortcuts",
   },

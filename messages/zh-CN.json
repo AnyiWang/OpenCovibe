@@ -520,6 +520,7 @@
   "codexLogin_busy": "当前有 turn 在进行中，请等待结束后再执行 /login 或 /logout。",
   "codexLogout_success": "已登出 Codex。",
   "codexLogout_failed": "登出失败：{error}",
+  "feedback_opening": "正在浏览器中打开 OpenCovibe 反馈页…",
   "chat_sessionRenamed": "已重命名为：{name}",
   "chat_noSessionToRename": "没有活跃会话可重命名",
   "chat_roleYou": "你",
@@ -1186,7 +1187,6 @@
   "chat_cliChannelDisabledHint": "仅对新会话生效",
   "chat_cliUpdateAvailable": "{version} 可用",
 
-  "chat_initHintTitle": "项目尚未初始化",
   "chat_initHintAction": "/init",
   "chat_initHintDismiss": "忽略",
   "chat_initHintTargetClaude": "以创建 CLAUDE.md",

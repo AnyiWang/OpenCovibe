@@ -3161,6 +3161,19 @@
         window.open(url, "_blank");
       }
       appendCommandOutput("Opening sticker page in browser…");
+    } else if (action === "open-feedback") {
+      // Source-of-truth: matches package.json `bugs.url`. If the repo URL ever
+      // changes, update both this constant AND package.json.
+      const url = "https://github.com/AnyiWang/OpenCovibe/issues";
+      dbg("chat", "open-feedback", { url });
+      try {
+        const { open } = await import("@tauri-apps/plugin-shell");
+        await open(url);
+      } catch (err) {
+        dbgWarn("chat", "open-feedback: plugin-shell failed, fallback", err);
+        window.open(url, "_blank");
+      }
+      appendCommandOutput(t("feedback_opening"));
     } else if (action === "start-ralph-loop") {
       // Defense-in-depth: even if menu/parse layers miss it, Ralph requires
       // a long-lived stream-session — Codex pipe-exec is incompatible.
