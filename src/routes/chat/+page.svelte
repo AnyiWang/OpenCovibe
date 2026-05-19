@@ -93,6 +93,7 @@
   } from "$lib/utils/slash-commands";
   import { executeAddDir } from "$lib/utils/add-dir";
   import { CODEX_INIT_PROMPT } from "$lib/utils/codex-init-prompt";
+  import { CODEX_REVIEW_UNCOMMITTED_PROMPT } from "$lib/utils/codex-review-prompt";
   import { buildDoctorReport } from "$lib/utils/doctor";
   import type { RewindCandidate, RewindMarker } from "$lib/utils/rewind";
   import { truncate, cwdDisplayLabel, formatTokenCount } from "$lib/utils/format";
@@ -3241,10 +3242,12 @@
       // Codex-only: mirror Codex TUI's /init by injecting the upstream init
       // prompt as a user message. The model runs git ls-files and writes
       // AGENTS.md via its file tools. Claude CLI handles /init itself.
+      //
+      // Order: agent → cwd resolve → no-cwd → remote → isRunning → pathExists
+      // → dbg(requested) → localStorage handoff → sendMessage. Each guard
+      // emits a dbgWarn so blocked requests are traceable; the "requested"
+      // dbg only fires once all guards pass.
       if (effectiveAgent !== "codex") return;
-      // Resolve cwd matching the welcome-page hint flow: session cwd if a
-      // run is alive, otherwise fall back to the project picker / hint's
-      // own detection result / persisted localStorage.
       const projectCwd =
         store.effectiveCwd ||
         store.sessionCwd ||
@@ -3255,16 +3258,29 @@
           ? (localStorage.getItem("ocv:project-cwd") ?? "")
           : "");
       if (!projectCwd) {
+        dbgWarn("chat", "init-project blocked: no cwd");
         appendCommandOutput(t("init_noCwd"));
         return;
       }
+      // Remote target: sendMessage resolves cwd via getStoredRemoteCwd(host)
+      // (chat/+page.svelte:1968), not localStorage. The handoff below cannot
+      // bridge those paths. Guard remote until wave 4b unifies cwd resolution.
+      if (store.remoteHostName) {
+        dbgWarn("chat", "init-project blocked: remote not supported", {
+          host: store.remoteHostName,
+        });
+        appendCommandOutput(t("init_remoteNotSupported"));
+        return;
+      }
       if (store.isRunning) {
+        dbgWarn("chat", "init-project blocked: turn running");
         appendCommandOutput(t("init_busy"));
         return;
       }
       try {
         const exists = await api.agentsMdExists(projectCwd);
         if (exists) {
+          dbgWarn("chat", "init-project blocked: AGENTS.md exists");
           appendCommandOutput(t("init_alreadyExists"));
           return;
         }
@@ -3275,7 +3291,60 @@
         );
         return;
       }
+      dbg("chat", "init-project requested", { cwd: projectCwd });
+      // Persist cwd so sendMessage's new-run path (+page.svelte:1976 reads
+      // localStorage only) starts the init run in the same directory the
+      // guard validated. Without this, a guard pass via projectInitStatus?.cwd
+      // or folderCwdOverride could disagree with sendMessage's resolution.
+      if (typeof localStorage !== "undefined") {
+        localStorage.setItem("ocv:project-cwd", projectCwd);
+        window.dispatchEvent(new Event("ocv:cwd-changed"));
+      }
       await sendMessage(CODEX_INIT_PROMPT, []);
+    } else if (action === "codex-agent-info") {
+      // Codex TUI's /agent opens a sub-agent picker (OpenAgentPicker). We
+      // don't have that UI yet; sub-agents nest inline as Agent tool calls.
+      // This handler just explains.
+      if (effectiveAgent !== "codex") return;
+      dbg("chat", "codex-agent-info");
+      appendCommandOutput(t("codexAgent_notSupported"));
+    } else if (action === "codex-review") {
+      // Codex /review v1: inject the "review uncommitted changes" prompt and
+      // let the model gather git diff + analyze. Same guard order as
+      // init-project. Picker for the other 3 review presets is wave 4b.
+      if (effectiveAgent !== "codex") return;
+      const projectCwd =
+        store.effectiveCwd ||
+        store.sessionCwd ||
+        store.run?.cwd ||
+        folderCwdOverride ||
+        projectInitStatus?.cwd ||
+        (typeof localStorage !== "undefined"
+          ? (localStorage.getItem("ocv:project-cwd") ?? "")
+          : "");
+      if (!projectCwd) {
+        dbgWarn("chat", "codex-review blocked: no cwd");
+        appendCommandOutput(t("codexReview_noCwd"));
+        return;
+      }
+      if (store.remoteHostName) {
+        dbgWarn("chat", "codex-review blocked: remote not supported", {
+          host: store.remoteHostName,
+        });
+        appendCommandOutput(t("codexReview_remoteNotSupported"));
+        return;
+      }
+      if (store.isRunning) {
+        dbgWarn("chat", "codex-review blocked: turn running");
+        appendCommandOutput(t("codexReview_busy"));
+        return;
+      }
+      dbg("chat", "codex-review requested", { cwd: projectCwd });
+      if (typeof localStorage !== "undefined") {
+        localStorage.setItem("ocv:project-cwd", projectCwd);
+        window.dispatchEvent(new Event("ocv:cwd-changed"));
+      }
+      await sendMessage(CODEX_REVIEW_UNCOMMITTED_PROMPT, []);
     } else if (action === "codex-login") {
       if (effectiveAgent !== "codex") return; // defensive (generic gate already blocks)
       if (store.isRunning) {

@@ -219,10 +219,11 @@ export const VIRTUAL_COMMANDS: CliCommand[] = [
   {
     name: "agents",
     description: "Manage agent configurations",
-    // Codex CLI uses singular `/agent`; OpenCovibe treats `/agent` as an alias
-    // for `/agents` on both agents so the routing is uniform. A future Claude
-    // CLI `/agent` would also be intercepted — locked by tests.
-    aliases: ["agent"],
+    // Singular `/agent` removed (was wave 2 alias). Codex TUI's `/agent`
+    // opens a sub-agent picker — a completely different semantic — so
+    // routing /agent to the Extend page was misleading. Codex /agent now
+    // has its own informative virtual; /agents (plural) stays here.
+    aliases: [],
     _virtual: true,
     _navigate: "/plugins?section=agents",
   },
@@ -264,6 +265,30 @@ export const VIRTUAL_COMMANDS: CliCommand[] = [
     aliases: [],
     _virtual: true,
     _action: "open-feedback",
+  },
+  {
+    name: "agent",
+    description: "Switch active sub-agent thread (Codex sub-agent picker)",
+    aliases: [],
+    _virtual: true,
+    _action: "codex-agent-info",
+    // Codex TUI /agent opens OpenAgentPicker — a sub-agent picker. OpenCovibe
+    // doesn't have that picker UI yet (sub-agents currently nest inline as
+    // Agent tool calls in the timeline). This virtual emits an explainer
+    // rather than misroute users to the Extend Agents config page.
+    // Claude CLI has no singular /agent command; only Codex.
+    _excludeAgents: ["claude"],
+  },
+  {
+    name: "review",
+    description: "Review uncommitted changes for bugs and improvements",
+    aliases: [],
+    _virtual: true,
+    _action: "codex-review",
+    // Claude CLI has its own /review (PR / security review) that we leave to
+    // CLI passthrough. Codex exec mode has no slash dispatch, so we inject
+    // a review prompt at the app layer.
+    _excludeAgents: ["claude"],
   },
   {
     name: "btw",

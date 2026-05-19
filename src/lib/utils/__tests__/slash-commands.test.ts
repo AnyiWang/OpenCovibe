@@ -506,17 +506,69 @@ describe("parseVirtualAction", () => {
 
   // ── Codex P2 ──
 
-  it("/agent (singular) resolves to /agents virtual via alias", () => {
-    // Codex CLI uses singular `/agent`. Lock the alias mapping so a future
-    // alias change doesn't silently send users to CLI passthrough instead.
-    expect(parseVirtualAction("/agent foo", "claude")).toEqual({
-      name: "agents",
-      args: "foo",
-    });
+  it("/agent on Codex resolves to agent virtual (not /agents Extend page)", () => {
+    // Wave 4a reverts wave 2's alias mapping. Codex TUI's /agent opens a
+    // sub-agent picker — semantically different from the Extend Agents page.
+    // OpenCovibe routes Codex /agent to a dedicated informative virtual.
     expect(parseVirtualAction("/agent", "codex")).toEqual({
+      name: "agent",
+      args: "",
+    });
+  });
+
+  it("/agent is not handled on Claude (no Claude CLI /agent command)", () => {
+    // Claude CLI does NOT have a singular /agent command — only /agents
+    // (plural). On Claude sessions /agent falls through (parser returns null
+    // = no virtual handles it; gets sent to CLI as a typed message, which
+    // Claude CLI will ignore).
+    expect(parseVirtualAction("/agent", "claude")).toBeNull();
+  });
+
+  it("/agents (plural) still navigates to Extend page on both agents", () => {
+    // Lock the surviving /agents behaviour after the alias removal.
+    expect(parseVirtualAction("/agents", "claude")).toEqual({
       name: "agents",
       args: "",
     });
+    expect(parseVirtualAction("/agents", "codex")).toEqual({
+      name: "agents",
+      args: "",
+    });
+  });
+
+  it("agents virtual no longer carries /agent alias after Codex picker fix", () => {
+    // Regression guard for wave 4a: the singular alias on /agents was
+    // misleading users into the Extend page when Codex's /agent should open
+    // a sub-agent picker (a UI OpenCovibe doesn't have yet).
+    const merged = mergeWithVirtual([], "codex");
+    const agents = merged.find((c) => c.name === "agents")!;
+    expect(agents.aliases ?? []).not.toContain("agent");
+  });
+
+  it("agent virtual carries codex-agent-info action on Codex", () => {
+    const merged = mergeWithVirtual([], "codex");
+    const agent = merged.find((c) => c.name === "agent")!;
+    expect(agent["_virtual"]).toBe(true);
+    expect(agent["_action"]).toBe("codex-agent-info");
+  });
+
+  it("review virtual carries codex-review action on Codex", () => {
+    const merged = mergeWithVirtual([], "codex");
+    const review = merged.find((c) => c.name === "review")!;
+    expect(review["_virtual"]).toBe(true);
+    expect(review["_action"]).toBe("codex-review");
+  });
+
+  it("/review on Codex resolves to review virtual", () => {
+    expect(parseVirtualAction("/review", "codex")).toEqual({
+      name: "review",
+      args: "",
+    });
+  });
+
+  it("/review on Claude falls through to CLI passthrough", () => {
+    // Claude CLI handles /review itself (PR review).
+    expect(parseVirtualAction("/review", "claude")).toBeNull();
   });
 
   it("excludes /login for Claude (Claude CLI handles its own /login)", () => {
