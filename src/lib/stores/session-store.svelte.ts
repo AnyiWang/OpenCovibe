@@ -1879,7 +1879,9 @@ export class SessionStore {
           this._startResponseTimeout(run.id);
         }
       } else {
-        // Codex pipe mode
+        // PipeExec path (Codex): useStreamSession is false iff the freshly
+        // created run has execution_path=pipe_exec, so sendChatMessage is the
+        // correct IPC. SessionActor runs always go through the branch above.
         this._setPhase("running");
         await api.sendChatMessage(run.id, prompt, attachments.length > 0 ? attachments : undefined);
       }
@@ -1900,7 +1902,15 @@ export class SessionStore {
     snapshotCache.deleteSnapshot(this.run.id).catch(() => {});
 
     try {
-      if (this.useStreamSession && this.sessionAlive) {
+      if (this.useStreamSession) {
+        // SessionActor (Claude stream-json): requires a live CLI process.
+        // Why-not fallback: sendChatMessage targets pipe_exec runs only; the
+        // backend rejects it for session_actor runs (commands/chat.rs). When
+        // the process has died, surface a clear error instead of routing to
+        // an IPC that is guaranteed to fail.
+        if (!this.sessionAlive) {
+          throw new Error("Session ended — start a new session to continue.");
+        }
         // Optimistic user message — matches the pattern in startSession().
         // Content-based dedup in _reduce(user_message) prevents double display
         // when the backend's UserMessage bus event arrives.
@@ -1912,6 +1922,7 @@ export class SessionStore {
           this._startResponseTimeout(this.run.id);
         }
       } else {
+        // PipeExec (Codex): one-shot process per message, no liveness concept.
         this._setPhase("running");
         await api.sendChatMessage(
           this.run.id,

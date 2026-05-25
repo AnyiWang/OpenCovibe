@@ -591,6 +591,42 @@ describe("SessionStore reducer", () => {
     });
   });
 
+  // ── sendMessage dispatch by execution_path ──
+
+  describe("sendMessage dispatch", () => {
+    beforeEach(() => {
+      vi.mocked(api.sendSessionMessage).mockClear();
+      vi.mocked(api.sendChatMessage).mockClear();
+    });
+
+    it("SessionActor + alive routes to sendSessionMessage", async () => {
+      store.run = makeRun("run-sa-alive", { execution_path: "session_actor" });
+      store.phase = "idle";
+      vi.mocked(api.sendSessionMessage).mockResolvedValueOnce(undefined);
+      await store.sendMessage("hello", []);
+      expect(api.sendSessionMessage).toHaveBeenCalledWith("run-sa-alive", "hello", undefined);
+      expect(api.sendChatMessage).not.toHaveBeenCalled();
+    });
+
+    it("SessionActor + dead throws a clear error (no IPC call)", async () => {
+      store.run = makeRun("run-sa-dead", { execution_path: "session_actor" });
+      store.phase = "completed";
+      await expect(store.sendMessage("hello", [])).rejects.toThrow(/Session ended/);
+      expect(api.sendChatMessage).not.toHaveBeenCalled();
+      expect(api.sendSessionMessage).not.toHaveBeenCalled();
+      expect(store.error).toMatch(/Session ended/);
+    });
+
+    it("PipeExec routes to sendChatMessage regardless of phase", async () => {
+      store.run = makeRun("run-pe", { execution_path: "pipe_exec", agent: "codex" });
+      store.phase = "idle";
+      vi.mocked(api.sendChatMessage).mockResolvedValueOnce(undefined);
+      await store.sendMessage("hello", []);
+      expect(api.sendChatMessage).toHaveBeenCalledWith("run-pe", "hello", undefined);
+      expect(api.sendSessionMessage).not.toHaveBeenCalled();
+    });
+  });
+
   // ── Terminal run ask_pending resolution ──
 
   describe("terminal run ask_pending cleanup", () => {
