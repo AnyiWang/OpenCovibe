@@ -321,6 +321,10 @@ fn build_summary(
     let mut message_count: u32 = 0;
     let mut last_activity_ts: Option<String> = None;
     let mut first_prompt: Option<String> = None;
+    // Real model name (e.g. "gpt-5.5") lives in turn_context.payload.model, NOT in
+    // session_meta (which only carries model_provider). Latest occurrence wins, to match
+    // the latest-rollout-authoritative rule used for cwd/cli_version/provider below.
+    let mut model: Option<String> = None;
 
     for f in files_asc {
         total_size = total_size.saturating_add(f.size);
@@ -360,6 +364,14 @@ fn build_summary(
                             first_prompt = Some(truncate_prompt(text));
                         }
                     }
+                } else if outer_type == "turn_context" {
+                    if let Some(m) = json
+                        .get("payload")
+                        .and_then(|p| p.get("model"))
+                        .and_then(|v| v.as_str())
+                    {
+                        model = Some(m.to_string());
+                    }
                 }
                 head_seen += 1;
                 if head_seen > SCAN_HEAD_LINES_FOR_FIRST_PROMPT
@@ -387,7 +399,7 @@ fn build_summary(
         started_at: earliest.meta.timestamp.clone(),
         last_activity_at: last_activity_ts.unwrap_or_else(|| earliest.meta.timestamp.clone()),
         message_count,
-        model: latest.meta.model_provider.clone(),
+        model: model.or_else(|| latest.meta.model_provider.clone()),
         cli_version: latest.meta.cli_version.clone(),
         file_size: total_size,
         file_path: latest.path.to_string_lossy().to_string(),
@@ -1931,6 +1943,59 @@ mod tests {
             .find(|s| s.session_id == "thread-2")
             .unwrap();
         assert_eq!(t2.rollout_paths.len(), 1);
+    }
+
+    #[test]
+    fn discover_summary_model_latest_turn_context_wins() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        // Two turn_context lines with different models — the latest must win.
+        write_rollout(
+            root,
+            "2026",
+            "02",
+            "10",
+            "rollout-2026-02-10T00-00-00-mdl.jsonl",
+            "thread-model",
+            "/tmp/proj",
+            &[
+                r#"{"timestamp":"2026-02-10T00:01:00Z","type":"turn_context","payload":{"model":"gpt-5.5"}}"#,
+                r#"{"timestamp":"2026-02-10T00:02:00Z","type":"turn_context","payload":{"model":"gpt-6"}}"#,
+                r#"{"timestamp":"2026-02-10T00:03:00Z","type":"event_msg","payload":{"type":"task_complete"}}"#,
+            ],
+        );
+        let result = discover_sessions_in_root(root, "/", &empty_imported()).unwrap();
+        let s = result
+            .sessions
+            .iter()
+            .find(|s| s.session_id == "thread-model")
+            .unwrap();
+        assert_eq!(s.model.as_deref(), Some("gpt-6"));
+    }
+
+    #[test]
+    fn discover_summary_falls_back_to_provider() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        // No turn_context → fall back to session_meta.model_provider. write_rollout's
+        // session_meta omits model_provider, so write a custom rollout inline.
+        let dir = root.join("2026").join("02").join("10");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("rollout-2026-02-10T00-00-00-prov.jsonl");
+        let content = concat!(
+            r#"{"timestamp":"2026-02-10T00:00:00Z","type":"session_meta","payload":{"id":"thread-prov","timestamp":"2026-02-10T00:00:00Z","cwd":"/tmp/proj","model_provider":"openai"}}"#,
+            "\n",
+            r#"{"timestamp":"2026-02-10T00:01:00Z","type":"event_msg","payload":{"type":"task_complete"}}"#,
+            "\n",
+        );
+        std::fs::write(&path, content).unwrap();
+        let result = discover_sessions_in_root(root, "/", &empty_imported()).unwrap();
+        let s = result
+            .sessions
+            .iter()
+            .find(|s| s.session_id == "thread-prov")
+            .unwrap();
+        assert_eq!(s.model.as_deref(), Some("openai"));
     }
 
     #[test]
