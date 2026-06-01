@@ -183,10 +183,10 @@ export const VIRTUAL_COMMANDS: CliCommand[] = [
   {
     name: "clear",
     description: "Clear conversation history and free up context",
-    // Codex parity: `/new` and `/exit` are aliases — both fall through to the
-    // same clear-context action. In a GUI app "exit" means leave the current
+    // Codex parity: `/new`, `/exit`, `/quit` are aliases — all fall through to the
+    // same clear-context action. In a GUI app "exit"/"quit" mean leave the current
     // chat (not quit the app), which matches clear semantics.
-    aliases: ["new", "exit"],
+    aliases: ["new", "exit", "quit"],
     _virtual: true,
     _action: "clear-context",
     // Codex: navigates to fresh chat (new thread on next message)
@@ -313,7 +313,8 @@ export const VIRTUAL_COMMANDS: CliCommand[] = [
   {
     name: "memory",
     description: "Edit project memory files (CLAUDE.md / AGENTS.md)",
-    aliases: [],
+    // Codex parity: `/memories` is an alias (Codex TUI uses the plural).
+    aliases: ["memories"],
     _virtual: true,
     _navigate: "/memory",
   },

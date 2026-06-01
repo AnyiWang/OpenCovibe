@@ -9,6 +9,7 @@ import {
   mergeWithVirtual,
   isVirtualCommand,
   parseVirtualAction,
+  getKnownVirtualNames,
   getQuickActions,
   classifyCloseReason,
   getCommandCategory,
@@ -472,6 +473,15 @@ describe("parseVirtualAction", () => {
 
   it("returns null for non-virtual command", () => {
     expect(parseVirtualAction("/compact")).toBeNull();
+  });
+
+  it("resolves Codex aliases /quit → clear and /memories → memory", () => {
+    expect(parseVirtualAction("/quit", "codex")).toEqual({ name: "clear", args: "" });
+    expect(parseVirtualAction("/memories", "codex")).toEqual({ name: "memory", args: "" });
+    // both names recognized for Codex
+    const known = getKnownVirtualNames("codex");
+    expect(known.has("quit")).toBe(true);
+    expect(known.has("memories")).toBe(true);
   });
 
   it("returns null for plain text", () => {

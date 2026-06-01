@@ -97,11 +97,12 @@ pub fn build_agent_command(
             // resolve to a Claude model name (e.g. "opus", "claude-*") which Codex
             // rejects. Skip those — let Codex use its own default.
             if let Some(ref m) = settings.model {
-                let is_claude_model = m.is_empty()
-                    || m.contains("claude")
-                    || m.contains("opus")
-                    || m.contains("sonnet")
-                    || m.contains("haiku");
+                let lm = m.to_lowercase();
+                let is_claude_model = lm.is_empty()
+                    || lm.contains("claude")
+                    || lm.contains("opus")
+                    || lm.contains("sonnet")
+                    || lm.contains("haiku");
                 if !is_claude_model {
                     args.push("--model".to_string());
                     args.push(m.to_string());
@@ -328,6 +329,22 @@ mod tests {
         let (_, resume_args) =
             build_agent_command("codex", "q", &s, false, Some("tid-1"), &[]).unwrap();
         assert!(!resume_args.contains(&"--search".to_string()));
+    }
+
+    #[test]
+    fn codex_filters_capitalized_claude_model() {
+        // Case-insensitive: a capitalized Claude id must still be filtered out so it's
+        // never passed to `codex --model` (Codex would reject it).
+        let mut s = make_settings();
+        s.model = Some("Claude-Opus-4".into());
+        let (_, args) = build_agent_command("codex", "q", &s, false, None, &[]).unwrap();
+        assert!(!args.contains(&"--model".to_string()));
+        assert!(!args.contains(&"Claude-Opus-4".to_string()));
+        // A real Codex model still passes through.
+        s.model = Some("gpt-5.5".into());
+        let (_, args2) = build_agent_command("codex", "q", &s, false, None, &[]).unwrap();
+        assert!(args2.contains(&"--model".to_string()));
+        assert!(args2.contains(&"gpt-5.5".to_string()));
     }
 
     #[test]
