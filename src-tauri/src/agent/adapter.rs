@@ -38,6 +38,8 @@ pub struct AdapterSettings {
     pub profile: Option<String>,
     pub ignore_user_config: bool,
     pub ignore_rules: bool,
+    /// Codex `--search` — enable the native web_search tool. New sessions only.
+    pub web_search: bool,
 }
 
 /// Map OpenCovibe permission mode names to Claude CLI `--permission-mode` values.
@@ -158,6 +160,7 @@ pub fn build_adapter_settings(
     let profile = agent.profile.clone().filter(|s| !s.is_empty());
     let ignore_user_config = agent.ignore_user_config.unwrap_or(false);
     let ignore_rules = agent.ignore_rules.unwrap_or(false);
+    let web_search = agent.web_search.unwrap_or(false);
 
     // Mutual exclusion: system_prompt takes priority over append_system_prompt
     if system_prompt.is_some() && append_system_prompt.is_some() {
@@ -165,7 +168,7 @@ pub fn build_adapter_settings(
     }
 
     log::debug!(
-        "[adapter] build_adapter_settings: model={:?}, perm={:?}, allowed={}, disallowed={}, budget={:?}, fallback={:?}, sys_prompt={}chars, append_sys={}chars, tool_set={:?}, add_dirs={}, json_schema={}, partial={}, debug={:?}, no_persist={}, max_turns={:?}, effort={:?}, betas={}, agents_json={}, codex_flags={{ephemeral={}, profile={:?}, ignore_user_config={}, ignore_rules={}}}",
+        "[adapter] build_adapter_settings: model={:?}, perm={:?}, allowed={}, disallowed={}, budget={:?}, fallback={:?}, sys_prompt={}chars, append_sys={}chars, tool_set={:?}, add_dirs={}, json_schema={}, partial={}, debug={:?}, no_persist={}, max_turns={:?}, effort={:?}, betas={}, agents_json={}, codex_flags={{ephemeral={}, profile={:?}, ignore_user_config={}, ignore_rules={}, web_search={}}}",
         model,
         permission_mode,
         allowed_tools.len(),
@@ -188,6 +191,7 @@ pub fn build_adapter_settings(
         profile,
         ignore_user_config,
         ignore_rules,
+        web_search,
     );
 
     AdapterSettings {
@@ -213,6 +217,7 @@ pub fn build_adapter_settings(
         profile,
         ignore_user_config,
         ignore_rules,
+        web_search,
     }
 }
 
@@ -397,6 +402,7 @@ mod tests {
             profile: None,
             ignore_user_config: false,
             ignore_rules: false,
+            web_search: false,
         }
     }
 
@@ -722,6 +728,7 @@ mod tests {
         agent.profile = Some("dev".into());
         agent.ignore_user_config = Some(true);
         agent.ignore_rules = Some(true);
+        agent.web_search = Some(true);
         let user = make_user_settings();
 
         let adapter = build_adapter_settings(&agent, &user, None);
@@ -729,6 +736,7 @@ mod tests {
         assert_eq!(adapter.profile.as_deref(), Some("dev"));
         assert!(adapter.ignore_user_config);
         assert!(adapter.ignore_rules);
+        assert!(adapter.web_search);
     }
 
     #[test]
@@ -740,6 +748,7 @@ mod tests {
         assert_eq!(adapter.profile, None);
         assert!(!adapter.ignore_user_config);
         assert!(!adapter.ignore_rules);
+        assert!(!adapter.web_search);
     }
 
     #[test]

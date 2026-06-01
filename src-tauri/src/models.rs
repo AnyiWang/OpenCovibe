@@ -419,6 +419,9 @@ pub struct AgentSettings {
     /// Codex `--ignore-rules` — skip execpolicy .rules files.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ignore_rules: Option<bool>,
+    /// Codex `--search` — enable the native web_search tool (new sessions only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub web_search: Option<bool>,
     pub updated_at: String,
 }
 
@@ -450,6 +453,7 @@ impl AgentSettings {
             profile: None,
             ignore_user_config: None,
             ignore_rules: None,
+            web_search: None,
             updated_at: now_iso(),
         }
     }

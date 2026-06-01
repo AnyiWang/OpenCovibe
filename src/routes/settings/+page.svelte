@@ -871,6 +871,28 @@
       ],
     },
     {
+      key: "model_reasoning_summary",
+      label: t("settings_codexConfig_reasoningSummaryLabel"),
+      description: t("settings_codexConfig_reasoningSummaryDesc"),
+      group: "behavior",
+      type: "enum",
+      default: "auto",
+      options: [
+        { value: "none", label: t("settings_codexConfig_optNone") },
+        { value: "auto", label: t("settings_codexConfig_optAuto") },
+        { value: "concise", label: t("settings_codexConfig_optConcise") },
+        { value: "detailed", label: t("settings_codexConfig_optDetailed") },
+      ],
+    },
+    {
+      key: "personality",
+      label: t("settings_codexConfig_personalityLabel"),
+      description: t("settings_codexConfig_personalityDesc"),
+      group: "behavior",
+      type: "string",
+      default: undefined,
+    },
+    {
       key: "approval_policy",
       label: t("settings_codexConfig_approvalPolicyLabel"),
       description: t("settings_codexConfig_approvalPolicyDesc"),
@@ -3476,6 +3498,28 @@
                     saveCodexAgentPatch({ ignore_rules: !codexAgentSettings?.ignore_rules })}
                 >
                   {codexAgentSettings.ignore_rules
+                    ? t("settings_codexFlags_on")
+                    : t("settings_codexFlags_off")}
+                </button>
+              </div>
+
+              <!-- Web search -->
+              <div class="flex items-center justify-between gap-4 py-1">
+                <div class="flex-1 min-w-0">
+                  <p class="text-sm font-medium">{t("settings_codexFlags_webSearchLabel")}</p>
+                  <p class="text-xs text-muted-foreground mt-0.5">
+                    {t("settings_codexFlags_webSearchDesc")}
+                  </p>
+                </div>
+                <button
+                  class="rounded-md border px-3 py-1.5 text-xs shrink-0 transition-all
+                    {codexAgentSettings.web_search
+                    ? 'bg-primary text-primary-foreground'
+                    : 'hover:bg-accent hover:border-ring/30'}"
+                  onclick={() =>
+                    saveCodexAgentPatch({ web_search: !codexAgentSettings?.web_search })}
+                >
+                  {codexAgentSettings.web_search
                     ? t("settings_codexFlags_on")
                     : t("settings_codexFlags_off")}
                 </button>

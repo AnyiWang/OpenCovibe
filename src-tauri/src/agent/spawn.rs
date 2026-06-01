@@ -70,6 +70,18 @@ pub fn build_agent_command(
                     "[spawn] skipping --profile on codex resume (not supported by exec resume)"
                 );
             }
+            // --search enables the native web_search tool. `codex exec resume` does NOT accept
+            // --search (verified v0.134 --help), so apply it on new sessions only; resumed turns
+            // run without web search.
+            if settings.web_search {
+                if resume_thread_id.is_none() {
+                    args.push("--search".to_string());
+                } else {
+                    log::debug!(
+                        "[spawn] skipping --search on codex resume (not supported by exec resume)"
+                    );
+                }
+            }
             // model_reasoning_effort overrides config.toml on a per-session
             // basis. Empty string treated as unset (UI sends "" to clear).
             if let Some(e) = &settings.effort {
@@ -183,6 +195,7 @@ mod tests {
             profile: None,
             ignore_user_config: false,
             ignore_rules: false,
+            web_search: false,
         }
     }
 
@@ -293,6 +306,18 @@ mod tests {
         s.ignore_user_config = true;
         let (_, args) = build_agent_command("codex", "q", &s, false, None).unwrap();
         assert!(args.contains(&"--ignore-user-config".to_string()));
+    }
+
+    #[test]
+    fn codex_web_search_flag() {
+        let mut s = make_settings();
+        s.web_search = true;
+        // New session → --search present.
+        let (_, args) = build_agent_command("codex", "q", &s, false, None).unwrap();
+        assert!(args.contains(&"--search".to_string()));
+        // Resume → --search omitted (codex exec resume rejects it).
+        let (_, resume_args) = build_agent_command("codex", "q", &s, false, Some("tid-1")).unwrap();
+        assert!(!resume_args.contains(&"--search".to_string()));
     }
 
     #[test]
