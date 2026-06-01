@@ -20,6 +20,14 @@ use tokio::sync::Mutex;
 // including silent multi-minute command executions — are not falsely killed.
 const CODEX_IDLE_TIMEOUT: Duration = Duration::from_secs(1800); // 30 min
 
+/// Codex writes benign informational banners to stderr on every spawn (e.g. when reading
+/// the prompt from stdin). These are not errors and must not surface as timeline cards.
+/// Kept as a tight allowlist so real Codex errors still render.
+fn is_benign_codex_stderr(line: &str) -> bool {
+    let t = line.trim();
+    t.is_empty() || t == "Reading additional input from stdin..."
+}
+
 pub type ProcessMap = Arc<Mutex<HashMap<String, Child>>>;
 
 pub fn new_process_map() -> ProcessMap {
@@ -288,15 +296,19 @@ pub async fn run_agent(
                     "text": line
                 }),
             );
-            // Emit stderr as CommandOutput via bus
-            if let Some(ref em) = emitter_err {
-                em.persist_and_emit(
-                    &run_id_err,
-                    &BusEvent::CommandOutput {
-                        run_id: run_id_err.clone(),
-                        content: format!("[stderr] {}", line),
-                    },
-                );
+            // Emit stderr as CommandOutput via bus — but skip Codex's benign per-spawn
+            // banner so it doesn't show up as a junk timeline card on every run.
+            // (Still appended to events.jsonl + run-event above for raw-log visibility.)
+            if !(is_codex && is_benign_codex_stderr(&line)) {
+                if let Some(ref em) = emitter_err {
+                    em.persist_and_emit(
+                        &run_id_err,
+                        &BusEvent::CommandOutput {
+                            run_id: run_id_err.clone(),
+                            content: format!("[stderr] {}", line),
+                        },
+                    );
+                }
             }
         }
         stderr_text
@@ -447,5 +459,20 @@ pub async fn stop_process(process_map: &ProcessMap, run_id: &str) -> bool {
     } else {
         log::debug!("[stream] stop_process: no process for run_id={}", run_id);
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_benign_codex_stderr;
+
+    #[test]
+    fn benign_codex_stderr_recognized() {
+        assert!(is_benign_codex_stderr(
+            "Reading additional input from stdin..."
+        ));
+        assert!(is_benign_codex_stderr("   ")); // blank lines are benign
+        assert!(!is_benign_codex_stderr("Error: model 'x' is not supported"));
+        assert!(!is_benign_codex_stderr("panic: something broke"));
     }
 }

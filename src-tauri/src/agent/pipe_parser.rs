@@ -68,10 +68,7 @@ impl CodexStdoutParser {
                     run_id: run_id.to_string(),
                     tool_use_id,
                     tool_name: "Edit".to_string(),
-                    input: item
-                        .get("changes")
-                        .cloned()
-                        .unwrap_or(serde_json::json!({})),
+                    input: file_change_input(item),
                     parent_tool_use_id: None,
                 }]
             }
@@ -200,6 +197,8 @@ impl CodexStdoutParser {
                     run_id: run_id.to_string(),
                     tool_use_id,
                     tool_name: "Edit".to_string(),
+                    // Keep the raw changes list as output; the ToolStart carries file_path
+                    // (reducer joins start↔end by tool_use_id for the label).
                     output: item
                         .get("changes")
                         .cloned()
@@ -254,13 +253,7 @@ impl CodexStdoutParser {
                     tool_use_result: None,
                 }]
             }
-            "todo_list" => {
-                vec![BusEvent::Raw {
-                    run_id: run_id.to_string(),
-                    source: "codex_todo_list".to_string(),
-                    data: item.clone(),
-                }]
-            }
+            "todo_list" => self.map_todo_list(run_id, item),
             "error" => {
                 let msg = item
                     .get("message")
@@ -351,6 +344,41 @@ impl CodexStdoutParser {
         }]
     }
 
+    /// Map a Codex `todo_list` item to a TodoWrite ToolStart+ToolEnd pair so it reuses
+    /// the existing TodoWrite renderer (tool_use_result.newTodos) and persists/replays
+    /// (Raw events don't). Stable scoped id → repeated item.updated refreshes one card.
+    fn map_todo_list(&self, run_id: &str, item: &Value) -> Vec<BusEvent> {
+        let item_id = item.get("id").and_then(|v| v.as_str()).unwrap_or("todo");
+        let tool_use_id = self.scoped_id(item_id);
+
+        let new_todos: Vec<Value> = item
+            .get("items")
+            .and_then(|v| v.as_array())
+            .map(|arr| arr.iter().map(todo_item_to_new_todo).collect())
+            .unwrap_or_default();
+        let new_todos = Value::Array(new_todos);
+
+        vec![
+            BusEvent::ToolStart {
+                run_id: run_id.to_string(),
+                tool_use_id: tool_use_id.clone(),
+                tool_name: "TodoWrite".to_string(),
+                input: serde_json::json!({ "todos": new_todos }),
+                parent_tool_use_id: None,
+            },
+            BusEvent::ToolEnd {
+                run_id: run_id.to_string(),
+                tool_use_id,
+                tool_name: "TodoWrite".to_string(),
+                output: serde_json::json!({}),
+                status: "success".to_string(),
+                duration_ms: None,
+                parent_tool_use_id: None,
+                tool_use_result: Some(serde_json::json!({ "newTodos": new_todos })),
+            },
+        ]
+    }
+
     fn map_error(&self, run_id: &str, raw: &Value) -> Vec<BusEvent> {
         let msg = raw
             .get("message")
@@ -363,6 +391,72 @@ impl CodexStdoutParser {
             content: format!("[codex error] {}", msg),
         }]
     }
+}
+
+/// Build Edit ToolStart input from a Codex `file_change` item. Live shape is
+/// `changes: [{path, kind}]` (array). Surface the first path as `file_path` so the Edit
+/// renderer shows a label; keep the full `changes` list for context. Codex live file_change
+/// carries no diff body, so no old/new strings are available.
+fn file_change_input(item: &Value) -> Value {
+    let changes = item
+        .get("changes")
+        .cloned()
+        .unwrap_or(serde_json::json!([]));
+    // Tolerate either an array of {path,kind} or an object map keyed by path.
+    let (first_path, first_kind) = match &changes {
+        Value::Array(arr) => {
+            let first = arr.first();
+            (
+                first
+                    .and_then(|c| c.get("path"))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string()),
+                first
+                    .and_then(|c| c.get("kind"))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string()),
+            )
+        }
+        Value::Object(map) => (map.keys().next().cloned(), None),
+        _ => (None, None),
+    };
+    match first_path {
+        Some(path) => serde_json::json!({
+            "file_path": path,
+            "kind": first_kind,
+            "changes": changes,
+        }),
+        None => serde_json::json!({ "changes": changes }),
+    }
+}
+
+/// Map one Codex todo item to the TodoWrite `newTodos` shape
+/// (`{content, status, activeForm}`). Defensive about field names across versions.
+fn todo_item_to_new_todo(item: &Value) -> Value {
+    let content = item
+        .get("text")
+        .and_then(|v| v.as_str())
+        .or_else(|| item.get("content").and_then(|v| v.as_str()))
+        .or_else(|| item.get("title").and_then(|v| v.as_str()))
+        .unwrap_or("")
+        .to_string();
+    let status = match item.get("status").and_then(|v| v.as_str()) {
+        Some("in_progress") | Some("in-progress") => "in_progress",
+        Some("completed") | Some("complete") | Some("done") => "completed",
+        Some("pending") => "pending",
+        _ => {
+            if item.get("completed").and_then(|v| v.as_bool()) == Some(true) {
+                "completed"
+            } else {
+                "pending"
+            }
+        }
+    };
+    serde_json::json!({
+        "content": content,
+        "status": status,
+        "activeForm": content,
+    })
 }
 
 impl PipeStdoutParser for CodexStdoutParser {
@@ -387,11 +481,9 @@ impl PipeStdoutParser for CodexStdoutParser {
                     .unwrap_or("");
                 if item_type == "todo_list" {
                     if let Some(item) = item {
-                        return vec![BusEvent::Raw {
-                            run_id: run_id.to_string(),
-                            source: "codex_todo_list".to_string(),
-                            data: item.clone(),
-                        }];
+                        // Same scoped id as item.completed → updates the same TodoWrite card
+                        // in place (reducer dedupes ToolStart, updates ToolEnd by id).
+                        return self.map_todo_list(run_id, item);
                     }
                 }
                 if let Some(item) = item {
@@ -636,17 +728,59 @@ mod tests {
     }
 
     #[test]
-    fn todo_list_completed_returns_raw() {
+    fn todo_list_completed_maps_to_todowrite() {
         let mut p = parser();
         let raw = json!({
             "type": "item.completed",
-            "item": {"id": "todo_0", "type": "todo_list", "items": []}
+            "item": {"id": "todo_0", "type": "todo_list", "items": [
+                {"text": "do x", "completed": false},
+                {"text": "do y", "completed": true},
+            ]}
         });
         let events = p.parse_line("run-1", &raw);
-        assert_eq!(events.len(), 1);
+        assert_eq!(events.len(), 2, "ToolStart + ToolEnd");
         match &events[0] {
-            BusEvent::Raw { source, .. } => assert_eq!(source, "codex_todo_list"),
-            other => panic!("expected Raw, got {:?}", other),
+            BusEvent::ToolStart { tool_name, .. } => assert_eq!(tool_name, "TodoWrite"),
+            other => panic!("expected ToolStart, got {:?}", other),
+        }
+        match &events[1] {
+            BusEvent::ToolEnd {
+                tool_name,
+                status,
+                tool_use_result,
+                ..
+            } => {
+                assert_eq!(tool_name, "TodoWrite");
+                assert_eq!(status, "success");
+                let todos = tool_use_result.as_ref().unwrap()["newTodos"]
+                    .as_array()
+                    .unwrap();
+                assert_eq!(todos.len(), 2);
+                assert_eq!(todos[0]["content"], "do x");
+                assert_eq!(todos[0]["status"], "pending");
+                assert_eq!(todos[1]["status"], "completed");
+            }
+            other => panic!("expected ToolEnd, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn file_change_started_sets_file_path() {
+        let p = parser();
+        let raw = json!({
+            "type": "item.started",
+            "item": {"id": "fc_0", "type": "file_change",
+                     "changes": [{"path": "/a/b.rs", "kind": "update"}]}
+        });
+        let events = p.map_item_started("run-1", &raw);
+        match &events[0] {
+            BusEvent::ToolStart {
+                tool_name, input, ..
+            } => {
+                assert_eq!(tool_name, "Edit");
+                assert_eq!(input["file_path"], "/a/b.rs");
+            }
+            other => panic!("expected ToolStart Edit, got {:?}", other),
         }
     }
 
@@ -747,7 +881,7 @@ mod tests {
     // ── item.updated ──
 
     #[test]
-    fn item_updated_todo_list_emits_raw() {
+    fn item_updated_todo_list_maps_to_todowrite() {
         let mut p = parser();
         let events = p.parse_line(
             "run-1",
@@ -756,14 +890,25 @@ mod tests {
                 "item": {
                     "type": "todo_list",
                     "id": "tl-1",
-                    "items": [{"text": "step 1", "done": true}]
+                    "items": [{"text": "step 1", "status": "in_progress"}]
                 }
             }),
         );
-        assert_eq!(events.len(), 1);
-        match &events[0] {
-            BusEvent::Raw { source, .. } => assert_eq!(source, "codex_todo_list"),
-            _ => panic!("expected Raw"),
+        assert_eq!(events.len(), 2, "ToolStart + ToolEnd");
+        match &events[1] {
+            BusEvent::ToolEnd {
+                tool_name,
+                tool_use_result,
+                ..
+            } => {
+                assert_eq!(tool_name, "TodoWrite");
+                let todos = tool_use_result.as_ref().unwrap()["newTodos"]
+                    .as_array()
+                    .unwrap();
+                assert_eq!(todos[0]["content"], "step 1");
+                assert_eq!(todos[0]["status"], "in_progress");
+            }
+            other => panic!("expected ToolEnd, got {:?}", other),
         }
     }
 
