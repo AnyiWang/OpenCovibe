@@ -245,6 +245,7 @@ pub fn run() {
             commands::agents::delete_agent_file,
             commands::clipboard::get_clipboard_files,
             commands::clipboard::read_clipboard_file,
+            commands::clipboard::read_clipboard_text,
             commands::clipboard::save_temp_attachment,
             commands::mcp::list_configured_mcp_servers,
             commands::mcp::add_mcp_server,

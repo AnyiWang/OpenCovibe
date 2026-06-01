@@ -67,6 +67,24 @@ export function formatPasteSize(lines: number, chars: number): string {
   return `${chars} chars`;
 }
 
+/**
+ * Splice text into a string at a selection range, replacing any selected text.
+ * Returns `{ text, cursorPos }` where cursorPos is the position after the inserted text.
+ *
+ * Used by insertTextAtCursor and insertBlockToInput in PromptInput.
+ */
+export function spliceText(
+  source: string,
+  insertion: string,
+  selectionStart: number,
+  selectionEnd: number = selectionStart,
+): { text: string; cursorPos: number } {
+  const before = source.slice(0, selectionStart);
+  const after = source.slice(selectionEnd);
+  const text = before + insertion + after;
+  return { text, cursorPos: selectionStart + insertion.length };
+}
+
 /** Split a file path by both / and \ separators (cross-platform). */
 export function splitPath(p: string): string[] {
   return p.split(/[/\\]/);

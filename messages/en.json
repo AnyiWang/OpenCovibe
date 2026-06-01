@@ -393,6 +393,9 @@
   "prompt_unsupportedFile": "Unsupported file type: .{ext}",
   "prompt_clipboardUnsupported": "File paste is not yet supported on this platform",
   "prompt_conversionFailed": "Failed to convert {name}",
+  "prompt_pasteBlockInsert": "Insert to input",
+  "prompt_pasteToastMac": "Compressed to chip. Use ⌘+Shift+V for plain text paste",
+  "prompt_pasteToastOther": "Compressed to chip. Use Ctrl+Shift+V for plain text paste",
 
   "common_cancel": "Cancel",
   "common_retry": "Retry",

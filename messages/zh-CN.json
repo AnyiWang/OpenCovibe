@@ -393,6 +393,9 @@
   "prompt_unsupportedFile": "不支持的文件类型：.{ext}",
   "prompt_clipboardUnsupported": "当前平台暂不支持粘贴文件",
   "prompt_conversionFailed": "转换 {name} 失败",
+  "prompt_pasteBlockInsert": "插入到输入框",
+  "prompt_pasteToastMac": "已压缩为粘贴块，按 ⌘+Shift+V 可直接粘贴为可编辑文本",
+  "prompt_pasteToastOther": "已压缩为粘贴块，按 Ctrl+Shift+V 可直接粘贴为可编辑文本",
 
   "common_cancel": "取消",
   "common_retry": "重试",
