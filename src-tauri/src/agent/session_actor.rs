@@ -53,6 +53,25 @@ fn truncate_str(s: &str, max: usize) -> &str {
     &s[..end]
 }
 
+/// Build a control_response payload for the CLI. HC#2: the `request_id` MUST be nested
+/// inside `response`, not at the top level. `Ok` → success with a response body; `Err` →
+/// error with a message (the correct reply for a request the app cannot fulfill).
+fn build_control_response(request_id: &str, outcome: Result<Value, String>) -> Value {
+    let inner = match outcome {
+        Ok(response) => serde_json::json!({
+            "subtype": "success",
+            "request_id": request_id,
+            "response": response,
+        }),
+        Err(error) => serde_json::json!({
+            "subtype": "error",
+            "request_id": request_id,
+            "error": error,
+        }),
+    };
+    serde_json::json!({ "type": "control_response", "response": inner })
+}
+
 // ── Ralph Loop types ──
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1300,6 +1319,9 @@ impl SessionActor {
     }
 
     /// Send a control_cancel_request to CLI stdin (top-level message type).
+    /// Used only for explicit user-initiated cancellation (ActorCommand::CancelControlRequest,
+    /// e.g. the user dismisses a permission prompt). NOT for auto-declining unsupported
+    /// requests — those use write_control_response_error (the CLI waits for a response).
     async fn handle_cancel_control_request(&mut self, request_id: &str) -> Result<(), String> {
         let payload = serde_json::json!({
             "type": "control_cancel_request",
@@ -1336,28 +1358,38 @@ impl SessionActor {
         Ok(())
     }
 
-    /// Shared helper: write a control_response JSON to CLI stdin.
+    /// Shared helper: write a success control_response JSON to CLI stdin.
     async fn write_control_response(
         &mut self,
         request_id: &str,
         response: Value,
     ) -> Result<(), String> {
-        // CLI expects: {"type":"control_response","response":{"subtype":"success","request_id":"...","response":{...}}}
-        // request_id must be INSIDE the response wrapper, with subtype:"success"
-        let payload = serde_json::json!({
-            "type": "control_response",
-            "response": {
-                "subtype": "success",
-                "request_id": request_id,
-                "response": response,
-            },
-        });
+        let payload = build_control_response(request_id, Ok(response));
         log::debug!(
             "[actor] write_control_response: run_id={}, req_id={}",
             self.run_id,
             request_id,
         );
         self.write_json_line(&payload, "control response").await
+    }
+
+    /// Write an error control_response to CLI stdin — the protocol-correct reply for a
+    /// control_request the app cannot fulfill (HC#2). Sending control_cancel_request here
+    /// instead would leave the CLI waiting for a response until USER_HARD_TIMEOUT.
+    async fn write_control_response_error(
+        &mut self,
+        request_id: &str,
+        error: &str,
+    ) -> Result<(), String> {
+        let payload = build_control_response(request_id, Err(error.to_string()));
+        log::debug!(
+            "[actor] write_control_response_error: run_id={}, req_id={}, error={}",
+            self.run_id,
+            request_id,
+            error,
+        );
+        self.write_json_line(&payload, "control response (error)")
+            .await
     }
 
     // ── I/O handlers ──
@@ -1910,8 +1942,8 @@ impl SessionActor {
                 ),
             );
         } else {
-            // Fallback: unknown or malformed subtype — send control_cancel_request
-            // to tell CLI we can't handle this request (avoids CLI hanging forever).
+            // Fallback: unknown or malformed subtype — reply with an error control_response
+            // so the CLI fails fast instead of waiting for a response until USER_HARD_TIMEOUT.
             let req_id = parsed
                 .get("request_id")
                 .and_then(|v| v.as_str())
@@ -1926,9 +1958,15 @@ impl SessionActor {
                     .map(|r| r.as_object().map(|o| o.keys().collect::<Vec<_>>()))
             );
             if !req_id.is_empty() {
-                if let Err(e) = self.handle_cancel_control_request(req_id).await {
+                if let Err(e) = self
+                    .write_control_response_error(
+                        req_id,
+                        &format!("unsupported control_request subtype: {}", subtype),
+                    )
+                    .await
+                {
                     log::warn!(
-                        "[actor] cancel_control_request failed: run_id={}, req_id={}, subtype={}, err={}",
+                        "[actor] control_response(error) failed: run_id={}, req_id={}, subtype={}, err={}",
                         self.run_id, req_id, subtype, e
                     );
                 }
@@ -1997,35 +2035,35 @@ impl SessionActor {
             request_id
         );
 
-        let response = match subtype {
-            "can_use_tool" => Some(serde_json::json!({
+        // can_use_tool/hook_callback get a success auto-response. Everything else
+        // (elicitation can't be serviced without a user during an internal turn, and
+        // unknown subtypes have no schema) gets a protocol-correct error response —
+        // never control_cancel_request, which would leave the CLI waiting until timeout.
+        let result: Result<Value, String> = match subtype {
+            "can_use_tool" => Ok(serde_json::json!({
                 "behavior": "deny",
                 "message": "Tool use not allowed during internal turn"
             })),
-            "hook_callback" => Some(serde_json::json!({ "decision": "allow" })),
-            "elicitation" => None, // auto-decline via control_cancel_request
-            _ => None,             // unknown subtype — cancel instead of guessing schema
+            "hook_callback" => Ok(serde_json::json!({ "decision": "allow" })),
+            _ => Err(format!(
+                "unsupported control_request subtype during internal turn: {}",
+                subtype
+            )),
         };
 
-        if let Some(response) = response {
-            if let Err(e) = self.write_control_response(&request_id, response).await {
+        let write = match result {
+            Ok(response) => self.write_control_response(&request_id, response).await,
+            Err(msg) => {
                 log::warn!(
-                    "[turn] internal control auto-response failed: req_id={}, err={}",
-                    request_id,
-                    e
+                    "[turn] internal: unhandled control_request: run_id={}, subtype={}, req_id={}",
+                    self.run_id,
+                    subtype,
+                    request_id
                 );
+                self.write_control_response_error(&request_id, &msg).await
             }
-            return;
-        }
-
-        // Unknown or elicitation subtype: send control_cancel_request (schema-agnostic)
-        log::warn!(
-            "[turn] internal: unhandled control_request: run_id={}, subtype={}, req_id={}",
-            self.run_id,
-            subtype,
-            request_id
-        );
-        if let Err(e) = self.handle_cancel_control_request(&request_id).await {
+        };
+        if let Err(e) = write {
             log::warn!(
                 "[turn] internal control auto-response failed: req_id={}, err={}",
                 request_id,
@@ -2507,6 +2545,7 @@ pub fn build_user_payload(
 
 #[cfg(test)]
 mod tests {
+    use super::build_control_response;
     use crate::models::{max_attachment_size, ALLOWED_DOC_TYPES, ALLOWED_IMAGE_TYPES};
     use serde_json::json;
 
@@ -2560,6 +2599,28 @@ mod tests {
     fn unsupported_type_is_skipped() {
         let parts = build_content_parts("hello", &[("application/octet-stream", "data")]);
         assert_eq!(parts.len(), 1); // Only text part, attachment skipped
+    }
+
+    #[test]
+    fn control_response_success_shape() {
+        let p = build_control_response("r1", Ok(serde_json::json!({ "x": 1 })));
+        assert_eq!(p["type"], "control_response");
+        assert_eq!(p["response"]["subtype"], "success");
+        // HC#2: request_id nested inside `response`, NOT at top level.
+        assert_eq!(p["response"]["request_id"], "r1");
+        assert!(p.get("request_id").is_none());
+        assert_eq!(p["response"]["response"]["x"], 1);
+    }
+
+    #[test]
+    fn control_response_error_shape() {
+        let p = build_control_response("r2", Err("nope".to_string()));
+        assert_eq!(p["type"], "control_response");
+        assert_eq!(p["response"]["subtype"], "error");
+        assert_eq!(p["response"]["request_id"], "r2");
+        assert_eq!(p["response"]["error"], "nope");
+        // Error responses carry no nested `response` body.
+        assert!(p["response"].get("response").is_none());
     }
 
     #[test]
