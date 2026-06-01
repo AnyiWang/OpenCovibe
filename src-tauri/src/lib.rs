@@ -124,7 +124,9 @@ pub fn run() {
         .manage(new_process_map())
         .manage(new_actor_session_map())
         .manage(CliInfoCache::new())
-        .manage(Arc::new(EventWriter::new()))
+        // Managed writer = the process-wide singleton, so the free-function
+        // append_event path shares its per-run locks + seq source (audit #1).
+        .manage(crate::storage::events::global_writer())
         .manage(SpawnLocks::new())
         .manage(ShutdownGate::new())
         .manage(cancel_token)

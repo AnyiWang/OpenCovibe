@@ -1,4 +1,5 @@
 use crate::models::{now_iso, BusEvent, ModelUsageSummary, RawRunUsage, RunEvent, RunEventType};
+use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::{BufReader, Read, Seek, SeekFrom, Write};
@@ -53,44 +54,71 @@ fn events_path(run_id: &str) -> std::path::PathBuf {
 
 pub fn next_seq(run_id: &str) -> u64 {
     let path = events_path(run_id);
-    let file = match fs::File::open(&path) {
-        Ok(f) => f,
+    let file_len = match fs::metadata(&path) {
+        Ok(m) => m.len(),
         Err(_) => return 1,
     };
-    let file_len = file.metadata().map(|m| m.len()).unwrap_or(0);
     if file_len == 0 {
         return 1;
     }
 
-    let mut reader = BufReader::new(file);
-    if file_len > 4096 {
-        let _ = reader.seek(SeekFrom::End(-4096));
+    // Fast path: scan only the last 4 KiB — recent (highest) seqs are at the end.
+    if let Some(max) = max_seq_in_tail(&path, file_len) {
+        return max + 1;
     }
 
-    // Use read_to_end + from_utf8_lossy to handle potential mid-character seek
-    let mut buf = Vec::new();
-    if reader.read_to_end(&mut buf).is_err() {
-        return 1;
+    // Fallback: the tail window held no parseable seq line — e.g. the last event
+    // line is itself larger than 4 KiB, so after dropping the partial first line
+    // nothing parses. Seeding 1 here would collide with existing seqs, so do a
+    // full scan to seed correctly. (audit #7: oversized-line seed reset)
+    if let Ok(content) = fs::read_to_string(&path) {
+        if let Some(max) = scan_max_seq(&content) {
+            return max + 1;
+        }
     }
-    let tail = String::from_utf8_lossy(&buf);
+    1
+}
 
-    // Skip first (potentially partial) line if we seeked into the middle
-    let lines_str = if file_len > 4096 {
-        tail.split_once('\n').map(|(_, rest)| rest).unwrap_or(&tail)
-    } else {
-        &tail
-    };
-
-    let max_seq = lines_str
+/// Max `seq` over a JSONL string's parseable lines (None if none parse).
+fn scan_max_seq(content: &str) -> Option<u64> {
+    content
         .lines()
         .filter(|l| !l.trim().is_empty())
         .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
         .filter_map(|v| v.get("seq").and_then(|s| s.as_u64()))
         .max()
-        .unwrap_or(0);
-    max_seq + 1
 }
 
+/// Max `seq` from the last 4 KiB of `path`. Returns None when the window contains
+/// no complete line (too small to hold the final event), signalling the caller to
+/// fall back to a full scan instead of trusting a bogus 0 seed.
+fn max_seq_in_tail(path: &std::path::Path, file_len: u64) -> Option<u64> {
+    let file = fs::File::open(path).ok()?;
+    let mut reader = BufReader::new(file);
+    if file_len > 4096 {
+        reader.seek(SeekFrom::End(-4096)).ok()?;
+    }
+    // read_to_end + from_utf8_lossy tolerates a mid-character seek.
+    let mut buf = Vec::new();
+    reader.read_to_end(&mut buf).ok()?;
+    let tail = String::from_utf8_lossy(&buf);
+    // Drop the first (partial) line when we seeked into the middle. If there is no
+    // newline at all, the whole window is one partial line → "" → None (full scan).
+    let lines_str = if file_len > 4096 {
+        tail.split_once('\n').map(|(_, rest)| rest).unwrap_or("")
+    } else {
+        &tail
+    };
+    scan_max_seq(lines_str)
+}
+
+/// Append a raw run-event (stdout/stderr/etc.) to events.jsonl.
+///
+/// Delegates to the process-wide [`EventWriter`] singleton so that seq allocation
+/// and the file write happen under the SAME per-run lock as bus events. Previously
+/// this computed seq via an unlocked file read, so concurrent writers (e.g. Codex
+/// stdout + stderr tasks, or a bus-event write interleaving) could collide on seq
+/// or interleave partial lines. (audit #1: append_event seq race)
 pub fn append_event(
     run_id: &str,
     event_type: RunEventType,
@@ -101,28 +129,7 @@ pub fn append_event(
         run_id,
         event_type
     );
-    let dir = super::run_dir(run_id);
-    super::ensure_dir(&dir).map_err(|e| e.to_string())?;
-
-    let event = RunEvent {
-        id: uuid::Uuid::new_v4().to_string()[..12].to_string(),
-        task_id: run_id.to_string(),
-        seq: next_seq(run_id),
-        event_type,
-        payload,
-        timestamp: now_iso(),
-    };
-
-    let path = events_path(run_id);
-    let line = serde_json::to_string(&event).map_err(|e| e.to_string())?;
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-        .map_err(|e| e.to_string())?;
-    writeln!(file, "{}", line).map_err(|e| e.to_string())?;
-
-    Ok(event)
+    EVENT_WRITER.write_run_event(run_id, event_type, payload)
 }
 
 pub fn list_events(run_id: &str, since_seq: u64) -> Vec<RunEvent> {
@@ -262,6 +269,63 @@ impl EventWriter {
 
         Ok(current)
     }
+
+    /// Atomically assign seq + append a raw [`RunEvent`] (stdout/stderr/etc.) under
+    /// the same per-run lock and seq counter as bus events, so the two write paths
+    /// can't collide on seq or interleave partial lines into events.jsonl.
+    pub fn write_run_event(
+        &self,
+        run_id: &str,
+        event_type: RunEventType,
+        payload: serde_json::Value,
+    ) -> Result<RunEvent, String> {
+        let run_lock = {
+            let mut map = self.inner.lock().unwrap();
+            if map.len() > 50 {
+                map.retain(|_, v| Arc::strong_count(v) > 1);
+            }
+            map.entry(run_id.to_string())
+                .or_insert_with(|| Arc::new(Mutex::new(next_seq(run_id))))
+                .clone()
+        };
+
+        let mut seq_guard = run_lock.lock().unwrap();
+        let current = *seq_guard;
+        *seq_guard = current + 1;
+
+        let dir = super::run_dir(run_id);
+        super::ensure_dir(&dir).map_err(|e| e.to_string())?;
+
+        let event = RunEvent {
+            id: uuid::Uuid::new_v4().to_string()[..12].to_string(),
+            task_id: run_id.to_string(),
+            seq: current,
+            event_type,
+            payload,
+            timestamp: now_iso(),
+        };
+        let path = events_path(run_id);
+        let line = serde_json::to_string(&event).map_err(|e| e.to_string())?;
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .map_err(|e| e.to_string())?;
+        writeln!(file, "{}", line).map_err(|e| e.to_string())?;
+
+        Ok(event)
+    }
+}
+
+/// Process-wide singleton EventWriter. Both bus events and raw run-events (via
+/// `append_event`) write through this instance so all writes to a given run's
+/// events.jsonl share one per-run lock + one monotonic seq source.
+static EVENT_WRITER: Lazy<Arc<EventWriter>> = Lazy::new(|| Arc::new(EventWriter::new()));
+
+/// Returns the process-wide [`EventWriter`] singleton. Register this as the Tauri
+/// managed state so command handlers and `append_event` share the same locks/seq.
+pub fn global_writer() -> Arc<EventWriter> {
+    EVENT_WRITER.clone()
 }
 
 /// Thin wrapper for backward compatibility — delegates to EventWriter.
@@ -656,4 +720,47 @@ pub fn list_bus_events(run_id: &str, since_seq: Option<u64>) -> Vec<serde_json::
             None
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{max_seq_in_tail, scan_max_seq};
+    use std::io::Write as _;
+
+    #[test]
+    fn scan_max_seq_picks_highest_and_ignores_junk() {
+        assert_eq!(
+            scan_max_seq("{\"seq\":1}\n{\"seq\":5}\n{\"seq\":3}\n"),
+            Some(5)
+        );
+        assert_eq!(scan_max_seq(""), None);
+        assert_eq!(scan_max_seq("not json\n\n"), None);
+    }
+
+    #[test]
+    fn max_seq_in_tail_small_file_reads_directly() {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        writeln!(f, "{}", serde_json::json!({"seq": 7})).unwrap();
+        f.flush().unwrap();
+        let len = f.as_file().metadata().unwrap().len();
+        assert_eq!(max_seq_in_tail(f.path(), len), Some(7));
+    }
+
+    #[test]
+    fn max_seq_in_tail_returns_none_when_last_line_exceeds_window() {
+        // audit #7: a final event line larger than the 4 KiB tail window leaves no
+        // newline in the window, so the tail scan must report None (not a bogus 0)
+        // to let next_seq fall back to a full scan instead of reseeding seq to 1.
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        writeln!(f, "{}", serde_json::json!({"seq": 1})).unwrap();
+        let big = "x".repeat(8192);
+        writeln!(f, "{}", serde_json::json!({"seq": 2, "blob": big})).unwrap();
+        f.flush().unwrap();
+        let len = f.as_file().metadata().unwrap().len();
+        assert!(len > 4096);
+        assert_eq!(max_seq_in_tail(f.path(), len), None);
+        // The full-scan fallback path still recovers the true max.
+        let content = std::fs::read_to_string(f.path()).unwrap();
+        assert_eq!(scan_max_seq(&content), Some(2));
+    }
 }
