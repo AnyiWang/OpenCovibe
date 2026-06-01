@@ -321,6 +321,7 @@
   "statusbar_toggleSidebar": "Toggle sidebar (Ctrl+B)",
   "statusbar_contextTitle": "Context usage for the latest turn ({pct}% of {tokens} tokens). The CLI automatically compacts context when approaching the limit.",
   "statusbar_ctx": "ctx {pct}%",
+  "statusbar_ctxLabel": "Context",
   "statusbar_compacted": "compacted",
   "statusbar_rewindTitle": "Rewind: undo file changes from this session",
   "statusbar_rewind": "Rewind",

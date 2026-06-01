@@ -540,7 +540,7 @@
       runId: store.run.id,
       runName: store.run.name,
       cwd: store.sessionCwd || store.run.cwd,
-      numTurns: store.numTurns,
+      numTurns: store.userTurnCount,
       status: store.run.status ?? "pending",
       startedAt: store.run.started_at ?? null,
       endedAt: store.run.ended_at ?? null,
@@ -3864,7 +3864,8 @@
       {platformModels}
       fastModeState={store.fastModeState}
       verbose={verboseEnabled}
-      numTurns={store.numTurns}
+      numTurns={store.userTurnCount}
+      contextTokens={store.contextTokens}
       durationMs={store.durationMs}
       persistedFiles={store.persistedFiles}
       onRewind={store.sessionAlive && !store.isRunning ? handleRewind : undefined}

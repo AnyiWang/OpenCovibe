@@ -321,6 +321,7 @@
   "statusbar_toggleSidebar": "切换侧边栏 (Ctrl+B)",
   "statusbar_contextTitle": "最新轮次的上下文使用量（{pct}%，共 {tokens} 个 token）。接近限制时 CLI 会自动压缩上下文。",
   "statusbar_ctx": "上下文 {pct}%",
+  "statusbar_ctxLabel": "上下文",
   "statusbar_compacted": "已压缩",
   "statusbar_rewindTitle": "回退：撤销本会话中的文件更改",
   "statusbar_rewind": "回退",

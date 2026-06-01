@@ -31,6 +31,7 @@
     permissionMode,
     fastModeState,
     numTurns,
+    contextTokens = 0,
     durationMs,
     persistedFiles,
     onRewind,
@@ -81,6 +82,7 @@
     permissionMode?: string;
     fastModeState?: string;
     numTurns?: number;
+    contextTokens?: number;
     durationMs?: number;
     persistedFiles?: unknown[];
     onRewind?: () => void;
@@ -742,12 +744,12 @@
           <span class="shrink-0">{formatCost(cost)}</span>
         {/if}
 
-        {#if inputTokens > 0 || outputTokens > 0}
+        {#if contextTokens > 0}
           <span class="text-foreground/30 shrink-0">&middot;</span>
           <span
             class="shrink-0"
-            title={`${t("statusbar_inputLabel")}: ${fmtNumber(inputTokens)} / ${t("statusbar_outputLabel")}: ${fmtNumber(outputTokens)}${cacheReadTokens ? `\n${t("statusbar_cacheReadLabel")}: ${fmtNumber(cacheReadTokens)}` : ""}${cacheWriteTokens ? `\n${t("statusbar_cacheWriteLabel")}: ${fmtNumber(cacheWriteTokens)}` : ""}`}
-            >{formatTokenCount(inputTokens)} / {formatTokenCount(outputTokens)}
+            title={`${t("statusbar_ctxLabel")}: ${fmtNumber(contextTokens)}\n${t("statusbar_inputLabel")}: ${fmtNumber(inputTokens)} / ${t("statusbar_outputLabel")}: ${fmtNumber(outputTokens)}${cacheReadTokens ? `\n${t("statusbar_cacheReadLabel")}: ${fmtNumber(cacheReadTokens)}` : ""}${cacheWriteTokens ? `\n${t("statusbar_cacheWriteLabel")}: ${fmtNumber(cacheWriteTokens)}` : ""}`}
+            >{formatTokenCount(contextTokens)}
             {t("statusbar_tok")}</span
           >
           {#if cacheReadTokens > 0 || cacheWriteTokens > 0}
