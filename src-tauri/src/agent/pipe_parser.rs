@@ -334,13 +334,12 @@ impl CodexStdoutParser {
         let error_msg = raw
             .get("error")
             .and_then(|e| e.get("message").and_then(|v| v.as_str()))
-            .unwrap_or("turn failed")
-            .to_string();
+            .unwrap_or("turn failed");
         vec![BusEvent::RunState {
             run_id: run_id.to_string(),
             state: "failed".to_string(),
             exit_code: None,
-            error: Some(error_msg),
+            error: Some(human_error_message(error_msg)),
         }]
     }
 
@@ -384,13 +383,34 @@ impl CodexStdoutParser {
             .get("message")
             .and_then(|v| v.as_str())
             .or_else(|| raw.get("error").and_then(|v| v.as_str()))
-            .unwrap_or("unknown error")
-            .to_string();
+            .unwrap_or("unknown error");
         vec![BusEvent::CommandOutput {
             run_id: run_id.to_string(),
-            content: format!("[codex error] {}", msg),
+            content: format!("[codex error] {}", human_error_message(msg)),
         }]
     }
+}
+
+/// Codex sometimes nests a stringified-JSON error blob inside the `message` field
+/// (e.g. `message = "{\"error\":{\"message\":\"...\"}}"`). Drill into `.error.message`
+/// then `.message` until a plain (non-JSON) string remains. Plain messages pass through.
+fn human_error_message(raw: &str) -> String {
+    let mut current = raw.to_string();
+    for _ in 0..3 {
+        let Ok(v) = serde_json::from_str::<Value>(&current) else {
+            break;
+        };
+        let next = v
+            .get("error")
+            .and_then(|e| e.get("message"))
+            .and_then(|m| m.as_str())
+            .or_else(|| v.get("message").and_then(|m| m.as_str()));
+        match next {
+            Some(s) if s != current => current = s.to_string(),
+            _ => break,
+        }
+    }
+    current
 }
 
 /// Build Edit ToolStart input from a Codex `file_change` item. Live shape is
@@ -510,6 +530,21 @@ mod tests {
 
     fn parser() -> CodexStdoutParser {
         CodexStdoutParser::new(1)
+    }
+
+    #[test]
+    fn error_message_unwrapped() {
+        // plain text passes through
+        assert_eq!(human_error_message("plain text"), "plain text");
+        // single-level nested blob
+        assert_eq!(
+            human_error_message(r#"{"error":{"message":"boom"}}"#),
+            "boom"
+        );
+        // doubly-nested stringified blob (Codex's real shape)
+        let inner = r#"{"type":"error","status":400,"message":"The x model is not supported"}"#;
+        let outer = json!({ "message": inner }).to_string();
+        assert_eq!(human_error_message(&outer), "The x model is not supported");
     }
 
     // ── thread.started / turn.started ──

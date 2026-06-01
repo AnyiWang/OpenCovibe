@@ -635,7 +635,9 @@ impl CodexRolloutImporter {
     fn flush_pending_token_count(&mut self) -> Option<BusEvent> {
         let tc = self.pending_token_count.take()?;
         // Codex v0.130: payload.info.last_token_usage.{input_tokens, cached_input_tokens, output_tokens, reasoning_output_tokens}
-        let info = tc.get("info")?;
+        // Treat JSON null info as absent (some token_count events have info:null) — otherwise
+        // `get("info")?` would yield Some(Null) and produce an all-zero UsageUpdate.
+        let info = tc.get("info").filter(|v| !v.is_null())?;
         let last = info.get("last_token_usage").unwrap_or(info);
         let input = last
             .get("input_tokens")
@@ -1040,19 +1042,19 @@ impl CodexRolloutImporter {
                 if role.is_empty() || content.is_empty() {
                     return Vec::new();
                 }
+                // User messages are emitted via event_msg/user_message (the clean prompt).
+                // response_item user blocks ALSO carry injected context (AGENTS.md, environment
+                // preamble) that would render as spurious user bubbles — skip them here, and
+                // don't touch seen_message_keys so the event_msg path still emits the real prompt.
+                if role == "user" {
+                    return Vec::new();
+                }
                 let key = self.message_key(role, &content);
                 if self.seen_message_keys.contains(&key) {
                     return Vec::new();
                 }
                 self.seen_message_keys.insert(key);
                 match role {
-                    "user" => vec![BusEvent::UserMessage {
-                        run_id: self.run_id.clone(),
-                        text: content,
-                        uuid: None,
-                        client_uuid: None,
-                        attachments: Vec::new(),
-                    }],
                     "assistant" => vec![BusEvent::MessageComplete {
                         run_id: self.run_id.clone(),
                         message_id: format!("codex-import-msg-fallback-{}", self.turn_counter),
@@ -1270,6 +1272,11 @@ pub fn import_session(
     };
 
     let mut meta = meta;
+    // Prefer the real model from turn_context (captured during import) over the
+    // session_meta model_provider ("openai") set above. Latest turn_context wins.
+    if let Some(m) = &importer.pending_model {
+        meta.model = Some(m.clone());
+    }
     meta.codex_imported_rollouts = Some(imported_rollouts);
     meta.cli_usage_incomplete = if importer.usage_incomplete {
         Some(true)
@@ -1460,6 +1467,49 @@ mod tests {
 
     fn importer() -> CodexRolloutImporter {
         CodexRolloutImporter::new("test-run-abcdef12".to_string(), writer())
+    }
+
+    #[test]
+    fn response_item_user_message_skipped() {
+        let mut imp = importer();
+        // role=user → skipped (real prompt comes via event_msg/user_message)
+        let user = imp.handle_response_item(
+            Some(&json!({"type": "message", "role": "user",
+                         "content": [{"type": "input_text", "text": "# AGENTS.md ..."}]})),
+            "message",
+        );
+        assert!(user.is_empty());
+        // role=assistant → still emits MessageComplete
+        let asst = imp.handle_response_item(
+            Some(&json!({"type": "message", "role": "assistant",
+                         "content": [{"type": "output_text", "text": "hi"}]})),
+            "message",
+        );
+        assert_eq!(asst.len(), 1);
+        assert!(matches!(asst[0], BusEvent::MessageComplete { .. }));
+    }
+
+    #[test]
+    fn token_count_null_info_yields_no_usage() {
+        let mut imp = importer();
+        imp.pending_token_count = Some(json!({ "info": null }));
+        assert!(imp.flush_pending_token_count().is_none());
+    }
+
+    #[test]
+    fn importer_captures_turn_context_model() {
+        let mut imp = importer();
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let mut iw = BufWriter::new(tmp.reopen().unwrap());
+        let line = json!({"type": "turn_context", "payload": {"model": "gpt-5.5"}}).to_string();
+        imp.process_line(
+            &line,
+            std::path::Path::new("/tmp/rollout-x.jsonl"),
+            &mut iw,
+            None,
+        )
+        .unwrap();
+        assert_eq!(imp.pending_model.as_deref(), Some("gpt-5.5"));
     }
 
     // ── Per-variant event_msg mapping ──
