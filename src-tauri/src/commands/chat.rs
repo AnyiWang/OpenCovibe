@@ -233,6 +233,14 @@ pub async fn send_chat_message(
         _ => None,
     });
 
+    // Image attachments → Codex --image (real vision input; the text breadcrumb above
+    // still records all attachment paths). Non-image files Codex reads via tools.
+    let image_paths: Vec<String> = attachment_paths
+        .iter()
+        .filter(|(_, _, mime, _)| mime.starts_with("image/"))
+        .map(|(path, _, _, _)| path.clone())
+        .collect();
+
     // Build command
     let (command, args) = build_agent_command(
         &run.agent,
@@ -240,6 +248,7 @@ pub async fn send_chat_message(
         &adapter_settings,
         true, // print mode
         resume_tid,
+        &image_paths,
     )?;
 
     // Record the model Codex will actually use (from built command args)

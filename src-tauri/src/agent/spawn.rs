@@ -7,6 +7,7 @@ pub fn build_agent_command(
     settings: &AdapterSettings,
     print: bool,
     resume_thread_id: Option<&str>,
+    image_paths: &[String],
 ) -> Result<(String, Vec<String>), String> {
     log::debug!(
         "[spawn] build_agent_command: agent={}, print={}, model={:?}, perm={:?}, allowed={}, disallowed={}, resume={:?}",
@@ -152,6 +153,13 @@ pub fn build_agent_command(
                 );
             }
 
+            // Attach images via --image. Accepted by both `codex exec` and `exec resume`
+            // (verified v0.134 --help), so no resume gating. Must precede the trailing prompt.
+            for path in image_paths {
+                args.push("--image".to_string());
+                args.push(path.clone());
+            }
+
             // Prompt must always be the last arg
             if !prompt.is_empty() {
                 args.push(prompt.to_string());
@@ -203,7 +211,7 @@ mod tests {
     fn codex_resume_thread_id() {
         let s = make_settings();
         let (cmd, args) =
-            build_agent_command("codex", "hello", &s, false, Some("tid_123")).unwrap();
+            build_agent_command("codex", "hello", &s, false, Some("tid_123"), &[]).unwrap();
         assert_eq!(cmd, "codex");
         assert!(args.contains(&"exec".to_string()));
         assert!(args.contains(&"resume".to_string()));
@@ -216,7 +224,7 @@ mod tests {
     fn codex_add_dirs() {
         let mut s = make_settings();
         s.add_dirs = vec!["/tmp/a".into(), "/tmp/b".into()];
-        let (_, args) = build_agent_command("codex", "hi", &s, false, None).unwrap();
+        let (_, args) = build_agent_command("codex", "hi", &s, false, None, &[]).unwrap();
         let add_dir_count = args.iter().filter(|a| *a == "--add-dir").count();
         assert_eq!(add_dir_count, 2);
         assert!(args.contains(&"/tmp/a".to_string()));
@@ -228,7 +236,7 @@ mod tests {
     fn codex_plan_mode_sandbox_read_only() {
         let mut s = make_settings();
         s.permission_mode = Some("plan".into());
-        let (_, args) = build_agent_command("codex", "q", &s, false, None).unwrap();
+        let (_, args) = build_agent_command("codex", "q", &s, false, None, &[]).unwrap();
         assert!(args.contains(&"--sandbox".to_string()));
         assert!(args.contains(&"read-only".to_string()));
         assert!(!args.contains(&"--dangerously-bypass-approvals-and-sandbox".to_string()));
@@ -239,7 +247,7 @@ mod tests {
         let mut s = make_settings();
         s.permission_mode = Some("plan".into());
         s.add_dirs = vec!["/extra".into()];
-        let (_, args) = build_agent_command("codex", "q", &s, false, None).unwrap();
+        let (_, args) = build_agent_command("codex", "q", &s, false, None, &[]).unwrap();
         assert!(args.contains(&"--sandbox".to_string()));
         assert!(!args.contains(&"--add-dir".to_string()));
     }
@@ -248,7 +256,7 @@ mod tests {
     fn codex_bypass_permissions() {
         let mut s = make_settings();
         s.permission_mode = Some("bypassPermissions".into());
-        let (_, args) = build_agent_command("codex", "", &s, false, None).unwrap();
+        let (_, args) = build_agent_command("codex", "", &s, false, None, &[]).unwrap();
         assert!(args.contains(&"--dangerously-bypass-approvals-and-sandbox".to_string()));
         assert!(!args.contains(&"--sandbox".to_string()));
     }
@@ -257,7 +265,7 @@ mod tests {
     fn codex_dont_ask_bypass() {
         let mut s = make_settings();
         s.permission_mode = Some("dontAsk".into());
-        let (_, args) = build_agent_command("codex", "", &s, false, None).unwrap();
+        let (_, args) = build_agent_command("codex", "", &s, false, None, &[]).unwrap();
         assert!(args.contains(&"--dangerously-bypass-approvals-and-sandbox".to_string()));
     }
 
@@ -266,7 +274,8 @@ mod tests {
         let mut s = make_settings();
         s.permission_mode = Some("plan".into());
         s.add_dirs = vec!["/dir".into()];
-        let (_, args) = build_agent_command("codex", "my prompt", &s, false, Some("t1")).unwrap();
+        let (_, args) =
+            build_agent_command("codex", "my prompt", &s, false, Some("t1"), &[]).unwrap();
         assert_eq!(args.last().unwrap(), "my prompt");
     }
 
@@ -274,7 +283,7 @@ mod tests {
     fn codex_default_mode_no_extra_flags() {
         let mut s = make_settings();
         s.permission_mode = Some("default".into());
-        let (_, args) = build_agent_command("codex", "q", &s, false, None).unwrap();
+        let (_, args) = build_agent_command("codex", "q", &s, false, None, &[]).unwrap();
         assert!(!args.contains(&"--sandbox".to_string()));
         assert!(!args.contains(&"--dangerously-bypass-approvals-and-sandbox".to_string()));
     }
@@ -284,7 +293,7 @@ mod tests {
     #[test]
     fn codex_no_per_session_flags_by_default() {
         let s = make_settings();
-        let (_, args) = build_agent_command("codex", "q", &s, false, None).unwrap();
+        let (_, args) = build_agent_command("codex", "q", &s, false, None, &[]).unwrap();
         assert!(!args.contains(&"--ephemeral".to_string()));
         assert!(!args.contains(&"--profile".to_string()));
         assert!(!args.contains(&"--ignore-user-config".to_string()));
@@ -296,7 +305,7 @@ mod tests {
     fn codex_ephemeral_flag() {
         let mut s = make_settings();
         s.ephemeral = true;
-        let (_, args) = build_agent_command("codex", "q", &s, false, None).unwrap();
+        let (_, args) = build_agent_command("codex", "q", &s, false, None, &[]).unwrap();
         assert!(args.contains(&"--ephemeral".to_string()));
     }
 
@@ -304,7 +313,7 @@ mod tests {
     fn codex_ignore_user_config_flag() {
         let mut s = make_settings();
         s.ignore_user_config = true;
-        let (_, args) = build_agent_command("codex", "q", &s, false, None).unwrap();
+        let (_, args) = build_agent_command("codex", "q", &s, false, None, &[]).unwrap();
         assert!(args.contains(&"--ignore-user-config".to_string()));
     }
 
@@ -313,18 +322,37 @@ mod tests {
         let mut s = make_settings();
         s.web_search = true;
         // New session → --search present.
-        let (_, args) = build_agent_command("codex", "q", &s, false, None).unwrap();
+        let (_, args) = build_agent_command("codex", "q", &s, false, None, &[]).unwrap();
         assert!(args.contains(&"--search".to_string()));
         // Resume → --search omitted (codex exec resume rejects it).
-        let (_, resume_args) = build_agent_command("codex", "q", &s, false, Some("tid-1")).unwrap();
+        let (_, resume_args) =
+            build_agent_command("codex", "q", &s, false, Some("tid-1"), &[]).unwrap();
         assert!(!resume_args.contains(&"--search".to_string()));
+    }
+
+    #[test]
+    fn codex_image_flags() {
+        let s = make_settings();
+        let imgs = vec!["/tmp/a.png".to_string()];
+        // New session → --image present, before the trailing prompt.
+        let (_, args) = build_agent_command("codex", "q", &s, false, None, &imgs).unwrap();
+        let idx = args.iter().position(|a| a == "--image").expect("--image");
+        assert_eq!(args[idx + 1], "/tmp/a.png");
+        assert_eq!(args.last().unwrap(), "q");
+        // Resume → --image still present (codex exec resume accepts it).
+        let (_, resume_args) =
+            build_agent_command("codex", "q", &s, false, Some("tid-1"), &imgs).unwrap();
+        assert!(resume_args.contains(&"--image".to_string()));
+        // No images → no --image.
+        let (_, none_args) = build_agent_command("codex", "q", &s, false, None, &[]).unwrap();
+        assert!(!none_args.contains(&"--image".to_string()));
     }
 
     #[test]
     fn codex_ignore_rules_flag() {
         let mut s = make_settings();
         s.ignore_rules = true;
-        let (_, args) = build_agent_command("codex", "q", &s, false, None).unwrap();
+        let (_, args) = build_agent_command("codex", "q", &s, false, None, &[]).unwrap();
         assert!(args.contains(&"--ignore-rules".to_string()));
     }
 
@@ -332,7 +360,7 @@ mod tests {
     fn codex_profile_flag() {
         let mut s = make_settings();
         s.profile = Some("dev".into());
-        let (_, args) = build_agent_command("codex", "q", &s, false, None).unwrap();
+        let (_, args) = build_agent_command("codex", "q", &s, false, None, &[]).unwrap();
         let idx = args
             .iter()
             .position(|a| a == "--profile")
@@ -347,7 +375,7 @@ mod tests {
         // verify spawn does NOT emit --profile when resume_thread_id is set.
         let mut s = make_settings();
         s.profile = Some("dev".into());
-        let (_, args) = build_agent_command("codex", "q", &s, false, Some("tid_42")).unwrap();
+        let (_, args) = build_agent_command("codex", "q", &s, false, Some("tid_42"), &[]).unwrap();
         assert!(args.contains(&"resume".to_string()));
         assert!(args.contains(&"tid_42".to_string()));
         assert!(!args.contains(&"--profile".to_string()));
@@ -361,7 +389,7 @@ mod tests {
         // '--sandbox' found".
         let mut s = make_settings();
         s.permission_mode = Some("plan".into());
-        let (_, args) = build_agent_command("codex", "q", &s, false, Some("tid_x")).unwrap();
+        let (_, args) = build_agent_command("codex", "q", &s, false, Some("tid_x"), &[]).unwrap();
         assert!(args.contains(&"resume".to_string()));
         assert!(!args.contains(&"--sandbox".to_string()));
         assert!(!args.contains(&"read-only".to_string()));
@@ -373,7 +401,7 @@ mod tests {
         // `codex exec resume` — keep emitting it.
         let mut s = make_settings();
         s.permission_mode = Some("bypassPermissions".into());
-        let (_, args) = build_agent_command("codex", "q", &s, false, Some("tid_x")).unwrap();
+        let (_, args) = build_agent_command("codex", "q", &s, false, Some("tid_x"), &[]).unwrap();
         assert!(args.contains(&"--dangerously-bypass-approvals-and-sandbox".to_string()));
     }
 
@@ -385,7 +413,7 @@ mod tests {
         // '--add-dir' found".
         let mut s = make_settings();
         s.add_dirs = vec!["/tmp/a".into(), "/tmp/b".into()];
-        let (_, args) = build_agent_command("codex", "q", &s, false, Some("tid_x")).unwrap();
+        let (_, args) = build_agent_command("codex", "q", &s, false, Some("tid_x"), &[]).unwrap();
         assert!(args.contains(&"resume".to_string()));
         assert!(!args.contains(&"--add-dir".to_string()));
     }
@@ -397,7 +425,7 @@ mod tests {
         // by asserting spawn doesn't emit --profile when the value is None.
         let mut s = make_settings();
         s.profile = None;
-        let (_, args) = build_agent_command("codex", "q", &s, false, None).unwrap();
+        let (_, args) = build_agent_command("codex", "q", &s, false, None, &[]).unwrap();
         assert!(!args.contains(&"--profile".to_string()));
     }
 
@@ -406,7 +434,7 @@ mod tests {
         for effort in ["none", "minimal", "low", "medium", "high", "xhigh"] {
             let mut s = make_settings();
             s.effort = Some(effort.into());
-            let (_, args) = build_agent_command("codex", "q", &s, false, None).unwrap();
+            let (_, args) = build_agent_command("codex", "q", &s, false, None, &[]).unwrap();
             let expected = format!("model_reasoning_effort=\"{}\"", effort);
             assert!(
                 args.iter().any(|a| a == &expected),
@@ -421,7 +449,7 @@ mod tests {
     fn codex_effort_empty_skipped() {
         let mut s = make_settings();
         s.effort = Some("".into());
-        let (_, args) = build_agent_command("codex", "q", &s, false, None).unwrap();
+        let (_, args) = build_agent_command("codex", "q", &s, false, None, &[]).unwrap();
         assert!(!args.iter().any(|a| a.contains("model_reasoning_effort")));
     }
 
@@ -433,7 +461,7 @@ mod tests {
         s.ignore_rules = true;
         s.profile = Some("ci".into());
         s.effort = Some("high".into());
-        let (_, args) = build_agent_command("codex", "q", &s, false, None).unwrap();
+        let (_, args) = build_agent_command("codex", "q", &s, false, None, &[]).unwrap();
         assert!(args.contains(&"--ephemeral".to_string()));
         assert!(args.contains(&"--ignore-user-config".to_string()));
         assert!(args.contains(&"--ignore-rules".to_string()));
