@@ -30,7 +30,14 @@ pub fn build_agent_command(
             Ok(("claude".to_string(), args))
         }
         "codex" => {
-            let mut args: Vec<String> = vec!["exec".to_string()];
+            // `--search` is a TOP-LEVEL codex flag (NOT a `codex exec` flag — `codex exec
+            // --search` errors "unexpected argument"). It must precede the `exec` subcommand:
+            // `codex --search exec ...`. Verified accepted on both new sessions and resume.
+            let mut args: Vec<String> = vec![];
+            if settings.web_search {
+                args.push("--search".to_string());
+            }
+            args.push("exec".to_string());
             // Resume: `codex exec resume <thread_id> --json "prompt"`
             if let Some(tid) = resume_thread_id {
                 args.push("resume".to_string());
@@ -70,18 +77,6 @@ pub fn build_agent_command(
                 log::debug!(
                     "[spawn] skipping --profile on codex resume (not supported by exec resume)"
                 );
-            }
-            // --search enables the native web_search tool. `codex exec resume` does NOT accept
-            // --search (verified v0.134 --help), so apply it on new sessions only; resumed turns
-            // run without web search.
-            if settings.web_search {
-                if resume_thread_id.is_none() {
-                    args.push("--search".to_string());
-                } else {
-                    log::debug!(
-                        "[spawn] skipping --search on codex resume (not supported by exec resume)"
-                    );
-                }
             }
             // model_reasoning_effort overrides config.toml on a per-session
             // basis. Empty string treated as unset (UI sends "" to clear).
@@ -154,11 +149,12 @@ pub fn build_agent_command(
                 );
             }
 
-            // Attach images via --image. Accepted by both `codex exec` and `exec resume`
-            // (verified v0.134 --help), so no resume gating. Must precede the trailing prompt.
+            // Attach images via --image. Accepted by both `codex exec` and `exec resume`,
+            // no resume gating. `--image` is VARIADIC (`<FILE>...`), so the two-arg form
+            // `--image <path>` would swallow the trailing prompt as a second file. Use the
+            // `--image=<path>` form (one value each) so the positional prompt survives.
             for path in image_paths {
-                args.push("--image".to_string());
-                args.push(path.clone());
+                args.push(format!("--image={}", path));
             }
 
             // Prompt must always be the last arg
@@ -322,13 +318,19 @@ mod tests {
     fn codex_web_search_flag() {
         let mut s = make_settings();
         s.web_search = true;
-        // New session → --search present.
+        // --search is a TOP-LEVEL flag (before `exec`), accepted on both new and resume.
         let (_, args) = build_agent_command("codex", "q", &s, false, None, &[]).unwrap();
-        assert!(args.contains(&"--search".to_string()));
-        // Resume → --search omitted (codex exec resume rejects it).
+        assert_eq!(args.first().unwrap(), "--search");
+        assert_eq!(args[1], "exec");
         let (_, resume_args) =
             build_agent_command("codex", "q", &s, false, Some("tid-1"), &[]).unwrap();
-        assert!(!resume_args.contains(&"--search".to_string()));
+        assert_eq!(resume_args.first().unwrap(), "--search");
+        assert!(resume_args.contains(&"resume".to_string()));
+        // No web_search → no --search, exec is first.
+        s.web_search = false;
+        let (_, none_args) = build_agent_command("codex", "q", &s, false, None, &[]).unwrap();
+        assert_eq!(none_args.first().unwrap(), "exec");
+        assert!(!none_args.contains(&"--search".to_string()));
     }
 
     #[test]
@@ -351,18 +353,18 @@ mod tests {
     fn codex_image_flags() {
         let s = make_settings();
         let imgs = vec!["/tmp/a.png".to_string()];
-        // New session → --image present, before the trailing prompt.
+        // `--image=<path>` form (NOT two-arg) so the variadic flag doesn't eat the prompt.
         let (_, args) = build_agent_command("codex", "q", &s, false, None, &imgs).unwrap();
-        let idx = args.iter().position(|a| a == "--image").expect("--image");
-        assert_eq!(args[idx + 1], "/tmp/a.png");
-        assert_eq!(args.last().unwrap(), "q");
-        // Resume → --image still present (codex exec resume accepts it).
+        assert!(args.contains(&"--image=/tmp/a.png".to_string()));
+        assert!(!args.contains(&"--image".to_string())); // never the bare two-arg form
+        assert_eq!(args.last().unwrap(), "q"); // prompt still last
+                                               // Resume → still attached (codex exec resume accepts --image).
         let (_, resume_args) =
             build_agent_command("codex", "q", &s, false, Some("tid-1"), &imgs).unwrap();
-        assert!(resume_args.contains(&"--image".to_string()));
+        assert!(resume_args.contains(&"--image=/tmp/a.png".to_string()));
         // No images → no --image.
         let (_, none_args) = build_agent_command("codex", "q", &s, false, None, &[]).unwrap();
-        assert!(!none_args.contains(&"--image".to_string()));
+        assert!(!none_args.iter().any(|a| a.starts_with("--image")));
     }
 
     #[test]
