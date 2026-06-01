@@ -93,7 +93,14 @@
   } from "$lib/utils/slash-commands";
   import { executeAddDir } from "$lib/utils/add-dir";
   import { CODEX_INIT_PROMPT } from "$lib/utils/codex-init-prompt";
-  import { CODEX_REVIEW_UNCOMMITTED_PROMPT } from "$lib/utils/codex-review-prompt";
+  import {
+    CODEX_REVIEW_UNCOMMITTED_PROMPT,
+    codexReviewBasePrompt,
+    codexReviewCommitPrompt,
+    codexReviewCustomPrompt,
+  } from "$lib/utils/codex-review-prompt";
+  import CodexReviewModal from "$lib/components/CodexReviewModal.svelte";
+  import type { CodexReviewKind } from "$lib/components/CodexReviewModal.svelte";
   import { buildDoctorReport } from "$lib/utils/doctor";
   import type { RewindCandidate, RewindMarker } from "$lib/utils/rewind";
   import { truncate, cwdDisplayLabel, formatTokenCount } from "$lib/utils/format";
@@ -224,6 +231,24 @@
 
   // ── Rewind modal ──
   let rewindModalOpen = $state(false);
+  let codexReviewPickerOpen = $state(false);
+
+  // Build the review prompt for the picker choice and send it as a Codex turn.
+  function runCodexReview(choice: { kind: CodexReviewKind; value: string }) {
+    if (store.isRunning) {
+      appendCommandOutput(t("codexReview_busy"));
+      return;
+    }
+    const prompt =
+      choice.kind === "base"
+        ? codexReviewBasePrompt(choice.value)
+        : choice.kind === "commit"
+          ? codexReviewCommitPrompt(choice.value)
+          : choice.kind === "custom"
+            ? codexReviewCustomPrompt(choice.value)
+            : CODEX_REVIEW_UNCOMMITTED_PROMPT;
+    void sendMessage(prompt, []);
+  }
   let rewindDirectTarget = $state<RewindCandidate | null>(null);
   let rewindMarkers = $state<RewindMarker[]>([]);
 
@@ -3344,7 +3369,8 @@
         localStorage.setItem("ocv:project-cwd", projectCwd);
         window.dispatchEvent(new Event("ocv:cwd-changed"));
       }
-      await sendMessage(CODEX_REVIEW_UNCOMMITTED_PROMPT, []);
+      // Open the preset picker (uncommitted / base / commit / custom).
+      codexReviewPickerOpen = true;
     } else if (action === "codex-login") {
       if (effectiveAgent !== "codex") return; // defensive (generic gate already blocks)
       if (store.isRunning) {
@@ -5411,6 +5437,8 @@
       });
     }}
   />
+
+  <CodexReviewModal bind:open={codexReviewPickerOpen} onSubmit={runCodexReview} />
 
   <ShortcutHelpPanel bind:open={shortcutHelpOpen} />
 
