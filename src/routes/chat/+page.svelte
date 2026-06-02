@@ -1201,6 +1201,11 @@
     try {
       settings = await api.getUserSettings();
       store.authMode = settings.auth_mode ?? "cli";
+      // Fresh session: honor the user's default agent (composer pre-selects it). Existing
+      // runs are unaffected — loadRun sets store.agent from the run's own agent.
+      if (!runId && !store.run) {
+        store.agent = settings.default_agent === "codex" ? "codex" : "claude";
+      }
       remoteHosts = settings.remote_hosts ?? [];
       // Restore last target selection (must validate against current settings — a
       // configured host may have been removed since the value was persisted).

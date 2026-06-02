@@ -1586,6 +1586,34 @@
     <!-- ═══ General tab ═══ -->
     {#if activeTab === "general"}
       <div class="space-y-6">
+        <!-- Default Agent Card -->
+        <Card class="p-6 space-y-4">
+          <h2 class="text-sm font-semibold text-muted-foreground uppercase tracking-wider">
+            {t("settings_general_defaultAgent")}
+          </h2>
+          <div class="flex items-center justify-between gap-4">
+            <div>
+              <p class="text-sm font-medium">{t("settings_general_defaultAgentLabel")}</p>
+              <p class="text-xs text-muted-foreground">
+                {t("settings_general_defaultAgentDesc")}
+              </p>
+            </div>
+            <div class="flex gap-1.5">
+              {#each ["claude", "codex"] as ag (ag)}
+                <button
+                  class="rounded-md border px-3 py-1.5 text-xs capitalize transition-all duration-150
+                  {(settings?.default_agent ?? 'claude') === ag
+                    ? 'bg-primary text-primary-foreground'
+                    : 'hover:bg-accent'}"
+                  onclick={() => saveGeneralPatch({ default_agent: ag })}
+                >
+                  {ag}
+                </button>
+              {/each}
+            </div>
+          </div>
+        </Card>
+
         <!-- Language Card -->
         <Card class="p-6 space-y-4">
           <h2 class="text-sm font-semibold text-muted-foreground uppercase tracking-wider">
@@ -2972,6 +3000,10 @@
               <p class="text-xs text-muted-foreground/80 pl-11">
                 {t("settings_codex_authNote")}
               </p>
+              <!-- Pointer: Codex model/sandbox config lives in the CLI Config tab, not here -->
+              <p class="text-xs text-muted-foreground/80 pl-11">
+                {t("settings_codex_modelHint")}
+              </p>
               <!-- Codex Hooks shortcut -->
               {#if codexHooksCount !== null}
                 <div class="flex items-center gap-3 pt-3 border-t border-border/50">
@@ -3714,6 +3746,29 @@
               {t("settings_general_saved")}
             </span>
           {/if}
+        </div>
+
+        <!-- Claude-only notice: Codex has no remote-SSH support -->
+        <div
+          class="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2"
+        >
+          <svg
+            class="h-4 w-4 shrink-0 text-amber-400 mt-0.5"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="12" /><line
+              x1="12"
+              y1="16"
+              x2="12.01"
+              y2="16"
+            />
+          </svg>
+          <p class="text-xs text-amber-200/90">{t("settings_remote_claudeOnly")}</p>
         </div>
 
         <!-- Existing hosts list -->
