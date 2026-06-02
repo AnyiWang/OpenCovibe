@@ -2064,6 +2064,46 @@ describe("SessionStore reducer", () => {
     });
   });
 
+  describe("snapshot round-trip (reducer-written run state)", () => {
+    // Regression for the #135-class snapshot-omission bug: an idle-snapshot loadRun
+    // skips event replay, so any reducer-written field not serialized is lost on revisit.
+    it("preserves ralphLoop / rate-limit / lastCompactedAt / thinking timers across build→restore", () => {
+      store.run = makeRun("run-snap");
+      store.ralphLoop = {
+        active: true,
+        prompt: "Build an API",
+        iteration: 3,
+        maxIterations: 10,
+        completionPromise: "DONE",
+        startedAt: "2026-06-01T00:00:00Z",
+        reason: null,
+      };
+      store.rateLimitStatus = "allowed_warning";
+      store.rateLimitType = "five_hour";
+      store.rateLimitUtilization = 0.82;
+      store.rateLimitResetsAt = 1780000000000;
+      store.lastCompactedAt = 1779999999999;
+      store.thinkingStartMs = 111;
+      store.thinkingEndMs = 222;
+
+      const snap = (store as unknown as { _buildSnapshot(): string })._buildSnapshot();
+      const restored = new SessionStore();
+      const ok = (
+        restored as unknown as { _tryApplySnapshot(b: string): boolean }
+      )._tryApplySnapshot(snap);
+
+      expect(ok).toBe(true);
+      expect(restored.ralphLoop).toEqual(store.ralphLoop);
+      expect(restored.rateLimitStatus).toBe("allowed_warning");
+      expect(restored.rateLimitType).toBe("five_hour");
+      expect(restored.rateLimitUtilization).toBe(0.82);
+      expect(restored.rateLimitResetsAt).toBe(1780000000000);
+      expect(restored.lastCompactedAt).toBe(1779999999999);
+      expect(restored.thinkingStartMs).toBe(111);
+      expect(restored.thinkingEndMs).toBe(222);
+    });
+  });
+
   describe("ralph_loop events", () => {
     it("ralph_started initializes ralphLoop state", () => {
       store.run = makeRun("run-1");

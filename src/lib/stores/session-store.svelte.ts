@@ -1446,11 +1446,21 @@ export class SessionStore {
       durationMs: this.durationMs,
       compactCount: this.compactCount,
       microcompactCount: this.microcompactCount,
+      lastCompactedAt: this.lastCompactedAt,
       persistedFiles: this.persistedFiles,
       unknownEventCount: this.unknownEventCount,
       rawFallbackCount: this.rawFallbackCount,
       taskNotifications: [...this.taskNotifications.entries()],
       scheduledTasks: this.scheduledTasks,
+      // Reducer-written run state that idle-snapshot restore must preserve (a snapshot-hit
+      // loadRun skips event replay, so anything not serialized here is lost on revisit). #135-class
+      ralphLoop: this.ralphLoop,
+      rateLimitStatus: this.rateLimitStatus,
+      rateLimitType: this.rateLimitType,
+      rateLimitUtilization: this.rateLimitUtilization,
+      rateLimitResetsAt: this.rateLimitResetsAt,
+      thinkingStartMs: this.thinkingStartMs,
+      thinkingEndMs: this.thinkingEndMs,
       _lastProcessedSeq: this._lastProcessedSeq,
     };
     return JSON.stringify(obj);
@@ -1517,9 +1527,18 @@ export class SessionStore {
       this.durationMs = (obj.durationMs as number) ?? 0;
       this.compactCount = (obj.compactCount as number) ?? 0;
       this.microcompactCount = (obj.microcompactCount as number) ?? 0;
+      this.lastCompactedAt = (obj.lastCompactedAt as number) ?? 0;
       this.persistedFiles = (obj.persistedFiles ?? []) as unknown[];
       this.unknownEventCount = (obj.unknownEventCount as number) ?? 0;
       this.rawFallbackCount = (obj.rawFallbackCount as number) ?? 0;
+      // Reducer-written run state (see _buildSnapshot). ?? keeps old snapshots valid.
+      this.ralphLoop = (obj.ralphLoop as typeof this.ralphLoop) ?? null;
+      this.rateLimitStatus = (obj.rateLimitStatus as string) ?? "";
+      this.rateLimitType = (obj.rateLimitType as string) ?? "";
+      this.rateLimitUtilization = (obj.rateLimitUtilization as number | null) ?? null;
+      this.rateLimitResetsAt = (obj.rateLimitResetsAt as number | null) ?? null;
+      this.thinkingStartMs = (obj.thinkingStartMs as number) ?? 0;
+      this.thinkingEndMs = (obj.thinkingEndMs as number) ?? 0;
       this.taskNotifications = new Map(
         (obj.taskNotifications ?? []) as Array<[string, TaskNotificationItem]>,
       );
