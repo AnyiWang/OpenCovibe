@@ -6,6 +6,7 @@
     findCredential,
     PRESET_CATEGORIES,
   } from "$lib/utils/platform-presets";
+  import ProviderIcon from "$lib/components/ProviderIcon.svelte";
   import { t } from "$lib/i18n/index.svelte";
 
   let {
@@ -95,19 +96,7 @@
     {disabled}
     title={t("prompt_platformTitle")}
   >
-    <svg
-      class="h-3 w-3 text-muted-foreground"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      stroke-width="2"
-      stroke-linecap="round"
-      stroke-linejoin="round"
-    >
-      <path
-        d="M2 20a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8l-7 5V8l-7 5V4a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2Z"
-      />
-    </svg>
+    <ProviderIcon id={value} name={displayName} size="sm" />
     {displayName}
     {#if !disabled}
       <svg
@@ -149,12 +138,13 @@
                 {value === platform.id ? 'bg-accent font-medium' : ''}"
               onclick={() => selectPlatform(platform.id)}
             >
+              <ProviderIcon id={platform.id} name={platform.name} size="sm" />
+              <span class="flex-1 min-w-0 truncate">{platform.name}</span>
               <span
                 class="h-1.5 w-1.5 rounded-full shrink-0 {platformHasKey
                   ? 'bg-green-500'
                   : 'bg-muted-foreground/30'}"
               ></span>
-              <span class="flex-1 min-w-0 truncate">{platform.name}</span>
               {#if value === platform.id}
                 <svg
                   class="h-3 w-3 ml-auto text-primary shrink-0"

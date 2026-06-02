@@ -73,7 +73,11 @@ fn known_provider_defaults(pid: &str) -> Option<ProviderDefaults> {
     match pid {
         "deepseek" => Some(ProviderDefaults {
             base_url: Some("https://api.deepseek.com/anthropic"),
-            models: Some(vec!["deepseek-v4-pro".to_string()]),
+            // 2 models → [opus+sonnet]=v4-pro[1m], [haiku]=v4-flash (per official CC guide)
+            models: Some(vec![
+                "deepseek-v4-pro[1m]".to_string(),
+                "deepseek-v4-flash".to_string(),
+            ]),
             extra_env: Some(HashMap::from([(
                 "API_TIMEOUT_MS".to_string(),
                 "600000".to_string(),
@@ -90,19 +94,25 @@ fn known_provider_defaults(pid: &str) -> Option<ProviderDefaults> {
         }),
         "kimi-coding" => Some(ProviderDefaults {
             base_url: Some("https://api.kimi.com/coding/"),
-            models: Some(vec!["kimi-for-coding".to_string()]),
+            // No model override — Kimi Coding routes server-side regardless of ANTHROPIC_MODEL
+            models: None,
             extra_env: None,
             key_optional: false,
-            auth_env_var: None,
+            // Official docs use ANTHROPIC_API_KEY (x-api-key), not Bearer token
+            auth_env_var: Some("ANTHROPIC_API_KEY"),
         }),
         "zhipu" => Some(ProviderDefaults {
             base_url: Some("https://open.bigmodel.cn/api/anthropic"),
+            // Tier map per z.ai/bigmodel docs: opus=glm-5.1, sonnet=glm-5-turbo, haiku=glm-4.5-air
             models: Some(vec![
                 "glm-5.1".to_string(),
-                "glm-5".to_string(),
-                "glm-4.7".to_string(),
+                "glm-5-turbo".to_string(),
+                "glm-4.5-air".to_string(),
             ]),
-            extra_env: None,
+            extra_env: Some(HashMap::from([(
+                "API_TIMEOUT_MS".to_string(),
+                "3000000".to_string(),
+            )])),
             key_optional: false,
             auth_env_var: None,
         }),
@@ -110,10 +120,13 @@ fn known_provider_defaults(pid: &str) -> Option<ProviderDefaults> {
             base_url: Some("https://api.z.ai/api/anthropic"),
             models: Some(vec![
                 "glm-5.1".to_string(),
-                "glm-5".to_string(),
-                "glm-4.7".to_string(),
+                "glm-5-turbo".to_string(),
+                "glm-4.5-air".to_string(),
             ]),
-            extra_env: None,
+            extra_env: Some(HashMap::from([(
+                "API_TIMEOUT_MS".to_string(),
+                "3000000".to_string(),
+            )])),
             key_optional: false,
             auth_env_var: None,
         }),
@@ -146,15 +159,21 @@ fn known_provider_defaults(pid: &str) -> Option<ProviderDefaults> {
         }),
         "minimax" => Some(ProviderDefaults {
             base_url: Some("https://api.minimax.io/anthropic"),
-            models: Some(vec!["MiniMax-M2.7".to_string()]),
-            extra_env: None,
+            models: Some(vec!["MiniMax-M3".to_string()]),
+            extra_env: Some(HashMap::from([(
+                "API_TIMEOUT_MS".to_string(),
+                "3000000".to_string(),
+            )])),
             key_optional: false,
             auth_env_var: None,
         }),
         "minimax-cn" => Some(ProviderDefaults {
             base_url: Some("https://api.minimaxi.com/anthropic"),
-            models: Some(vec!["MiniMax-M2.7".to_string()]),
-            extra_env: None,
+            models: Some(vec!["MiniMax-M3".to_string()]),
+            extra_env: Some(HashMap::from([(
+                "API_TIMEOUT_MS".to_string(),
+                "3000000".to_string(),
+            )])),
             key_optional: false,
             auth_env_var: None,
         }),
@@ -177,7 +196,8 @@ fn known_provider_defaults(pid: &str) -> Option<ProviderDefaults> {
             models: None,
             extra_env: None,
             key_optional: false,
-            auth_env_var: None,
+            // Official docs use ANTHROPIC_API_KEY (x-api-key), not Bearer token
+            auth_env_var: Some("ANTHROPIC_API_KEY"),
         }),
         "hunyuan" => Some(ProviderDefaults {
             base_url: Some("https://api.hunyuan.cloud.tencent.com/anthropic"),
@@ -185,6 +205,39 @@ fn known_provider_defaults(pid: &str) -> Option<ProviderDefaults> {
                 "hunyuan-2.0-thinking-20251109".to_string(),
                 "hunyuan-2.0-instruct-20251111".to_string(),
             ]),
+            extra_env: None,
+            key_optional: false,
+            auth_env_var: None,
+        }),
+        "stepfun" => Some(ProviderDefaults {
+            base_url: Some("https://api.stepfun.ai/step_plan"),
+            models: Some(vec!["step-3.7-flash".to_string()]),
+            extra_env: None,
+            key_optional: false,
+            auth_env_var: None,
+        }),
+        "longcat" => Some(ProviderDefaults {
+            base_url: Some("https://api.longcat.chat/anthropic"),
+            models: Some(vec!["LongCat-2.0-Preview".to_string()]),
+            extra_env: None,
+            key_optional: false,
+            auth_env_var: None,
+        }),
+        "iflytek" => Some(ProviderDefaults {
+            base_url: Some("https://maas-coding-api.cn-huabei-1.xf-yun.com/anthropic"),
+            models: Some(vec!["astron-code-latest".to_string()]),
+            extra_env: Some(HashMap::from([(
+                "API_TIMEOUT_MS".to_string(),
+                "600000".to_string(),
+            )])),
+            key_optional: false,
+            auth_env_var: None,
+        }),
+        "tencent-coding" => Some(ProviderDefaults {
+            // Tencent TokenHub Coding Plan — distinct from `hunyuan` (PAYG). Serves multiple
+            // models (e.g. glm-5); no fixed default, user picks via ANTHROPIC_MODEL.
+            base_url: Some("https://api.lkeap.cloud.tencent.com/coding/anthropic"),
+            models: None,
             extra_env: None,
             key_optional: false,
             auth_env_var: None,
@@ -215,6 +268,39 @@ fn known_provider_defaults(pid: &str) -> Option<ProviderDefaults> {
         }),
         "vercel" => Some(ProviderDefaults {
             base_url: Some("https://ai-gateway.vercel.sh"),
+            models: None,
+            extra_env: None,
+            key_optional: false,
+            auth_env_var: None,
+        }),
+        "requesty" => Some(ProviderDefaults {
+            // Model uses provider/model-name format (e.g. anthropic/claude-sonnet-4-5) — user picks
+            base_url: Some("https://router.requesty.ai"),
+            models: None,
+            extra_env: None,
+            key_optional: false,
+            auth_env_var: None,
+        }),
+        "fireworks" => Some(ProviderDefaults {
+            // Base ends at /inference — SDK appends /v1/messages. Model uses
+            // accounts/fireworks/models/<name> format, so no fixed default.
+            base_url: Some("https://api.fireworks.ai/inference"),
+            models: None,
+            extra_env: None,
+            key_optional: false,
+            auth_env_var: None,
+        }),
+        "deepinfra" => Some(ProviderDefaults {
+            // Hosts OSS models via Anthropic protocol — model uses org/name format
+            // (e.g. deepseek-ai/DeepSeek-V3.1-Terminus), so no fixed default.
+            base_url: Some("https://api.deepinfra.com/anthropic"),
+            models: None,
+            extra_env: None,
+            key_optional: false,
+            auth_env_var: None,
+        }),
+        "novita" => Some(ProviderDefaults {
+            base_url: Some("https://api.novita.ai/anthropic"),
             models: None,
             extra_env: None,
             key_optional: false,
@@ -261,8 +347,10 @@ fn migrate_platform_credentials(settings: &mut AllSettings) -> bool {
         ("minimax-cn", "ANTHROPIC_AUTH_TOKEN"),
         ("mimo", "ANTHROPIC_AUTH_TOKEN"),
         ("bailian", "ANTHROPIC_AUTH_TOKEN"),
-        ("kimi-coding", "ANTHROPIC_AUTH_TOKEN"),
         ("aihubmix", "ANTHROPIC_AUTH_TOKEN"),
+        // These two use x-api-key per official docs — migrate stale AUTH_TOKEN creds to API_KEY
+        ("kimi-coding", "ANTHROPIC_API_KEY"),
+        ("siliconflow", "ANTHROPIC_API_KEY"),
     ];
     let mut changed = false;
 
