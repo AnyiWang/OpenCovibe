@@ -64,7 +64,8 @@
       },
       "nsis": {
         "installerIcon": "icons/icon.ico"
-      }
+      },
+      "wix": {}
     }
   },
   "plugins": {
