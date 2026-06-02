@@ -27,9 +27,12 @@ pub async fn check_agent_cli(agent: String) -> Result<CliCheckResult, String> {
         None => (false, None),
     };
 
-    // Get version if found
+    // Get version if found. Spawn the RESOLVED path, not the bare name — on Windows the npm
+    // binary is `codex.cmd`/`claude.cmd` and `Command::new("codex")` only auto-appends `.exe`,
+    // so a bare-name spawn ENOENTs and version/auth would falsely report "not installed".
     let version = if found {
-        let ver_output = Command::new(binary)
+        let exe = path.as_deref().unwrap_or(binary);
+        let ver_output = Command::new(exe)
             .arg("--version")
             .env("PATH", &aug_path)
             .hide_console()
@@ -84,9 +87,11 @@ pub async fn check_codex_auth() -> Result<CodexAuthResult, String> {
         cli_check.version
     );
 
-    // Run `codex login status` to check auth (12s timeout — matches Claude OAuth check)
+    // Run `codex login status` to check auth (12s timeout — matches Claude OAuth check).
+    // Spawn the resolved path (cli_check.path), not the bare "codex" — Windows .cmd shim.
     use tokio::process::Command as TokioCommand;
-    let mut cmd = TokioCommand::new("codex");
+    let codex_exe = cli_check.path.as_deref().unwrap_or("codex");
+    let mut cmd = TokioCommand::new(codex_exe);
     cmd.args(["login", "status"])
         .env("PATH", &aug_path)
         .stdout(std::process::Stdio::piped())

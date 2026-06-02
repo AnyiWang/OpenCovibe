@@ -90,6 +90,10 @@ pub async fn run_agent(
     // own subprocess lookups succeed.
     let resolved = if std::path::Path::new(&command).is_absolute() {
         command.clone()
+    } else if is_codex {
+        // Codex needs the candidate-list resolver (npm codex.cmd on Windows) — a bare
+        // which_binary miss would fall back to "codex" and ENOENT on Windows.
+        crate::agent::claude_stream::resolve_codex_path()
     } else {
         which_binary(&command).unwrap_or_else(|| command.clone())
     };

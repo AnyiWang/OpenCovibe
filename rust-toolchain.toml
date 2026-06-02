@@ -1,0 +1,7 @@
+# Pin the toolchain channel so local builds match CI (which uses dtolnay/rust-toolchain@stable).
+# Floor requirement: Rust >= 1.77 — since CVE-2024-24576 (1.77.0), std::process::Command (and
+# tokio's, which wraps it) auto-routes `.cmd`/`.bat` programs through cmd.exe on Windows. Codex
+# and Claude are installed as `codex.cmd`/`claude.cmd` via npm, so building on an older toolchain
+# would break process spawning on Windows.
+[toolchain]
+channel = "stable"

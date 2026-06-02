@@ -260,7 +260,9 @@ pub async fn run_claude_login(app: AppHandle) -> Result<bool, String> {
 /// (falling back to a bare `"codex"` literal when `which_binary` fails so the
 /// OS PATH lookup still has a chance).
 fn resolve_codex_binary() -> String {
-    claude_stream::which_binary("codex").unwrap_or_else(|| "codex".into())
+    // Candidate-list resolver (npm %APPDATA%\npm\codex.cmd etc.) so Windows login works even
+    // when `where codex` doesn't surface the .cmd shim.
+    claude_stream::resolve_codex_path()
 }
 
 /// Run `codex login` to start the OAuth flow. The CLI opens a browser automatically.
