@@ -9,8 +9,15 @@ pub fn get_artifact(run_id: &str) -> RunArtifact {
     let path = artifacts_path(run_id);
     if path.exists() {
         if let Ok(content) = fs::read_to_string(&path) {
-            if let Ok(artifact) = serde_json::from_str::<RunArtifact>(&content) {
-                return artifact;
+            match serde_json::from_str::<RunArtifact>(&content) {
+                Ok(artifact) => return artifact,
+                // Derived/regenerable data, so a fresh empty is safe — but surface
+                // the corruption instead of swallowing it silently. (audit #9)
+                Err(e) => log::warn!(
+                    "[artifacts] corrupt artifacts.json for run {}, regenerating: {}",
+                    run_id,
+                    e
+                ),
             }
         }
     }
