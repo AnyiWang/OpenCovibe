@@ -6,6 +6,10 @@ const config = {
     adapter: adapter({
       fallback: "index.html",
     }),
+    // $lib is built-in; $messages aliased here so the generated tsconfig + Vite both pick it up
+    alias: {
+      $messages: "messages",
+    },
     paths: {
       relative: false,
     },
