@@ -2105,11 +2105,11 @@
       <!-- ═══ Connection tab ═══ -->
     {:else if activeTab === "connection"}
       <div class="space-y-6">
-        <!-- Authentication -->
+        <!-- Claude authentication -->
         <Card class="p-6 space-y-5">
           <div class="flex items-center justify-between">
             <h2 class="text-sm font-semibold text-muted-foreground uppercase tracking-wider">
-              {t("settings_general_connection")}
+              {t("settings_connection_claudeTitle")}
             </h2>
             {#if generalSaved}
               <span class="text-xs text-emerald-500 flex items-center gap-1 animate-fade-in">
@@ -2968,6 +2968,10 @@
                   </button>
                 {/if}
               </div>
+              <!-- Auth note: explains why Codex has no Auth Mode toggle (unlike Claude) -->
+              <p class="text-xs text-muted-foreground/80 pl-11">
+                {t("settings_codex_authNote")}
+              </p>
               <!-- Codex Hooks shortcut -->
               {#if codexHooksCount !== null}
                 <div class="flex items-center gap-3 pt-3 border-t border-border/50">
@@ -3048,6 +3052,12 @@
         </Card>
       {:else}
         <div class="space-y-6">
+          <!-- Claude group -->
+          <h2
+            class="text-xs font-semibold text-muted-foreground/60 uppercase tracking-widest pt-1 border-b border-border/40 pb-2"
+          >
+            {t("settings_cliConfig_claudeGroup")}
+          </h2>
           <!-- Behavior -->
           <Card class="p-6 space-y-4">
             <h2 class="text-sm font-semibold text-muted-foreground uppercase tracking-wider">
@@ -3272,6 +3282,13 @@
           <p class="text-[10px] text-muted-foreground px-1">
             {t("settings_cliConfig_footer")}
           </p>
+
+          <!-- Codex group -->
+          <h2
+            class="text-xs font-semibold text-muted-foreground/60 uppercase tracking-widest pt-3 border-b border-border/40 pb-2"
+          >
+            {t("settings_cliConfig_codexGroup")}
+          </h2>
 
           <!-- ── Codex Config ── -->
           <Card class="p-6 space-y-4">

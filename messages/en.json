@@ -8,7 +8,6 @@
   "settings_tab_remote": "Remote",
   "settings_tab_debug": "Debug",
 
-  "settings_general_connection": "Connection",
   "settings_general_saved": "Saved",
   "settings_general_connectionMode": "Connection Mode",
   "settings_general_modeCli": "CLI",
@@ -63,6 +62,10 @@
   "codex_notInstalled": "Codex CLI not found. Install: npm i -g @openai/codex",
   "codex_notLoggedIn": "Codex not logged in. Run: codex login",
   "settings_codex_title": "Codex",
+  "settings_connection_claudeTitle": "Claude",
+  "settings_codex_authNote": "Codex manages its own authentication via `codex login` — no app-managed API key.",
+  "settings_cliConfig_claudeGroup": "Claude",
+  "settings_cliConfig_codexGroup": "Codex",
   "settings_codex_refresh": "Refresh",
   "settings_codex_checking": "Checking Codex CLI...",
   "settings_codex_checkFailed": "Unable to check Codex status.",

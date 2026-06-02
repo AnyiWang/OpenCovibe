@@ -8,7 +8,6 @@
   "settings_tab_remote": "远程",
   "settings_tab_debug": "调试",
 
-  "settings_general_connection": "连接",
   "settings_general_saved": "已保存",
   "settings_general_connectionMode": "连接方式",
   "settings_general_modeCli": "CLI",
@@ -63,6 +62,10 @@
   "codex_notInstalled": "未找到 Codex CLI。安装方式：npm i -g @openai/codex",
   "codex_notLoggedIn": "Codex 未登录。运行：codex login",
   "settings_codex_title": "Codex",
+  "settings_connection_claudeTitle": "Claude",
+  "settings_codex_authNote": "Codex 通过 `codex login` 自行管理认证——不使用 app 注入的 API key。",
+  "settings_cliConfig_claudeGroup": "Claude",
+  "settings_cliConfig_codexGroup": "Codex",
   "settings_codex_refresh": "刷新",
   "settings_codex_checking": "正在检查 Codex CLI...",
   "settings_codex_checkFailed": "无法检查 Codex 状态。",
