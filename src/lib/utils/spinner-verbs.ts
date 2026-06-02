@@ -30,7 +30,6 @@ const SPINNER_VERBS = [
   "Channelling",
   "Choreographing",
   "Churning",
-  "Clauding",
   "Coalescing",
   "Cogitating",
   "Combobulating",

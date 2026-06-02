@@ -4266,7 +4266,9 @@
       numTurns={store.numTurns}
       durationMs={store.durationMs}
       persistedFiles={store.persistedFiles}
-      onRewind={store.sessionAlive && !store.isRunning ? handleRewind : undefined}
+      onRewind={store.caps.supportsSnapshots && store.sessionAlive && !store.isRunning
+        ? handleRewind
+        : undefined}
       contextUtilization={store.contextUtilization}
       contextWarningLevel={store.contextWarningLevel}
       contextWindow={store.contextWindow}
@@ -4625,7 +4627,10 @@
                           timestamp: entry.ts,
                         }}
                         attachments={entry.attachments}
-                        onRewind={entry.cliUuid && store.sessionAlive && !store.isRunning
+                        onRewind={store.caps.supportsSnapshots &&
+                        entry.cliUuid &&
+                        store.sessionAlive &&
+                        !store.isRunning
                           ? () =>
                               handleRewindToMessage({
                                 cliUuid: entry.cliUuid!,
