@@ -777,6 +777,7 @@
 
   "usage_title": "用量",
   "usage_subtitle": "Token 消耗和运行统计",
+  "usage_globalCodexNote": "全局用量仅统计 Claude Code 会话——不包含 Codex 会话。",
   "usage_scopeGlobal": "全局",
   "usage_scopeApp": "应用",
   "usage_refreshTitle": "清除缓存并重新统计",

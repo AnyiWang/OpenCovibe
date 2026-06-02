@@ -314,6 +314,10 @@
     </button>
   </div>
 
+  {#if scope === "global"}
+    <p class="mt-2 text-xs text-muted-foreground/70">{t("usage_globalCodexNote")}</p>
+  {/if}
+
   {#if loading}
     <div class="flex flex-col items-center justify-center py-12 gap-3">
       <div

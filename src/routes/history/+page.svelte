@@ -29,6 +29,10 @@
     return `$${response.facets.totalCost.toFixed(2)}`;
   });
 
+  // Codex has no cost concept (total_cost_usd is always 0). When filtered to Codex-only,
+  // suppress the "$0.00 total cost" header — it would be structurally meaningless.
+  let costMeaningful = $derived(!(filters.agents?.length === 1 && filters.agents[0] === "codex"));
+
   function projectDisplayName(cwd: string): string {
     const parts = cwd.replace(/\\/g, "/").split("/");
     return parts[parts.length - 1] || cwd;
@@ -445,8 +449,9 @@
         class:opacity-50={loading}
       >
         <span>
-          {t("history_runsMatching", { count: String(response.totalMatching) })} · {totalCostDisplay}
-          {t("history_totalCost")}
+          {t("history_runsMatching", { count: String(response.totalMatching) })}{#if costMeaningful}
+            · {totalCostDisplay}
+            {t("history_totalCost")}{/if}
         </span>
 
         <!-- Sort buttons -->

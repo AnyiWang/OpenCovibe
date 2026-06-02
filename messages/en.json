@@ -777,6 +777,7 @@
 
   "usage_title": "Usage",
   "usage_subtitle": "Token costs and run statistics",
+  "usage_globalCodexNote": "Global usage covers Claude Code sessions only — Codex sessions are not included.",
   "usage_scopeGlobal": "Global",
   "usage_scopeApp": "App",
   "usage_refreshTitle": "Clear cache and recalculate",
