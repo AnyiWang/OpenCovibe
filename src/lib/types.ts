@@ -165,6 +165,8 @@ export interface UserSettings {
   remote_hosts?: RemoteHost[];
   platform_credentials?: PlatformCredential[];
   active_platform_id?: string;
+  /** null clears it (serde → None); undefined when absent. */
+  codex_provider?: CodexProviderCredential | null;
   ui_zoom?: number;
   onboarding_completed: boolean;
   web_server_enabled?: boolean;
@@ -1449,6 +1451,18 @@ export interface PlatformCredential {
   name?: string;
   models?: string[];
   extra_env?: Record<string, string>;
+}
+
+/** Codex third-party provider (OpenAI Responses API). Injected via `codex exec -c` + env_key,
+ *  not ANTHROPIC_* env. wire_api is always "responses". */
+export interface CodexProviderCredential {
+  id: string;
+  name: string;
+  base_url: string;
+  env_key: string;
+  wire_api: string;
+  model: string;
+  api_key?: string;
 }
 
 /** BTW side question streaming events (from Tauri) */

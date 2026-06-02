@@ -253,6 +253,9 @@ pub struct UserSettings {
     pub platform_credentials: Vec<PlatformCredential>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_platform_id: Option<String>,
+    /// Active Codex third-party provider (OpenAI Responses API). None = plain `codex login`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codex_provider: Option<CodexProviderCredential>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ui_zoom: Option<f64>,
     #[serde(default)]
@@ -330,6 +333,33 @@ pub struct PlatformCredential {
     pub extra_env: Option<HashMap<String, String>>,
 }
 
+/// A Codex third-party provider (OpenAI Responses API). Unlike Claude's Anthropic-shaped
+/// PlatformCredential, Codex providers are injected via `codex exec -c model_providers.<id>.*`
+/// overrides + an env var (env_key → api_key), not ANTHROPIC_* env. wire_api is always
+/// "responses" (Codex removed "chat" in 0.99+).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CodexProviderCredential {
+    /// Stable provider id used as the `model_providers.<id>` table key (e.g. "vercel", "custom").
+    pub id: String,
+    pub name: String,
+    pub base_url: String,
+    /// Name of the env var Codex reads the API key from (e.g. "OPENAI_API_KEY").
+    pub env_key: String,
+    /// Always "responses" for current Codex; kept explicit for forward-compat.
+    #[serde(default = "default_wire_api")]
+    pub wire_api: String,
+    /// Provider-side model id (OpenAI-format, e.g. "gpt-5.5"). Empty → Codex default.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub model: String,
+    /// API key. Optional for keyless local providers (e.g. Ollama).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
+}
+
+fn default_wire_api() -> String {
+    "responses".to_string()
+}
+
 impl Default for UserSettings {
     fn default() -> Self {
         Self {
@@ -349,6 +379,7 @@ impl Default for UserSettings {
             remote_hosts: vec![],
             platform_credentials: vec![],
             active_platform_id: None,
+            codex_provider: None,
             ui_zoom: None,
             onboarding_completed: false,
             web_server_enabled: None,

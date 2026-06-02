@@ -26,7 +26,11 @@
     expandModelsToTiers,
     compressModelsFromTiers,
   } from "$lib/utils/platform-presets";
-  import type { PlatformPreset, PlatformCredential } from "$lib/types";
+  import type { PlatformPreset, PlatformCredential, CodexProviderCredential } from "$lib/types";
+  import {
+    CODEX_PROVIDER_PRESETS,
+    type CodexProviderPreset,
+  } from "$lib/utils/codex-provider-presets";
   import {
     isDebugMode,
     setDebugMode,
@@ -595,6 +599,65 @@
       dbgWarn("settings", "saveCodexAgentPatch failed", e);
     }
   }
+
+  // ── Codex third-party provider ──
+  // Draft form state for the Codex provider section (committed via saveCodexProvider).
+  let codexProviderId = $state<string>(""); // "" = None (plain codex login)
+  let codexProviderKey = $state("");
+  let codexProviderModel = $state("");
+  let codexProviderBaseUrl = $state(""); // editable for "custom"
+
+  // Initialize the draft from the saved provider once settings load.
+  let codexProviderInitDone = false;
+  $effect(() => {
+    if (!settings || codexProviderInitDone) return;
+    codexProviderInitDone = true;
+    const cp = settings.codex_provider;
+    if (cp) {
+      codexProviderId = cp.id;
+      codexProviderKey = cp.api_key ?? "";
+      codexProviderModel = cp.model ?? "";
+      codexProviderBaseUrl = cp.base_url ?? "";
+    }
+  });
+
+  function selectCodexProvider(preset: CodexProviderPreset | null) {
+    if (!preset) {
+      codexProviderId = "";
+      void saveCodexProvider(null);
+      return;
+    }
+    codexProviderId = preset.id;
+    codexProviderModel = preset.model;
+    codexProviderBaseUrl = preset.base_url;
+    if (preset.keyless) codexProviderKey = "";
+  }
+
+  async function saveCodexProvider(clear?: null) {
+    if (clear === null || !codexProviderId) {
+      settings = await api.updateUserSettings({ codex_provider: null } as Partial<UserSettings>);
+      return;
+    }
+    const preset = CODEX_PROVIDER_PRESETS.find((p) => p.id === codexProviderId);
+    if (!preset) return;
+    const cred: CodexProviderCredential = {
+      id: preset.id,
+      name: preset.name,
+      base_url: codexProviderBaseUrl.trim() || preset.base_url,
+      env_key: preset.env_key,
+      wire_api: "responses",
+      model: codexProviderModel.trim(),
+      api_key: preset.keyless ? undefined : codexProviderKey.trim() || undefined,
+    };
+    settings = await api.updateUserSettings({
+      codex_provider: cred,
+    } as Partial<UserSettings>);
+    dbg("settings", "codex provider saved", { id: cred.id });
+  }
+
+  let codexProviderPreset = $derived(
+    CODEX_PROVIDER_PRESETS.find((p) => p.id === codexProviderId) ?? null,
+  );
 
   // ── Codex hooks count ──
   let codexHooksCount = $state<number | null>(null);
@@ -3041,6 +3104,105 @@
                   </button>
                 </div>
               {/if}
+            </div>
+          {/if}
+        </Card>
+
+        <!-- Codex Provider (third-party OpenAI Responses API) -->
+        <Card class="p-6 space-y-4">
+          <div>
+            <h2 class="text-sm font-semibold text-muted-foreground uppercase tracking-wider">
+              {t("settings_codexProvider_title")}
+            </h2>
+            <p class="text-xs text-muted-foreground mt-1">
+              {t("settings_codexProvider_desc")}
+            </p>
+          </div>
+
+          <!-- Provider grid: None + presets -->
+          <div class="grid grid-cols-2 gap-2 sm:grid-cols-3">
+            <button
+              class="rounded-md border p-3 text-left transition-colors
+                {codexProviderId === ''
+                ? 'border-primary bg-primary/5'
+                : 'hover:bg-accent hover:border-ring/30'}"
+              onclick={() => selectCodexProvider(null)}
+            >
+              <p class="text-sm font-medium">{t("settings_codexProvider_none")}</p>
+              <p class="text-xs text-muted-foreground mt-0.5">
+                {t("settings_codexProvider_noneDesc")}
+              </p>
+            </button>
+            {#each CODEX_PROVIDER_PRESETS as preset (preset.id)}
+              <button
+                class="rounded-md border p-3 text-left transition-colors
+                  {codexProviderId === preset.id
+                  ? 'border-primary bg-primary/5'
+                  : 'hover:bg-accent hover:border-ring/30'}"
+                onclick={() => selectCodexProvider(preset)}
+              >
+                <p class="text-sm font-medium truncate">{preset.name}</p>
+                <p class="text-xs text-muted-foreground mt-0.5 truncate">{preset.description}</p>
+              </button>
+            {/each}
+          </div>
+
+          {#if codexProviderPreset}
+            <div class="space-y-3 rounded-md border border-border/60 p-4">
+              <!-- Base URL (editable for custom, shown read-only otherwise) -->
+              <div>
+                <span class="text-xs font-medium text-muted-foreground">Base URL</span>
+                {#if codexProviderPreset.custom}
+                  <input
+                    class="mt-1 w-full rounded-md border px-3 py-2 text-sm bg-background font-mono"
+                    placeholder="https://host/v1"
+                    bind:value={codexProviderBaseUrl}
+                  />
+                {:else}
+                  <p class="text-xs font-mono text-muted-foreground mt-1">
+                    {codexProviderBaseUrl || codexProviderPreset.base_url}
+                  </p>
+                {/if}
+              </div>
+
+              <!-- Model -->
+              <div>
+                <span class="text-xs font-medium text-muted-foreground"
+                  >{t("settings_codexProvider_model")}</span
+                >
+                <input
+                  class="mt-1 w-full rounded-md border px-3 py-2 text-sm bg-background font-mono"
+                  placeholder="gpt-5.1"
+                  bind:value={codexProviderModel}
+                />
+              </div>
+
+              <!-- API key (skipped for keyless local providers) -->
+              {#if !codexProviderPreset.keyless}
+                <div>
+                  <span class="text-xs font-medium text-muted-foreground"
+                    >{t("settings_codexProvider_apiKey")}</span
+                  >
+                  <input
+                    type="password"
+                    class="mt-1 w-full rounded-md border px-3 py-2 text-sm bg-background font-mono"
+                    placeholder={codexProviderPreset.key_placeholder}
+                    bind:value={codexProviderKey}
+                  />
+                  <p class="text-[11px] text-muted-foreground/70 mt-1">
+                    {t("settings_codexProvider_keyEnvNote", { env: codexProviderPreset.env_key })}
+                  </p>
+                </div>
+              {/if}
+
+              <div class="flex justify-end">
+                <button
+                  class="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90"
+                  onclick={() => saveCodexProvider()}
+                >
+                  {t("settings_codexProvider_save")}
+                </button>
+              </div>
             </div>
           {/if}
         </Card>

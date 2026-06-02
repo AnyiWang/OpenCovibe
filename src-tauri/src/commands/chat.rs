@@ -265,6 +265,17 @@ pub async fn send_chat_message(
         }
     }
 
+    // Codex third-party provider: supply the API key via the env var named by env_key
+    // (the -c model_providers.*.env_key override was already added in build_agent_command).
+    let mut extra_env: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    if let Some(p) = &adapter_settings.codex_provider {
+        if let Some(key) = p.api_key.as_ref().filter(|k| !k.is_empty()) {
+            if !p.env_key.is_empty() {
+                extra_env.insert(p.env_key.clone(), key.clone());
+            }
+        }
+    }
+
     // Spawn agent in background
     let pm = process_map.inner().clone();
     let em = emitter.inner().clone();
@@ -283,6 +294,7 @@ pub async fn send_chat_message(
             cwd,
             agent_clone,
             Some(em.clone()),
+            extra_env,
         )
         .await
         {

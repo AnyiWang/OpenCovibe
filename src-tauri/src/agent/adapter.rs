@@ -40,6 +40,9 @@ pub struct AdapterSettings {
     pub ignore_rules: bool,
     /// Codex `--search` — enable the native web_search tool. New sessions only.
     pub web_search: bool,
+    /// Codex third-party provider (OpenAI Responses API). Injected as `-c model_providers.*`
+    /// overrides + an env var at spawn. None = plain `codex login`. Codex-only.
+    pub codex_provider: Option<crate::models::CodexProviderCredential>,
 }
 
 /// Map OpenCovibe permission mode names to Claude CLI `--permission-mode` values.
@@ -161,6 +164,12 @@ pub fn build_adapter_settings(
     let ignore_user_config = agent.ignore_user_config.unwrap_or(false);
     let ignore_rules = agent.ignore_rules.unwrap_or(false);
     let web_search = agent.web_search.unwrap_or(false);
+    // Codex third-party provider only applies to the codex agent.
+    let codex_provider = if agent.agent == "codex" {
+        user.codex_provider.clone()
+    } else {
+        None
+    };
 
     // Mutual exclusion: system_prompt takes priority over append_system_prompt
     if system_prompt.is_some() && append_system_prompt.is_some() {
@@ -218,6 +227,7 @@ pub fn build_adapter_settings(
         ignore_user_config,
         ignore_rules,
         web_search,
+        codex_provider,
     }
 }
 
@@ -403,6 +413,7 @@ mod tests {
             ignore_user_config: false,
             ignore_rules: false,
             web_search: false,
+            codex_provider: None,
         }
     }
 
@@ -658,6 +669,7 @@ mod tests {
             remote_hosts: vec![],
             platform_credentials: vec![],
             active_platform_id: None,
+            codex_provider: None,
             ui_zoom: None,
             onboarding_completed: false,
             web_server_enabled: None,

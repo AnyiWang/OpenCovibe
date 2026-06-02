@@ -46,6 +46,40 @@ pub fn build_agent_command(
             args.push("--json".to_string());
             args.push("--skip-git-repo-check".to_string());
 
+            // Codex third-party provider (OpenAI Responses API) → inject as `-c model_providers.*`
+            // overrides. Accepted on both `codex exec` and `exec resume` (no resume gating). The
+            // API key is supplied separately via the env var named by `env_key`, set on the child
+            // process at spawn time (see run_agent extra_env). `requires_openai_auth=false` is
+            // required for non-OpenAI gateways, otherwise Codex ignores env_key and falls back to
+            // ChatGPT login. `wire_api` is always "responses" (Codex removed "chat").
+            if let Some(p) = &settings.codex_provider {
+                let id = &p.id;
+                args.push("-c".to_string());
+                args.push(format!("model_provider=\"{}\"", id));
+                args.push("-c".to_string());
+                args.push(format!("model_providers.{}.name=\"{}\"", id, p.name));
+                args.push("-c".to_string());
+                args.push(format!(
+                    "model_providers.{}.base_url=\"{}\"",
+                    id, p.base_url
+                ));
+                if !p.env_key.is_empty() {
+                    args.push("-c".to_string());
+                    args.push(format!("model_providers.{}.env_key=\"{}\"", id, p.env_key));
+                }
+                args.push("-c".to_string());
+                args.push(format!(
+                    "model_providers.{}.wire_api=\"{}\"",
+                    id, p.wire_api
+                ));
+                args.push("-c".to_string());
+                args.push(format!("model_providers.{}.requires_openai_auth=false", id));
+                if !p.model.is_empty() {
+                    args.push("--model".to_string());
+                    args.push(p.model.clone());
+                }
+            }
+
             // Codex per-session flags (AgentSettings).
             // `--ephemeral` MUST go before resume target rejection — but since
             // resume_thread_id was already added earlier, ordering here just
@@ -91,16 +125,23 @@ pub fn build_agent_command(
             // The adapter fallback chain (agent.model → user.default_model) may
             // resolve to a Claude model name (e.g. "opus", "claude-*") which Codex
             // rejects. Skip those — let Codex use its own default.
-            if let Some(ref m) = settings.model {
-                let lm = m.to_lowercase();
-                let is_claude_model = lm.is_empty()
-                    || lm.contains("claude")
-                    || lm.contains("opus")
-                    || lm.contains("sonnet")
-                    || lm.contains("haiku");
-                if !is_claude_model {
-                    args.push("--model".to_string());
-                    args.push(m.to_string());
+            // Skip entirely if a codex_provider already set --model (its provider-side model wins).
+            let provider_set_model = settings
+                .codex_provider
+                .as_ref()
+                .is_some_and(|p| !p.model.is_empty());
+            if !provider_set_model {
+                if let Some(ref m) = settings.model {
+                    let lm = m.to_lowercase();
+                    let is_claude_model = lm.is_empty()
+                        || lm.contains("claude")
+                        || lm.contains("opus")
+                        || lm.contains("sonnet")
+                        || lm.contains("haiku");
+                    if !is_claude_model {
+                        args.push("--model".to_string());
+                        args.push(m.to_string());
+                    }
                 }
             }
 
@@ -201,6 +242,7 @@ mod tests {
             ignore_user_config: false,
             ignore_rules: false,
             web_search: false,
+            codex_provider: None,
         }
     }
 
@@ -365,6 +407,44 @@ mod tests {
         // No images → no --image.
         let (_, none_args) = build_agent_command("codex", "q", &s, false, None, &[]).unwrap();
         assert!(!none_args.iter().any(|a| a.starts_with("--image")));
+    }
+
+    #[test]
+    fn codex_provider_emits_overrides() {
+        use crate::models::CodexProviderCredential;
+        let mut s = make_settings();
+        s.model = Some("opus".into()); // would be filtered; provider model must win instead
+        s.codex_provider = Some(CodexProviderCredential {
+            id: "vercel".into(),
+            name: "Vercel AI Gateway".into(),
+            base_url: "https://ai-gateway.vercel.sh/v1".into(),
+            env_key: "AI_GATEWAY_API_KEY".into(),
+            wire_api: "responses".into(),
+            model: "openai/gpt-5.5".into(),
+            api_key: Some("sk-secret".into()),
+        });
+        // New session
+        let (_, args) = build_agent_command("codex", "q", &s, false, None, &[]).unwrap();
+        let joined = args.join(" ");
+        assert!(joined.contains("model_provider=\"vercel\""));
+        assert!(
+            joined.contains("model_providers.vercel.base_url=\"https://ai-gateway.vercel.sh/v1\"")
+        );
+        assert!(joined.contains("model_providers.vercel.env_key=\"AI_GATEWAY_API_KEY\""));
+        assert!(joined.contains("model_providers.vercel.wire_api=\"responses\""));
+        assert!(joined.contains("model_providers.vercel.requires_openai_auth=false"));
+        // provider model wins over the (filtered) generic model; exactly one --model
+        assert_eq!(args.iter().filter(|a| *a == "--model").count(), 1);
+        assert!(args.contains(&"openai/gpt-5.5".to_string()));
+        // never leaks the api key into args (it goes via env)
+        assert!(!joined.contains("sk-secret"));
+        // Accepted on resume too (re-applied since -c isn't persisted)
+        let (_, ra) = build_agent_command("codex", "q", &s, false, Some("tid"), &[]).unwrap();
+        assert!(ra.join(" ").contains("model_provider=\"vercel\""));
+        // Absent → no provider overrides
+        s.codex_provider = None;
+        let (_, na) = build_agent_command("codex", "q", &s, false, None, &[]).unwrap();
+        assert!(!na.join(" ").contains("model_provider="));
     }
 
     #[test]

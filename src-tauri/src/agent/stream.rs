@@ -43,6 +43,7 @@ pub async fn run_agent(
     cwd: String,
     agent: String,
     emitter: Option<Arc<BroadcastEmitter>>,
+    extra_env: HashMap<String, String>,
 ) -> Result<(), String> {
     log::debug!(
         "[stream] run_agent: run_id={}, cmd={}, args={:?}, cwd={}, agent={}, has_emitter={}",
@@ -111,6 +112,11 @@ pub async fn run_agent(
     if is_codex {
         cmd.env_remove("ANTHROPIC_API_KEY");
         cmd.env_remove("ANTHROPIC_AUTH_TOKEN");
+    }
+    // Provider-specific env (e.g. a Codex third-party provider's env_key=api_key). Set last so
+    // it wins over inherited values.
+    for (k, v) in &extra_env {
+        cmd.env(k, v);
     }
     let mut child = cmd.spawn().map_err(|e| {
         let msg = if e.kind() == std::io::ErrorKind::NotFound {
