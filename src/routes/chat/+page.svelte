@@ -1263,7 +1263,9 @@
         if (store.agent === "codex") {
           // Codex: agent settings ARE the source of truth (injected as
           // -c model_reasoning_effort at spawn). Do NOT run the Claude migration below.
-          currentEffort = agentSettings?.effort ?? "";
+          // Default to "medium" (Codex's own default reasoning effort) when unset so the
+          // effort selector always shows a highlighted value.
+          currentEffort = agentSettings?.effort || "medium";
         } else {
           // Claude: read effort from CLI config (~/.claude/settings.json) — the authoritative
           // source. NOT from agentSettings.effort (that would cause --effort flag at spawn,
@@ -2243,7 +2245,8 @@
     // Async: effort
     if (newAgent === "codex") {
       // Codex: effort lives in agent settings (injected at spawn), not CLI config.
-      currentEffort = agentSettings?.effort ?? "";
+      // Default to "medium" (Codex's default) when unset so the selector shows a value.
+      currentEffort = agentSettings?.effort || "medium";
     } else if (store.features.effortSelector) {
       try {
         const cfg = await api.getCliConfig();
