@@ -466,7 +466,10 @@ export class SessionStore {
         this.run?.id === runId &&
         this.phase === "running" &&
         !this.streamingText &&
-        !this.thinkingText
+        !this.thinkingText &&
+        // Don't flag an API hang while the turn is paused waiting on the user
+        // (approval card, elicitation, or a pending multiple-choice question).
+        !this._waitingOnUser
       ) {
         this._isTimeoutError = true;
         this.error = "No response after 60s — still waiting for API.";
@@ -576,6 +579,22 @@ export class SessionStore {
   /** Whether any MCP elicitation prompt is pending user response. */
   get hasElicitation(): boolean {
     return this.pendingElicitations.size > 0;
+  }
+
+  /** True when the turn is legitimately paused waiting on the user (permission approval,
+   *  MCP elicitation, or an AskUserQuestion/multiple-choice selection) rather than the API.
+   *  Used to suppress the "no response" timeout during these waits. */
+  private get _waitingOnUser(): boolean {
+    if (this.hasPendingPermission || this.hasElicitation) return true;
+    const walk = (entries: TimelineEntry[]): boolean => {
+      for (const e of entries) {
+        if (e.kind !== "tool") continue;
+        if (e.tool.status === "ask_pending") return true;
+        if (e.subTimeline && walk(e.subTimeline)) return true;
+      }
+      return false;
+    };
+    return walk(this.timeline);
   }
 
   /** Whether an inline-only permission (AskUserQuestion / ExitPlanMode) is pending. */
@@ -1953,8 +1972,12 @@ export class SessionStore {
         // Non-fatal: fall through with current store values
       }
 
-      // Explicitly pass execution_path — source of truth for run mode
-      const executionPath = this.useStreamSession ? "session_actor" : "pipe_exec";
+      // Explicitly pass execution_path for Claude (source of truth for run mode).
+      // For Codex, defer to the backend: it picks session_actor (app-server transport) vs
+      // pipe_exec (legacy) from the `codex_transport` user setting. Forcing it here would
+      // override that and pin Codex to exec.
+      const executionPath =
+        this.agent === "codex" ? undefined : this.useStreamSession ? "session_actor" : "pipe_exec";
       // Only pass model for stream-session (Claude); pipe-exec (Codex) doesn't use it
       const runModel = this.useStreamSession ? this.model || undefined : undefined;
       const run = await api.startRun(
@@ -2048,6 +2071,28 @@ export class SessionStore {
         } else {
           this._startResponseTimeout(this.run.id);
         }
+      } else if (this.useStreamSession && this.run.agent === "codex") {
+        // Stopped Codex app-server session (user clicked Stop, then sent a new message):
+        // re-spawn the actor with THIS message via start_session. The backend resumes the
+        // thread from conversation_ref (thread/resume) and sends this message as the turn.
+        // (Without this branch it falls through to send_chat_message and the backend rejects
+        // it: "requires execution_path=pipe_exec, got SessionActor". Claude stopped runs are
+        // resumed via resumeSession elsewhere, so this is scoped to Codex.)
+        this._useChatTimelineForRun = true;
+        this._pushOptimisticUser(text, attachments);
+        if (this.run) this.run = { ...this.run, status: "running" };
+        const mw = getEventMiddleware();
+        mw.subscribeCurrent(this.run!.id, this);
+        this._wsSubscribeNewSession(this.run!.id);
+        await api.startSession(
+          this.run!.id,
+          undefined,
+          undefined,
+          text,
+          mapAttachments(attachments) ?? undefined,
+          this.platformId || undefined,
+        );
+        this._startSpawnTimeout(this.run!.id);
       } else if (
         !this.useStreamSession &&
         this.caps.supportsBusEvents &&
@@ -2454,14 +2499,23 @@ export class SessionStore {
     this.mcpServers = dedupeMcpServersByName(servers);
   }
 
-  /** Resolve an AskUserQuestion tool: transition from ask_pending → success. */
-  resolveAskQuestion(toolUseId: string, answer: string): void {
+  /** Resolve an AskUserQuestion tool: transition from ask_pending → success.
+   *  `answersMap` (question-text → selected label) is stored on tool_use_result so the
+   *  resolved card highlights each question's choice (needed for multi-question). */
+  resolveAskQuestion(toolUseId: string, answer: string, answersMap?: Record<string, string>): void {
     dbg("store", "resolveAskQuestion", { toolUseId, answer });
     const tIdx = this._findToolIdx(null, toolUseId);
     if (tIdx >= 0) {
       const old = this.timeline[tIdx] as Extract<TimelineEntry, { kind: "tool" }>;
       const u = [...this.timeline];
-      u[tIdx] = { ...old, tool: { ...old.tool, status: "success", output: { answer } } };
+      const tool = { ...old.tool, status: "success" as const, output: { answer } };
+      if (answersMap) {
+        tool.tool_use_result = {
+          ...(old.tool.tool_use_result as Record<string, unknown> | undefined),
+          answers: answersMap,
+        };
+      }
+      u[tIdx] = { ...old, tool };
       this.timeline = u;
     }
     // Mirror to tools[] only in non-stream mode
@@ -2475,17 +2529,60 @@ export class SessionStore {
     }
   }
 
-  /** Answer an AskUserQuestion tool via session message. */
+  /** Answer an AskUserQuestion tool.
+   *  - Codex (app-server): the tool_use_id IS the pending request id → reply via the
+   *    JSON-RPC `respond_user_input` channel (NOT a new user turn).
+   *  - Claude: send the answer as a follow-up user message. */
   async answerToolQuestion(toolUseId: string, answer: string): Promise<void> {
     if (!this.run) return;
     dbg("store", "tool answer", { toolUseId, answer });
-    // Transition UI immediately
-    this.resolveAskQuestion(toolUseId, answer);
+
+    // Multi-question answers arrive JSON-encoded from InlineToolCard (submitAllAskAnswers):
+    // { __askMulti: true, byId: {qid: label}, byText: {questionText: label} }.
+    let multi: { byId: Record<string, string>; byText: Record<string, string> } | null = null;
+    try {
+      const p = JSON.parse(answer);
+      if (p && p.__askMulti) multi = { byId: p.byId ?? {}, byText: p.byText ?? {} };
+    } catch {
+      /* plain single answer */
+    }
+
+    // Capture the question id before resolving (resolveAskQuestion overwrites output).
+    const tIdx = this._findToolIdx(null, toolUseId);
+    const tool = tIdx >= 0 ? (this.timeline[tIdx] as { tool?: BusToolItem }).tool : undefined;
+
+    // Display summary: readable for multi-question, raw for single.
+    const display = multi
+      ? Object.entries(multi.byText)
+          .map(([q, a]) => `${q}: ${a}`)
+          .join("\n")
+      : answer;
+    // Pass the per-question answers so the resolved card highlights each choice.
+    this.resolveAskQuestion(toolUseId, display, multi ? multi.byText : undefined);
+
+    if (this.run.agent === "codex") {
+      try {
+        const answers: Record<string, string[]> = {};
+        if (multi && Object.keys(multi.byId).length > 0) {
+          for (const [qid, label] of Object.entries(multi.byId)) answers[qid] = [label];
+        } else {
+          const questions = (tool?.input?.questions ?? []) as Array<{ id?: string }>;
+          answers[questions[0]?.id ?? "0"] = [answer];
+        }
+        await api.respondUserInput(this.run.id, toolUseId, answers);
+      } catch (e) {
+        dbgWarn("store", "codex respondUserInput failed:", e);
+        this.error = String(e);
+        throw e;
+      }
+      return;
+    }
+
     try {
       // Send the user's answer as a follow-up message.
       // The session should be alive (idle phase) after the CLI auto-failed AskUserQuestion.
       if (this.sessionAlive) {
-        await api.sendSessionMessage(this.run.id, answer);
+        await api.sendSessionMessage(this.run.id, display);
       } else {
         dbgWarn("store", "session not alive for tool answer, skipping send");
       }

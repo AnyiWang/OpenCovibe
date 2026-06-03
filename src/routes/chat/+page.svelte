@@ -13,6 +13,8 @@
     getCliCommands,
     getCliModels,
     getCodexModels,
+    getCodexDefaultModel,
+    loadCodexModels,
     canResumeNow,
     TERMINAL_PHASES,
     getResumeWarning,
@@ -683,6 +685,10 @@
   $effect(() => {
     if (!store.features.effortSelector) return;
 
+    // Codex: effort is user-driven and persisted to agent settings (not CLI config).
+    // No auto-default — empty means "use Codex's own default" (spawn skips the flag).
+    if (effectiveAgent === "codex") return;
+
     const pid = store.platformId;
     // Third-party platform: don't touch effort
     if (pid && pid !== "anthropic") return;
@@ -1254,19 +1260,25 @@
     if (!hasValidAgentParam) {
       try {
         agentSettings = await api.getAgentSettings(store.agent);
-        // Read effort from CLI config (~/.claude/settings.json) — the authoritative source.
-        // NOT from agentSettings.effort (that would cause --effort flag at spawn, which
-        // locks effort in memory and prevents live switching via settings.json).
-        try {
-          const cliCfg = await api.getCliConfig();
-          const cliEffort = cliCfg.effortLevel;
-          currentEffort = typeof cliEffort === "string" && cliEffort ? cliEffort : "";
-        } catch {
-          currentEffort = "";
-        }
-        // One-time migration: clear stale agentSettings.effort to prevent --effort at spawn
-        if (agentSettings?.effort) {
-          api.updateAgentSettings(store.agent, { effort: "" }).catch(() => {});
+        if (store.agent === "codex") {
+          // Codex: agent settings ARE the source of truth (injected as
+          // -c model_reasoning_effort at spawn). Do NOT run the Claude migration below.
+          currentEffort = agentSettings?.effort ?? "";
+        } else {
+          // Claude: read effort from CLI config (~/.claude/settings.json) — the authoritative
+          // source. NOT from agentSettings.effort (that would cause --effort flag at spawn,
+          // which locks effort in memory and prevents live switching via settings.json).
+          try {
+            const cliCfg = await api.getCliConfig();
+            const cliEffort = cliCfg.effortLevel;
+            currentEffort = typeof cliEffort === "string" && cliEffort ? cliEffort : "";
+          } catch {
+            currentEffort = "";
+          }
+          // One-time migration: clear stale agentSettings.effort to prevent --effort at spawn
+          if (agentSettings?.effort) {
+            api.updateAgentSettings(store.agent, { effort: "" }).catch(() => {});
+          }
         }
       } catch (e) {
         dbgWarn("chat", "failed to load agent settings:", e);
@@ -1290,6 +1302,8 @@
     }
     let selfHealDone = false;
     let selfHealInFlight = false;
+    // Codex model catalog (live from app-server). Fire-and-forget; 5min TTL cache.
+    void loadCodexModels();
     loadCliInfo().then(() => {
       // Self-heal: detect and fix contaminated default_model
       if (settings?.default_model && !selfHealDone && !selfHealInFlight) {
@@ -2078,7 +2092,12 @@
           processingSlashCmd = slashCmd;
           slashCmdSeenRunning = false;
         }
+        // A stopped Codex app-server session re-spawns inside sendMessage; refresh the
+        // sidebar afterward so its status badge leaves the stale "stopped" state.
+        const wasStoppedCodex =
+          store.useStreamSession && !store.sessionAlive && store.run?.agent === "codex";
         await store.sendMessage(text, attachments);
+        if (wasStoppedCodex) window.dispatchEvent(new Event("ocv:runs-changed"));
         requestAnimationFrame(() => promptRef?.focus());
       }
     } catch (e) {
@@ -2222,7 +2241,10 @@
     }
 
     // Async: effort
-    if (store.features.effortSelector) {
+    if (newAgent === "codex") {
+      // Codex: effort lives in agent settings (injected at spawn), not CLI config.
+      currentEffort = agentSettings?.effort ?? "";
+    } else if (store.features.effortSelector) {
       try {
         const cfg = await api.getCliConfig();
         if (seq !== agentChangeSeq) return;
@@ -2541,9 +2563,21 @@
   }
 
   async function handleEffortChange(newEffort: string) {
-    dbg("chat", "effort change", { from: currentEffort, to: newEffort });
+    dbg("chat", "effort change", { agent: effectiveAgent, from: currentEffort, to: newEffort });
     currentEffort = newEffort;
-    // Write to CLI config (~/.claude/settings.json) — the CLI reads effortLevel
+
+    if (effectiveAgent === "codex") {
+      // Codex has no control protocol — persist to agent settings; spawn.rs injects
+      // -c model_reasoning_effort at the next turn. Empty clears the override (Codex
+      // falls back to its own configured default).
+      if (agentSettings) agentSettings.effort = newEffort;
+      api.updateAgentSettings("codex", { effort: newEffort }).catch((e) => {
+        dbgWarn("chat", "failed to persist codex effort", e);
+      });
+      return;
+    }
+
+    // Claude: write to CLI config (~/.claude/settings.json) — the CLI reads effortLevel
     // per-request, so changes take effect immediately within a running session.
     // Deliberately NOT writing to agentSettings.effort — that would cause --effort
     // to be passed at spawn, which locks the CLI's in-memory effort and prevents
@@ -4239,7 +4273,12 @@
       running={store.sessionAlive}
       run={store.run}
       agent={store.run?.agent ?? store.agent}
-      model={effectiveAgent === "codex" ? codexDisplayModel(store.run?.model) : store.model}
+      model={effectiveAgent === "codex"
+        ? codexDisplayModel(store.run?.model) ||
+          codexDisplayModel(store.model) ||
+          getCodexDefaultModel() ||
+          ""
+        : store.model}
       cost={store.usage.cost}
       inputTokens={cumulativeTokens.input}
       outputTokens={cumulativeTokens.output}

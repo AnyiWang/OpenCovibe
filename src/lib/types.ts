@@ -167,6 +167,8 @@ export interface UserSettings {
   active_platform_id?: string;
   /** null clears it (serde → None); undefined when absent. */
   codex_provider?: CodexProviderCredential | null;
+  /** Codex session transport: "app_server" (interactive tools) | "exec" (legacy, default). */
+  codex_transport?: string;
   ui_zoom?: number;
   onboarding_completed: boolean;
   web_server_enabled?: boolean;
@@ -479,6 +481,13 @@ export interface CliInfo {
   /** The model currently selected in Claude Code (from ~/.claude/settings.json) */
   current_model?: string;
   fetched_at: string;
+}
+
+/** Codex model catalog fetched live from `codex app-server` (model/list). */
+export interface CodexModelList {
+  models: CliModelInfo[];
+  /** Model marked `isDefault` in the catalog, when present. */
+  defaultModel?: string;
 }
 
 // ── Per-model usage breakdown ──

@@ -1,5 +1,5 @@
 import * as api from "$lib/api";
-import type { CliInfo, CliModelInfo, CliCommand } from "$lib/types";
+import type { CliInfo, CliModelInfo, CliCommand, CodexModelList } from "$lib/types";
 import { dbg, dbgWarn } from "$lib/utils/debug";
 
 let _info: CliInfo | null = $state(null);
@@ -42,19 +42,39 @@ export async function loadCliInfo(force = false): Promise<CliInfo | null> {
 
 // ── Codex Models ──
 
-// Source: pricing.rs GPT-5.x / Codex entries. Only models with explicit pricing included.
-// When adding new models, ensure matching pricing entry exists in pricing.rs.
-const CODEX_MODELS: CliModelInfo[] = [
-  { value: "gpt-5.4", displayName: "GPT-5.4", description: "Balanced" },
-  { value: "gpt-5.4-mini", displayName: "GPT-5.4 Mini", description: "Compact" },
-  { value: "gpt-5.4-nano", displayName: "GPT-5.4 Nano", description: "Lightweight" },
-  { value: "gpt-5.3-codex", displayName: "GPT-5.3 Codex", description: "Coding optimized" },
-  { value: "gpt-5.1-codex", displayName: "GPT-5.1 Codex", description: "Coding optimized" },
-  { value: "gpt-5-codex-mini", displayName: "GPT-5 Codex Mini", description: "Affordable" },
-];
+// Pulled live from `codex app-server` (model/list) — see api.getCodexModels.
+// No hardcoded list: new upstream models (e.g. gpt-5.5) appear without an app release.
+let _codex: CodexModelList | null = $state(null);
+let _codexLoading = false;
+let _codexLoaded = false;
 
 export function getCodexModels(): CliModelInfo[] {
-  return CODEX_MODELS;
+  return _codex?.models ?? [];
+}
+
+/** The model marked `isDefault` in the live Codex catalog, if known. */
+export function getCodexDefaultModel(): string | undefined {
+  return _codex?.defaultModel ?? undefined;
+}
+
+export async function loadCodexModels(force = false): Promise<CodexModelList | null> {
+  if (_codexLoaded && !force) return _codex;
+  if (_codexLoading) return _codex; // dedupe concurrent calls
+  _codexLoading = true;
+  try {
+    dbg("cli-info", "loading codex models", { force });
+    _codex = await api.getCodexModels(force);
+    _codexLoaded = true;
+    dbg("cli-info", "loaded codex models", {
+      models: _codex?.models.length,
+      default: _codex?.defaultModel,
+    });
+  } catch (e) {
+    dbgWarn("cli-info", "failed to load codex models", e);
+  } finally {
+    _codexLoading = false;
+  }
+  return _codex;
 }
 
 // ── CLI Version Info ──

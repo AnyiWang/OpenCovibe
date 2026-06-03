@@ -5498,4 +5498,99 @@ describe("SessionStore reducer", () => {
       expect(users).toHaveLength(2);
     });
   });
+
+  describe("Codex Wave-1 event rendering", () => {
+    it("TodoWrite tool_end carries newTodos for the plan card (agent-neutral)", () => {
+      const s = new SessionStore();
+      s.applyEventBatch([
+        {
+          type: "tool_start",
+          run_id: "codex-1",
+          tool_use_id: "plan-turn-1",
+          tool_name: "TodoWrite",
+          input: { todos: [{ content: "step 1", status: "pending", activeForm: "doing 1" }] },
+        },
+        {
+          type: "tool_end",
+          run_id: "codex-1",
+          tool_use_id: "plan-turn-1",
+          tool_name: "TodoWrite",
+          status: "success",
+          tool_use_result: {
+            newTodos: [{ content: "step 1", status: "in_progress", activeForm: "doing 1" }],
+          },
+        },
+      ] as BusEvent[]);
+      const tool = s.timeline.find(
+        (e) => e.kind === "tool" && e.tool.tool_name === "TodoWrite",
+      ) as Extract<TimelineEntry, { kind: "tool" }>;
+      expect(tool).toBeDefined();
+      expect(tool.tool.status).toBe("success");
+      // ToolDetailView keys the styled todo card off tool_use_result.newTodos
+      const result = tool.tool.tool_use_result as { newTodos: { status: string }[] };
+      expect(result.newTodos).toHaveLength(1);
+      expect(result.newTodos[0].status).toBe("in_progress");
+    });
+
+    it("repeated plan updates with a stable tool_use_id refresh the same card", () => {
+      const s = new SessionStore();
+      s.applyEventBatch([
+        {
+          type: "tool_start",
+          run_id: "codex-1",
+          tool_use_id: "plan-turn-1",
+          tool_name: "TodoWrite",
+          input: { todos: [] },
+        },
+        {
+          type: "tool_end",
+          run_id: "codex-1",
+          tool_use_id: "plan-turn-1",
+          tool_name: "TodoWrite",
+          status: "success",
+          tool_use_result: { newTodos: [{ content: "a", status: "pending", activeForm: "a" }] },
+        },
+        // Second update reuses the same tool_use_id
+        {
+          type: "tool_start",
+          run_id: "codex-1",
+          tool_use_id: "plan-turn-1",
+          tool_name: "TodoWrite",
+          input: { todos: [] },
+        },
+        {
+          type: "tool_end",
+          run_id: "codex-1",
+          tool_use_id: "plan-turn-1",
+          tool_name: "TodoWrite",
+          status: "success",
+          tool_use_result: { newTodos: [{ content: "a", status: "completed", activeForm: "a" }] },
+        },
+      ] as BusEvent[]);
+      const tools = s.timeline.filter((e) => e.kind === "tool" && e.tool.tool_name === "TodoWrite");
+      expect(tools).toHaveLength(1); // refreshed in place, not stacked
+      const result = (tools[0] as Extract<TimelineEntry, { kind: "tool" }>).tool
+        .tool_use_result as { newTodos: { status: string }[] };
+      expect(result.newTodos[0].status).toBe("completed");
+    });
+
+    it("rate_limit_event populates store fields (agent-neutral, flows for Codex)", () => {
+      const s = new SessionStore();
+      s.applyEventBatch([
+        {
+          type: "rate_limit_event",
+          run_id: "codex-1",
+          status: "allowed_warning",
+          rate_limit_type: "five_hour",
+          utilization: 0.85,
+          resets_at: 1711900000,
+          data: {},
+        },
+      ] as BusEvent[]);
+      expect(s.rateLimitStatus).toBe("allowed_warning");
+      expect(s.rateLimitType).toBe("five_hour");
+      expect(s.rateLimitUtilization).toBe(0.85);
+      expect(s.rateLimitResetsAt).toBe(1711900000);
+    });
+  });
 });

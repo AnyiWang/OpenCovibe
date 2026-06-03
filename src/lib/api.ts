@@ -19,6 +19,7 @@ import type {
   UsageOverview,
   BusEvent,
   CliInfo,
+  CodexModelList,
   SessionMode,
   TeamSummary,
   TeamConfig,
@@ -487,6 +488,14 @@ export async function getCliInfo(forceRefresh?: boolean): Promise<CliInfo> {
   }
 }
 
+export async function getCodexModels(forceRefresh?: boolean): Promise<CodexModelList> {
+  dbg("api", "getCodexModels", { forceRefresh });
+  // Backend already substitutes a minimal fallback on failure, so this rarely throws.
+  const list = await invoke<CodexModelList>("get_codex_models", { forceRefresh });
+  dbg("api", "getCodexModels →", { models: list.models.length });
+  return list;
+}
+
 // Session (event bus)
 export async function startSession(
   runId: string,
@@ -734,6 +743,17 @@ export async function respondElicitation(
     action,
     content: content ?? null,
   });
+}
+
+/** Answer a Codex `request_user_input` (multiple-choice) prompt over the app-server
+ *  transport. `answers` maps each question id to the selected option label(s). */
+export async function respondUserInput(
+  runId: string,
+  requestId: string,
+  answers: Record<string, string[]>,
+): Promise<void> {
+  dbg("api", "respondUserInput", { runId, requestId });
+  return invoke("respond_user_input", { runId, requestId, answers });
 }
 
 // ── Teams ──

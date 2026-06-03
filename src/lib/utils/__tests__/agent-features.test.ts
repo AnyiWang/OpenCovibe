@@ -11,9 +11,9 @@ describe("getAgentFeatures", () => {
     expect(f.addDirAction).toBe(true);
   });
 
-  it("returns codex features with planModeToggle and addDirAction enabled", () => {
+  it("returns codex features with effortSelector, planModeToggle and addDirAction enabled", () => {
     const f = getAgentFeatures("codex");
-    expect(f.effortSelector).toBe(false);
+    expect(f.effortSelector).toBe(true);
     expect(f.planModeToggle).toBe(true);
     expect(f.permissionModeSwitch).toBe(false);
     expect(f.slashCommandMenu).toBe(true);

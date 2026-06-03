@@ -16,7 +16,10 @@ const CLAUDE_FEATURES: AgentFeatures = {
 };
 
 const CODEX_FEATURES: AgentFeatures = {
-  effortSelector: false,
+  // Codex reads reasoning effort from the selected model's supportedReasoningEfforts;
+  // persisted to agent settings and injected as -c model_reasoning_effort at next spawn
+  // (no control protocol, so no live switching — same as Codex model change).
+  effortSelector: true,
   planModeToggle: true,
   permissionModeSwitch: false,
   slashCommandMenu: true,

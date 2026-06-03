@@ -63,6 +63,9 @@
   // displayText from current `text` (either via the !streaming branch or firstSyncDone).
   let displayText = $state("");
   let rafId: number | null = null;
+  /** Latest `text` captured synchronously in the streaming effect; the coalesced rAF paints
+   *  this (always the newest value). Non-reactive — only the effect writes it. */
+  let pendingText = "";
   // Non-reactive flag: set/read here doesn't trigger Svelte effect tracking.
   // We use this instead of reading `displayText` inside the effect — reading $state
   // would make the rAF callback's `displayText = text` trigger an effect rerun,
@@ -91,13 +94,20 @@
       firstSyncDone = true;
       return;
     }
-    // Streaming: at most one rAF-pending update; high-frequency tokens coalesce.
+    // Read `text` SYNCHRONOUSLY here so this $effect keeps `text` as a tracked dependency
+    // and re-runs on every delta. (Bug fix: previously `text` was read only inside the rAF
+    // callback — and the `text !== ""` check above short-circuits once firstSyncDone is true —
+    // so after the first character the effect dropped the `text` dep and froze until streaming
+    // ended, dumping the full text at once.)
+    pendingText = text;
+    // Streaming: at most one rAF-pending update; high-frequency tokens coalesce. The rAF paints
+    // `pendingText` (latest), so deltas arriving while a frame is pending aren't lost.
     // ⚠️ Do NOT cancel rAF in $effect cleanup — Svelte runs cleanup before each rerun, so
     //    if text ticks faster than vsync we'd repeatedly cancel→reschedule and starve the flush.
     if (rafId === null) {
       rafId = requestAnimationFrame(() => {
         rafId = null;
-        displayText = text;
+        displayText = pendingText;
       });
     }
   });

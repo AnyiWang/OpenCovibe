@@ -606,6 +606,10 @@
   let codexProviderKey = $state("");
   let codexProviderModel = $state("");
   let codexProviderBaseUrl = $state(""); // editable for "custom"
+  // Auth Mode toggle, mirroring Claude: "cli" = codex login (provider None),
+  // "app" = app points Codex at a third-party Responses provider. Explicit
+  // state (not derived) so "app" can be selected before a preset is picked.
+  let codexAuthMode = $state<"cli" | "app">("cli");
 
   // Initialize the draft from the saved provider once settings load.
   let codexProviderInitDone = false;
@@ -618,8 +622,16 @@
       codexProviderKey = cp.api_key ?? "";
       codexProviderModel = cp.model ?? "";
       codexProviderBaseUrl = cp.base_url ?? "";
+      codexAuthMode = "app";
     }
   });
+
+  function setCodexAuthMode(mode: "cli" | "app") {
+    codexAuthMode = mode;
+    // CLI Auth clears any app-managed provider (back to codex login default),
+    // mirroring Claude's CLI-Auth toggle which clears platform/base_url config.
+    if (mode === "cli") selectCodexProvider(null);
+  }
 
   function selectCodexProvider(preset: CodexProviderPreset | null) {
     if (!preset) {
@@ -2989,82 +3001,275 @@
                   {/if}
                 </div>
               </div>
-              <!-- Auth status -->
-              <div class="flex items-center gap-3">
-                {#if codexStatus.logged_in}
-                  <div
-                    class="flex h-8 w-8 items-center justify-center rounded-full bg-emerald-500/10"
+              <!-- Auth Mode selector: 2-way radio, mirroring Claude -->
+              <div>
+                <span class="text-sm font-medium mb-2 block">{t("settings_auth_modeLabel")}</span>
+                <div class="mt-1 grid grid-cols-2 gap-3">
+                  <button
+                    class="flex flex-col items-center gap-2 rounded-lg border p-4 text-sm transition-all duration-150
+                    {codexAuthMode === 'cli'
+                      ? 'border-primary bg-primary/5 ring-1 ring-primary/20'
+                      : 'hover:bg-accent hover:border-ring/30'}"
+                    onclick={() => setCodexAuthMode("cli")}
                   >
-                    <svg
-                      class="h-4 w-4 text-emerald-400"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      stroke-width="2"
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
+                    <div
+                      class="flex h-10 w-10 items-center justify-center rounded-full bg-emerald-500/10"
                     >
-                      <rect x="3" y="11" width="18" height="11" rx="2" ry="2" /><path
-                        d="M7 11V7a5 5 0 0 1 10 0v4"
-                      />
-                    </svg>
-                  </div>
-                  <div>
-                    <p class="text-sm font-medium">{t("settings_codex_loggedIn")}</p>
-                    <p class="text-xs text-muted-foreground">
-                      {codexStatus.auth_method === "chatgpt"
-                        ? t("settings_codex_authChatGPT")
-                        : codexStatus.auth_method === "api_key"
-                          ? t("settings_codex_authApiKey")
-                          : t("settings_codex_authGeneric")}
-                    </p>
-                  </div>
-                {:else}
-                  <div
-                    class="flex h-8 w-8 items-center justify-center rounded-full bg-amber-500/10"
+                      <svg
+                        class="h-5 w-5 text-emerald-400"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                      >
+                        <rect x="3" y="11" width="18" height="11" rx="2" ry="2" /><path
+                          d="M7 11V7a5 5 0 0 1 10 0v4"
+                        />
+                      </svg>
+                    </div>
+                    <span class="font-medium">{t("auth_cliAuth")}</span>
+                    <span class="text-[10px] text-muted-foreground text-center"
+                      >{t("settings_codex_authModeCliDesc")}</span
+                    >
+                  </button>
+                  <button
+                    class="flex flex-col items-center gap-2 rounded-lg border p-4 text-sm transition-all duration-150
+                    {codexAuthMode === 'app'
+                      ? 'border-primary bg-primary/5 ring-1 ring-primary/20'
+                      : 'hover:bg-accent hover:border-ring/30'}"
+                    onclick={() => setCodexAuthMode("app")}
                   >
-                    <svg
-                      class="h-4 w-4 text-amber-400"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      stroke-width="2"
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
+                    <div
+                      class="flex h-10 w-10 items-center justify-center rounded-full bg-violet-500/10"
                     >
-                      <path
-                        d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"
-                      /><line x1="12" y1="9" x2="12" y2="13" /><line
-                        x1="12"
-                        y1="17"
-                        x2="12.01"
-                        y2="17"
-                      />
-                    </svg>
-                  </div>
-                  <div class="flex-1">
-                    <p class="text-sm font-medium">{t("settings_codex_notLoggedIn")}</p>
-                    {#if codexLoginError}
-                      <p class="text-xs text-red-400 mt-1">{codexLoginError}</p>
+                      <svg
+                        class="h-5 w-5 text-violet-400"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                      >
+                        <rect x="2" y="2" width="20" height="8" rx="2" ry="2" /><rect
+                          x="2"
+                          y="14"
+                          width="20"
+                          height="8"
+                          rx="2"
+                          ry="2"
+                        /><line x1="6" y1="6" x2="6.01" y2="6" /><line
+                          x1="6"
+                          y1="18"
+                          x2="6.01"
+                          y2="18"
+                        />
+                      </svg>
+                    </div>
+                    <span class="font-medium">{t("settings_codex_authModeProviderLabel")}</span>
+                    <span class="text-[10px] text-muted-foreground text-center"
+                      >{t("settings_codex_authModeProviderDesc")}</span
+                    >
+                  </button>
+                </div>
+              </div>
+
+              <!-- CLI Auth details (codex login owns auth in this mode) -->
+              {#if codexAuthMode === "cli"}
+                <div class="space-y-3 rounded-lg border border-border/50 p-4">
+                  <!-- Auth status -->
+                  <div class="flex items-center gap-3">
+                    {#if codexStatus.logged_in}
+                      <div
+                        class="flex h-8 w-8 items-center justify-center rounded-full bg-emerald-500/10"
+                      >
+                        <svg
+                          class="h-4 w-4 text-emerald-400"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2"
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                        >
+                          <rect x="3" y="11" width="18" height="11" rx="2" ry="2" /><path
+                            d="M7 11V7a5 5 0 0 1 10 0v4"
+                          />
+                        </svg>
+                      </div>
+                      <div>
+                        <p class="text-sm font-medium">{t("settings_codex_loggedIn")}</p>
+                        <p class="text-xs text-muted-foreground">
+                          {codexStatus.auth_method === "chatgpt"
+                            ? t("settings_codex_authChatGPT")
+                            : codexStatus.auth_method === "api_key"
+                              ? t("settings_codex_authApiKey")
+                              : t("settings_codex_authGeneric")}
+                        </p>
+                      </div>
+                    {:else}
+                      <div
+                        class="flex h-8 w-8 items-center justify-center rounded-full bg-amber-500/10"
+                      >
+                        <svg
+                          class="h-4 w-4 text-amber-400"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2"
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                        >
+                          <path
+                            d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"
+                          /><line x1="12" y1="9" x2="12" y2="13" /><line
+                            x1="12"
+                            y1="17"
+                            x2="12.01"
+                            y2="17"
+                          />
+                        </svg>
+                      </div>
+                      <div class="flex-1">
+                        <p class="text-sm font-medium">{t("settings_codex_notLoggedIn")}</p>
+                        {#if codexLoginError}
+                          <p class="text-xs text-red-400 mt-1">{codexLoginError}</p>
+                        {/if}
+                      </div>
+                      <button
+                        class="shrink-0 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50 transition-colors"
+                        disabled={codexLoginLoading}
+                        onclick={handleCodexLogin}
+                      >
+                        {codexLoginLoading
+                          ? t("settings_codex_loggingIn")
+                          : t("settings_codex_loginBtn")}
+                      </button>
                     {/if}
                   </div>
-                  <button
-                    class="shrink-0 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50 transition-colors"
-                    disabled={codexLoginLoading}
-                    onclick={handleCodexLogin}
-                  >
-                    {codexLoginLoading
-                      ? t("settings_codex_loggingIn")
-                      : t("settings_codex_loginBtn")}
-                  </button>
-                {/if}
-              </div>
-              <!-- Auth note: explains why Codex has no Auth Mode toggle (unlike Claude) -->
-              <p class="text-xs text-muted-foreground/80 pl-11">
-                {t("settings_codex_authNote")}
-              </p>
+                  <!-- codex login owns auth in this mode -->
+                  <p class="text-xs text-muted-foreground/80 pl-11">
+                    {t("settings_codex_authNote")}
+                  </p>
+                </div>
+              {/if}
+
+              <!-- Codex transport: app-server unlocks interactive tools -->
+              {#if settings}
+                <label
+                  class="flex items-start gap-3 rounded-lg border border-border/50 p-4 cursor-pointer hover:bg-accent/40"
+                >
+                  <input
+                    type="checkbox"
+                    class="mt-0.5 rounded"
+                    checked={settings.codex_transport === "app_server"}
+                    onchange={async (e) => {
+                      const on = (e.currentTarget as HTMLInputElement).checked;
+                      settings = await api.updateUserSettings({
+                        codex_transport: on ? "app_server" : "exec",
+                      } as Partial<UserSettings>);
+                    }}
+                  />
+                  <span>
+                    <span class="font-medium text-sm">{t("settings_codexTransport_label")}</span>
+                    <span class="block text-xs text-muted-foreground mt-0.5"
+                      >{t("settings_codexTransport_desc")}</span
+                    >
+                  </span>
+                </label>
+              {/if}
+
+              <!-- App Provider details: point Codex at a third-party Responses provider -->
+              {#if codexAuthMode === "app"}
+                <div class="space-y-3 rounded-lg border border-border/50 p-4">
+                  <p class="text-xs text-muted-foreground">
+                    {t("settings_codexProvider_desc")}
+                  </p>
+                  <!-- Provider grid. No "None" tile — CLI Auth above already is None. -->
+                  <div class="grid grid-cols-2 gap-2 sm:grid-cols-3">
+                    {#each CODEX_PROVIDER_PRESETS as preset (preset.id)}
+                      <button
+                        class="rounded-md border p-3 text-left transition-colors
+                          {codexProviderId === preset.id
+                          ? 'border-primary bg-primary/5'
+                          : 'hover:bg-accent hover:border-ring/30'}"
+                        onclick={() => selectCodexProvider(preset)}
+                      >
+                        <p class="text-sm font-medium truncate">{preset.name}</p>
+                        <p class="text-xs text-muted-foreground mt-0.5 truncate">
+                          {preset.description}
+                        </p>
+                      </button>
+                    {/each}
+                  </div>
+
+                  {#if codexProviderPreset}
+                    <div class="space-y-3 rounded-md border border-border/60 p-4">
+                      <!-- Base URL (editable for custom, shown read-only otherwise) -->
+                      <div>
+                        <span class="text-xs font-medium text-muted-foreground">Base URL</span>
+                        {#if codexProviderPreset.custom}
+                          <input
+                            class="mt-1 w-full rounded-md border px-3 py-2 text-sm bg-background font-mono"
+                            placeholder="https://host/v1"
+                            bind:value={codexProviderBaseUrl}
+                          />
+                        {:else}
+                          <p class="text-xs font-mono text-muted-foreground mt-1">
+                            {codexProviderBaseUrl || codexProviderPreset.base_url}
+                          </p>
+                        {/if}
+                      </div>
+
+                      <!-- Model -->
+                      <div>
+                        <span class="text-xs font-medium text-muted-foreground"
+                          >{t("settings_codexProvider_model")}</span
+                        >
+                        <input
+                          class="mt-1 w-full rounded-md border px-3 py-2 text-sm bg-background font-mono"
+                          placeholder="gpt-5.1"
+                          bind:value={codexProviderModel}
+                        />
+                      </div>
+
+                      <!-- API key (skipped for keyless local providers) -->
+                      {#if !codexProviderPreset.keyless}
+                        <div>
+                          <span class="text-xs font-medium text-muted-foreground"
+                            >{t("settings_codexProvider_apiKey")}</span
+                          >
+                          <input
+                            type="password"
+                            class="mt-1 w-full rounded-md border px-3 py-2 text-sm bg-background font-mono"
+                            placeholder={codexProviderPreset.key_placeholder}
+                            bind:value={codexProviderKey}
+                          />
+                          <p class="text-[11px] text-muted-foreground/70 mt-1">
+                            {t("settings_codexProvider_keyEnvNote", {
+                              env: codexProviderPreset.env_key,
+                            })}
+                          </p>
+                        </div>
+                      {/if}
+
+                      <div class="flex justify-end">
+                        <button
+                          class="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90"
+                          onclick={() => saveCodexProvider()}
+                        >
+                          {t("settings_codexProvider_save")}
+                        </button>
+                      </div>
+                    </div>
+                  {/if}
+                </div>
+              {/if}
+
               <!-- Pointer: Codex model/sandbox config lives in the CLI Config tab, not here -->
-              <p class="text-xs text-muted-foreground/80 pl-11">
+              <p class="text-xs text-muted-foreground/80">
                 {t("settings_codex_modelHint")}
               </p>
               <!-- Codex Hooks shortcut -->
@@ -3104,105 +3309,6 @@
                   </button>
                 </div>
               {/if}
-            </div>
-          {/if}
-        </Card>
-
-        <!-- Codex Provider (third-party OpenAI Responses API) -->
-        <Card class="p-6 space-y-4">
-          <div>
-            <h2 class="text-sm font-semibold text-muted-foreground uppercase tracking-wider">
-              {t("settings_codexProvider_title")}
-            </h2>
-            <p class="text-xs text-muted-foreground mt-1">
-              {t("settings_codexProvider_desc")}
-            </p>
-          </div>
-
-          <!-- Provider grid: None + presets -->
-          <div class="grid grid-cols-2 gap-2 sm:grid-cols-3">
-            <button
-              class="rounded-md border p-3 text-left transition-colors
-                {codexProviderId === ''
-                ? 'border-primary bg-primary/5'
-                : 'hover:bg-accent hover:border-ring/30'}"
-              onclick={() => selectCodexProvider(null)}
-            >
-              <p class="text-sm font-medium">{t("settings_codexProvider_none")}</p>
-              <p class="text-xs text-muted-foreground mt-0.5">
-                {t("settings_codexProvider_noneDesc")}
-              </p>
-            </button>
-            {#each CODEX_PROVIDER_PRESETS as preset (preset.id)}
-              <button
-                class="rounded-md border p-3 text-left transition-colors
-                  {codexProviderId === preset.id
-                  ? 'border-primary bg-primary/5'
-                  : 'hover:bg-accent hover:border-ring/30'}"
-                onclick={() => selectCodexProvider(preset)}
-              >
-                <p class="text-sm font-medium truncate">{preset.name}</p>
-                <p class="text-xs text-muted-foreground mt-0.5 truncate">{preset.description}</p>
-              </button>
-            {/each}
-          </div>
-
-          {#if codexProviderPreset}
-            <div class="space-y-3 rounded-md border border-border/60 p-4">
-              <!-- Base URL (editable for custom, shown read-only otherwise) -->
-              <div>
-                <span class="text-xs font-medium text-muted-foreground">Base URL</span>
-                {#if codexProviderPreset.custom}
-                  <input
-                    class="mt-1 w-full rounded-md border px-3 py-2 text-sm bg-background font-mono"
-                    placeholder="https://host/v1"
-                    bind:value={codexProviderBaseUrl}
-                  />
-                {:else}
-                  <p class="text-xs font-mono text-muted-foreground mt-1">
-                    {codexProviderBaseUrl || codexProviderPreset.base_url}
-                  </p>
-                {/if}
-              </div>
-
-              <!-- Model -->
-              <div>
-                <span class="text-xs font-medium text-muted-foreground"
-                  >{t("settings_codexProvider_model")}</span
-                >
-                <input
-                  class="mt-1 w-full rounded-md border px-3 py-2 text-sm bg-background font-mono"
-                  placeholder="gpt-5.1"
-                  bind:value={codexProviderModel}
-                />
-              </div>
-
-              <!-- API key (skipped for keyless local providers) -->
-              {#if !codexProviderPreset.keyless}
-                <div>
-                  <span class="text-xs font-medium text-muted-foreground"
-                    >{t("settings_codexProvider_apiKey")}</span
-                  >
-                  <input
-                    type="password"
-                    class="mt-1 w-full rounded-md border px-3 py-2 text-sm bg-background font-mono"
-                    placeholder={codexProviderPreset.key_placeholder}
-                    bind:value={codexProviderKey}
-                  />
-                  <p class="text-[11px] text-muted-foreground/70 mt-1">
-                    {t("settings_codexProvider_keyEnvNote", { env: codexProviderPreset.env_key })}
-                  </p>
-                </div>
-              {/if}
-
-              <div class="flex justify-end">
-                <button
-                  class="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90"
-                  onclick={() => saveCodexProvider()}
-                >
-                  {t("settings_codexProvider_save")}
-                </button>
-              </div>
             </div>
           {/if}
         </Card>

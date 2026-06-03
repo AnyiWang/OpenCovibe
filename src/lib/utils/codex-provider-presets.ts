@@ -6,6 +6,11 @@
 // so they are intentionally NOT listed here. Verified-working set: Responses-capable gateways +
 // Ollama (local) + Custom. See memory codex-integration-audit-2026-06 / the provider research.
 //
+// Default `model` strings verified against each gateway's own Codex docs (2026-06): Vercel and
+// Requesty document gpt-5.5; AiHubMix documents gpt-5.2 (5.5 not yet listed there); ZenMux uses
+// gpt-5.2-codex. Pin to what each gateway actually publishes, not the absolute newest OpenAI model
+// — a model the gateway hasn't onboarded yet would fail out of the box.
+//
 // At spawn we inject these as `codex exec -c model_providers.<id>.{base_url,env_key,wire_api,
 // requires_openai_auth=false}` plus the API key via the env var named by `env_key`.
 
@@ -34,7 +39,7 @@ export const CODEX_PROVIDER_PRESETS: CodexProviderPreset[] = [
     description: "Responses API gateway",
     base_url: "https://ai-gateway.vercel.sh/v1",
     env_key: "AI_GATEWAY_API_KEY",
-    model: "openai/gpt-5.1",
+    model: "openai/gpt-5.5",
     key_placeholder: "vck_…",
     docs_url: "https://vercel.com/docs/ai-gateway/codex",
   },
@@ -44,7 +49,7 @@ export const CODEX_PROVIDER_PRESETS: CodexProviderPreset[] = [
     description: "AI aggregation (Responses)",
     base_url: "https://aihubmix.com/v1",
     env_key: "AIHUBMIX_API_KEY",
-    model: "gpt-5.1",
+    model: "gpt-5.2",
     key_placeholder: "sk-…",
     docs_url: "https://docs.aihubmix.com/en/api/Codex-CLI",
   },
@@ -55,7 +60,7 @@ export const CODEX_PROVIDER_PRESETS: CodexProviderPreset[] = [
     base_url: "https://router.requesty.ai/v1",
     env_key: "REQUESTY_API_KEY",
     // Requesty requires the openai-responses/ model prefix for Codex.
-    model: "openai-responses/gpt-5.1",
+    model: "openai-responses/gpt-5.5",
     key_placeholder: "sk-…",
     docs_url: "https://docs.requesty.ai/integrations/openai-codex",
   },
@@ -75,7 +80,7 @@ export const CODEX_PROVIDER_PRESETS: CodexProviderPreset[] = [
     description: "Multi-model gateway (Responses)",
     base_url: "https://zenmux.ai/api/v1",
     env_key: "ZENMUX_API_KEY",
-    model: "",
+    model: "openai/gpt-5.2-codex",
     key_placeholder: "sk-…",
     docs_url: "https://docs.zenmux.ai/guide/quickstart.html",
   },

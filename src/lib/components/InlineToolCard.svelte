@@ -263,6 +263,7 @@
     description: string;
   }
   interface ParsedQuestion {
+    id: string;
     question: string;
     header: string;
     options: ParsedOption[];
@@ -289,6 +290,7 @@
       return questions.map((q: unknown) => {
         const qr = q as Record<string, unknown>;
         return {
+          id: typeof qr?.id === "string" ? qr.id : "",
           question: typeof qr?.question === "string" ? qr.question : "",
           header: typeof qr?.header === "string" ? qr.header : "",
           options: extractOptions(qr?.options),
@@ -300,6 +302,7 @@
     if (typeof tool.input.question === "string") {
       return [
         {
+          id: typeof tool.input.id === "string" ? tool.input.id : "",
           question: tool.input.question,
           header: "",
           options: extractOptions(tool.input.options as unknown),
@@ -521,6 +524,22 @@
     questionAnswers[questionText] = answer;
   }
 
+  // Multi-question submit for the ask_pending (onAnswer) path — used by Codex app-server
+  // (and Claude pipe mode) where the answer goes back via onAnswer, not a permission response.
+  // Encodes all answers keyed by both question id (for Codex respond_user_input) and text.
+  function submitAllAskAnswers() {
+    if (submitting || !onAnswer || !allQuestionsAnswered) return;
+    submitting = true;
+    const byId: Record<string, string> = {};
+    const byText: Record<string, string> = {};
+    for (const q of parsedQuestions) {
+      const ans = questionAnswers[q.question];
+      byText[q.question] = ans;
+      if (q.id) byId[q.id] = ans;
+    }
+    onAnswer(JSON.stringify({ __askMulti: true, byId, byText }));
+  }
+
   // Multi-question: submit all answers at once
   function submitAllQuestionAnswers() {
     if (submitting || !onPermissionRespond || !tool.permission_request_id) return;
@@ -584,7 +603,53 @@
   {#if renderLevel === 3}
     <!-- Level 3: interactive card -->
     <div>
-      {#if isAsk && (tool.status === "running" || tool.status === "ask_pending") && askQuestion}
+      {#if isAsk && (tool.status === "running" || tool.status === "ask_pending") && hasMultipleQuestions && onAnswer}
+        <!-- AskUserQuestion (multi-question, onAnswer path): collect all answers, submit once.
+             Used by Codex app-server requestUserInput with 2+ questions. -->
+        <div class="rounded-lg border border-yellow-500/30 bg-yellow-500/5 px-4 py-3">
+          <div class="flex items-center gap-2 mb-3">
+            <span class="text-xs font-medium text-foreground">{t("inline_question")}</span>
+            <span class="text-xs text-muted-foreground"
+              >{Object.keys(questionAnswers).length}/{parsedQuestions.length}</span
+            >
+          </div>
+          <div class="space-y-3">
+            {#each parsedQuestions as pq}
+              <div>
+                {#if pq.header}
+                  <div class="text-xs font-medium text-muted-foreground mb-1">{pq.header}</div>
+                {/if}
+                <MarkdownContent
+                  text={pq.question}
+                  class="text-sm text-foreground mb-2 [&>*:last-child]:mb-0"
+                />
+                <div class="flex flex-wrap gap-2">
+                  {#each pq.options as option}
+                    <button
+                      class="rounded-md border px-3 py-1.5 text-xs font-medium transition-all disabled:opacity-50 disabled:cursor-not-allowed {questionAnswers[
+                        pq.question
+                      ] === option.label
+                        ? 'border-primary bg-primary/10 text-primary'
+                        : 'border-border bg-background text-foreground hover:bg-accent hover:border-ring/30'}"
+                      disabled={submitting}
+                      onclick={() => selectQuestionAnswer(pq.question, option.label)}
+                    >
+                      {option.label}
+                    </button>
+                  {/each}
+                </div>
+              </div>
+            {/each}
+          </div>
+          <button
+            class="mt-3 rounded-md bg-primary px-4 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+            disabled={submitting || !allQuestionsAnswered}
+            onclick={submitAllAskAnswers}
+          >
+            {t("inline_submit")}
+          </button>
+        </div>
+      {:else if isAsk && (tool.status === "running" || tool.status === "ask_pending") && askQuestion}
         <!-- AskUserQuestion: show question + option buttons -->
         <div class="rounded-lg border border-yellow-500/30 bg-yellow-500/5 px-4 py-3">
           <div class="flex items-center gap-2 mb-2">
