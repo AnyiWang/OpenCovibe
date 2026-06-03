@@ -15,17 +15,19 @@ pub fn get_pricing(model: &str) -> ModelPricing {
 /// (instead of silently falling back to a default).
 pub fn try_get_pricing(model: &str) -> Option<ModelPricing> {
     // ── Claude models ──
-    // Opus 4.5 / 4.6 → $5 / $25
-    if model.contains("opus-4-6")
-        || model.contains("opus-4-5")
-        || model.contains("opus-4.5")
-        || model.contains("opus-4.6")
+    // Legacy Opus 4.0 / 4.1 → $15 / $75. Match these explicitly so newer Opus
+    // (4.5, 4.6, 4.7, 4.8, and future releases) defaults to current $5/$25 pricing
+    // below — otherwise each new Opus version silently inherits legacy pricing (#149).
+    if model.contains("opus-4-0")
+        || model.contains("opus-4-1")
+        || model.contains("opus-4.0")
+        || model.contains("opus-4.1")
     {
-        return Some(claude_pricing(5.0, 25.0));
-    }
-    // Opus 4.0 / 4.1 (legacy)
-    if model.contains("opus") {
         return Some(claude_pricing(15.0, 75.0));
+    }
+    // Opus 4.5+ (current) → $5 / $25
+    if model.contains("opus") {
+        return Some(claude_pricing(5.0, 25.0));
     }
     if model.contains("haiku") {
         return Some(claude_pricing(0.80, 4.0));
@@ -280,6 +282,19 @@ fn claude_pricing(input: f64, output: f64) -> ModelPricing {
         cache_read: input * 0.1,
         cache_write: input * 1.25,
     }
+}
+
+/// True for known third-party (non-Anthropic/OpenAI) provider models. Used to
+/// gate provider-specific UI/cost handling. (merged from master)
+pub fn is_third_party(model: &str) -> bool {
+    model.contains("deepseek")
+        || model.contains("kimi")
+        || model.contains("glm")
+        || model.contains("qwen")
+        || model.contains("doubao")
+        || model.contains("minimax")
+        || model.contains("MiniMax")
+        || model.contains("mimo")
 }
 
 /// Estimate cost from token counts (input, output, cache read, cache write).

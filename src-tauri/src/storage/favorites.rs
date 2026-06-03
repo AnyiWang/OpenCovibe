@@ -34,24 +34,24 @@ fn write_atomic_json<T: Serialize>(path: &Path, data: &T) -> Result<(), String> 
     Ok(())
 }
 
-fn load() -> FavoritesFile {
+fn load() -> Result<FavoritesFile, String> {
     let path = favorites_path();
     if !path.exists() {
-        return FavoritesFile {
+        return Ok(FavoritesFile {
             version: 1,
             items: vec![],
-        };
+        });
     }
-    match fs::read_to_string(&path) {
-        Ok(content) => serde_json::from_str(&content).unwrap_or(FavoritesFile {
-            version: 1,
-            items: vec![],
-        }),
-        Err(_) => FavoritesFile {
-            version: 1,
-            items: vec![],
-        },
-    }
+    let content = fs::read_to_string(&path).map_err(|e| format!("read favorites: {e}"))?;
+    // Do NOT fall back to an empty list on parse failure: a subsequent save() would
+    // then overwrite a corrupt-but-recoverable file and permanently lose all
+    // favorites. Fail loud so write paths abort and the file is left untouched. (audit #9)
+    serde_json::from_str(&content).map_err(|e| {
+        format!(
+            "favorites file corrupt ({e}); left untouched: {}",
+            path.display()
+        )
+    })
 }
 
 fn save(file: &FavoritesFile) -> Result<(), String> {
@@ -62,7 +62,16 @@ fn save(file: &FavoritesFile) -> Result<(), String> {
 
 pub fn list_favorites() -> Vec<PromptFavorite> {
     log::debug!("[favorites] listing favorites");
-    load().items
+    // Read path tolerates corruption (show nothing + warn); write paths abort.
+    load()
+        .unwrap_or_else(|e| {
+            log::warn!("[favorites] {e}");
+            FavoritesFile {
+                version: 1,
+                items: vec![],
+            }
+        })
+        .items
 }
 
 pub fn add_favorite(run_id: &str, seq: u64, text: &str) -> Result<PromptFavorite, String> {
@@ -71,7 +80,7 @@ pub fn add_favorite(run_id: &str, seq: u64, text: &str) -> Result<PromptFavorite
         run_id,
         seq
     );
-    let mut file = load();
+    let mut file = load()?;
 
     // Check for duplicate
     if file
@@ -104,7 +113,7 @@ pub fn remove_favorite(run_id: &str, seq: u64) -> Result<(), String> {
         run_id,
         seq
     );
-    let mut file = load();
+    let mut file = load()?;
     let before = file.items.len();
     file.items.retain(|f| !(f.run_id == run_id && f.seq == seq));
     if file.items.len() == before {
@@ -121,7 +130,7 @@ pub fn update_favorite_tags(run_id: &str, seq: u64, tags: Vec<String>) -> Result
         seq,
         tags
     );
-    let mut file = load();
+    let mut file = load()?;
     let fav = file
         .items
         .iter_mut()
@@ -133,7 +142,7 @@ pub fn update_favorite_tags(run_id: &str, seq: u64, tags: Vec<String>) -> Result
 
 pub fn update_favorite_note(run_id: &str, seq: u64, note: &str) -> Result<(), String> {
     log::debug!("[favorites] updating note: run_id={}, seq={}", run_id, seq);
-    let mut file = load();
+    let mut file = load()?;
     let fav = file
         .items
         .iter_mut()
@@ -144,7 +153,13 @@ pub fn update_favorite_note(run_id: &str, seq: u64, note: &str) -> Result<(), St
 }
 
 pub fn list_all_tags() -> Vec<String> {
-    let file = load();
+    let file = load().unwrap_or_else(|e| {
+        log::warn!("[favorites] {e}");
+        FavoritesFile {
+            version: 1,
+            items: vec![],
+        }
+    });
     let mut tags: Vec<String> = file
         .items
         .iter()

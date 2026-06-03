@@ -417,6 +417,7 @@
   "statusbar_toggleSidebar": "Toggle sidebar (Ctrl+B)",
   "statusbar_contextTitle": "Context usage for the latest turn ({pct}% of {tokens} tokens). The CLI automatically compacts context when approaching the limit.",
   "statusbar_ctx": "ctx {pct}%",
+  "statusbar_ctxLabel": "Context",
   "statusbar_compacted": "compacted",
   "statusbar_rewindTitle": "Rewind: undo file changes from this session",
   "statusbar_rewind": "Rewind",
@@ -1597,6 +1598,8 @@
   "hooks_codexWarning": "Codex hooks warning: {detail}",
 
   "todos_empty": "No todos currently tracked.",
+  "todos_panelHeader": "Tasks",
+  "todos_panelSummary": "{done}/{total} done",
 
   "slashTasks_empty": "No background tasks in this session.",
   "slashTasks_notFound": "Task not found: {id}",

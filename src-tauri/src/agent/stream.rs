@@ -34,6 +34,61 @@ pub fn new_process_map() -> ProcessMap {
     Arc::new(Mutex::new(HashMap::new()))
 }
 
+/// Emit a chunk of Claude stdout: append to assistant_text + persist + Tauri emit.
+fn emit_claude_stdout(run_id: &str, app: &AppHandle, assistant: &mut String, text: String) {
+    assistant.push_str(&text);
+    if let Err(e) = storage::events::append_event(
+        run_id,
+        RunEventType::Stdout,
+        serde_json::json!({ "text": text.clone(), "source": "ui_chat" }),
+    ) {
+        log::warn!("[stream] stdout append failed: {}", e);
+    }
+    let _ = app.emit(
+        "run-event",
+        serde_json::json!({ "run_id": run_id, "type": "stdout", "text": text.clone() }),
+    );
+    let _ = app.emit("chat-delta", ChatDelta { text });
+}
+
+/// Streaming UTF-8 decoder for chunk-boundary correctness.
+///
+/// Concatenates `leftover` (previous incomplete trailing bytes) with `chunk`,
+/// returns the longest valid-UTF-8 prefix as a `String` plus any trailing
+/// partial multibyte sequence to defer to the next chunk. A naive
+/// `String::from_utf8_lossy(&chunk[..n])` per read would emit U+FFFD on every
+/// multibyte character that straddles the read boundary (common for CJK /
+/// emoji output from `claude --print`).
+///
+/// On genuinely invalid UTF-8 (a byte error mid-buffer, not just an incomplete
+/// tail), the whole combined buffer is lossy-decoded so the stream can make
+/// progress instead of accumulating bad bytes forever.
+fn decode_utf8_chunk(leftover: Vec<u8>, chunk: &[u8]) -> (String, Vec<u8>) {
+    let mut combined = leftover;
+    combined.extend_from_slice(chunk);
+    match std::str::from_utf8(&combined) {
+        Ok(s) => (s.to_string(), Vec::new()),
+        Err(e) => {
+            let valid_up_to = e.valid_up_to();
+            match e.error_len() {
+                None => {
+                    // Incomplete trailing char — defer to next read.
+                    let text = std::str::from_utf8(&combined[..valid_up_to])
+                        .expect("valid_up_to bytes form valid UTF-8")
+                        .to_string();
+                    let tail = combined[valid_up_to..].to_vec();
+                    (text, tail)
+                }
+                Some(_) => {
+                    // Truly invalid bytes mid-buffer (corrupted source). Fall
+                    // back to lossy decode so we don't get stuck.
+                    (String::from_utf8_lossy(&combined).into_owned(), Vec::new())
+                }
+            }
+        }
+    }
+}
+
 pub async fn run_agent(
     app: AppHandle,
     process_map: ProcessMap,
@@ -247,31 +302,33 @@ pub async fn run_agent(
                 }
             }
         } else {
-            // Claude: stdout is the response text
+            // Claude: stdout is the response text. Decode UTF-8 across read
+            // boundaries — multibyte characters can straddle a single read(),
+            // so leftover trailing bytes are deferred to the next chunk to
+            // avoid emitting U+FFFD for valid (just-split) input.
             let mut reader = BufReader::new(stdout);
             let mut buf = vec![0u8; 8192];
+            let mut leftover: Vec<u8> = Vec::new();
             loop {
                 match reader.read(&mut buf).await {
-                    Ok(0) => break,
-                    Ok(n) => {
-                        let text = String::from_utf8_lossy(&buf[..n]).to_string();
-                        assistant_text.push_str(&text);
-                        if let Err(e) = storage::events::append_event(
-                            &run_id_out,
-                            RunEventType::Stdout,
-                            serde_json::json!({ "text": text, "source": "ui_chat" }),
-                        ) {
-                            log::warn!("[stream] stdout append failed: {}", e);
+                    Ok(0) => {
+                        // Flush any trailing incomplete bytes at EOF (lossy —
+                        // CLI should always end on a char boundary, but a
+                        // truncated last char shouldn't be silently dropped).
+                        if !leftover.is_empty() {
+                            let text = String::from_utf8_lossy(&leftover).into_owned();
+                            leftover.clear();
+                            emit_claude_stdout(&run_id_out, &app_out, &mut assistant_text, text);
                         }
-                        let _ = app_out.emit(
-                            "run-event",
-                            serde_json::json!({
-                                "run_id": run_id_out,
-                                "type": "stdout",
-                                "text": text
-                            }),
-                        );
-                        let _ = app_out.emit("chat-delta", ChatDelta { text });
+                        break;
+                    }
+                    Ok(n) => {
+                        let (text, new_leftover) =
+                            decode_utf8_chunk(std::mem::take(&mut leftover), &buf[..n]);
+                        leftover = new_leftover;
+                        if !text.is_empty() {
+                            emit_claude_stdout(&run_id_out, &app_out, &mut assistant_text, text);
+                        }
                     }
                     Err(_) => break,
                 }
@@ -454,6 +511,91 @@ pub async fn run_agent(
     Ok(())
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decode_ascii_only_no_leftover() {
+        let (text, leftover) = decode_utf8_chunk(Vec::new(), b"hello world");
+        assert_eq!(text, "hello world");
+        assert!(leftover.is_empty());
+    }
+
+    #[test]
+    fn decode_complete_multibyte_no_leftover() {
+        // "你好" = 0xE4 0xBD 0xA0 0xE5 0xA5 0xBD (6 bytes)
+        let (text, leftover) = decode_utf8_chunk(Vec::new(), "你好".as_bytes());
+        assert_eq!(text, "你好");
+        assert!(leftover.is_empty());
+    }
+
+    #[test]
+    fn decode_split_multibyte_defers_tail() {
+        // "你好" split at byte 4: first chunk has "你" (3 bytes) + 1 byte of "好"
+        let bytes = "你好".as_bytes();
+        let (text, leftover) = decode_utf8_chunk(Vec::new(), &bytes[..4]);
+        assert_eq!(text, "你", "valid prefix emitted");
+        assert_eq!(leftover, vec![bytes[3]], "incomplete tail deferred");
+
+        // Next read brings the remaining 2 bytes of "好"
+        let (text2, leftover2) = decode_utf8_chunk(leftover, &bytes[4..]);
+        assert_eq!(text2, "好");
+        assert!(leftover2.is_empty());
+    }
+
+    #[test]
+    fn decode_split_at_first_byte_of_multibyte() {
+        // First read ends exactly at the start byte of "你"
+        let bytes = "ab你cd".as_bytes(); // 2 ASCII + 3 multibyte + 2 ASCII
+        let (text, leftover) = decode_utf8_chunk(Vec::new(), &bytes[..3]); // "ab" + first byte of 你
+        assert_eq!(text, "ab");
+        assert_eq!(leftover, vec![bytes[2]]);
+
+        let (text2, leftover2) = decode_utf8_chunk(leftover, &bytes[3..]);
+        assert_eq!(text2, "你cd");
+        assert!(leftover2.is_empty());
+    }
+
+    #[test]
+    fn decode_emoji_split_across_reads() {
+        // "🦀" = 0xF0 0x9F 0xA6 0x80 (4 bytes)
+        let bytes = "🦀".as_bytes();
+        let (text1, leftover1) = decode_utf8_chunk(Vec::new(), &bytes[..2]);
+        assert_eq!(text1, "");
+        assert_eq!(leftover1, bytes[..2].to_vec());
+
+        let (text2, leftover2) = decode_utf8_chunk(leftover1, &bytes[2..3]);
+        assert_eq!(text2, "");
+        assert_eq!(leftover2, bytes[..3].to_vec());
+
+        let (text3, leftover3) = decode_utf8_chunk(leftover2, &bytes[3..]);
+        assert_eq!(text3, "🦀");
+        assert!(leftover3.is_empty());
+    }
+
+    #[test]
+    fn decode_invalid_bytes_falls_back_to_lossy() {
+        // 0xFF is never valid in UTF-8 — error_len is Some, not None.
+        let (text, leftover) = decode_utf8_chunk(Vec::new(), &[b'a', 0xFF, b'b']);
+        // Lossy decode replaces 0xFF with U+FFFD and consumes the whole buffer.
+        assert!(text.contains('a'));
+        assert!(text.contains('b'));
+        assert!(text.contains('\u{FFFD}'));
+        assert!(leftover.is_empty(), "lossy fallback clears leftover");
+    }
+
+    #[test]
+    fn decode_carries_leftover_from_prior_chunk() {
+        // Caller has already stashed the first byte of "你"; this chunk has the rest.
+        let bytes = "你".as_bytes();
+        let leftover_in = vec![bytes[0]];
+        let (text, leftover_out) = decode_utf8_chunk(leftover_in, &bytes[1..]);
+        assert_eq!(text, "你");
+        assert!(leftover_out.is_empty());
+    }
+}
+
 pub async fn stop_process(process_map: &ProcessMap, run_id: &str) -> bool {
     log::debug!("[stream] stop_process: run_id={}", run_id);
     // Short lock: remove child, then kill+wait outside the lock.
@@ -473,7 +615,7 @@ pub async fn stop_process(process_map: &ProcessMap, run_id: &str) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
+mod stderr_tests {
     use super::is_benign_codex_stderr;
 
     #[test]

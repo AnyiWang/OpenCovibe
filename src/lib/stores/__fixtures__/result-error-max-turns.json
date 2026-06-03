@@ -31,7 +31,7 @@
   {
     "type": "run_state",
     "run_id": "run-err-1",
-    "state": "failed",
+    "state": "idle",
     "error": "Max turns reached",
     "exit_code": null
   }

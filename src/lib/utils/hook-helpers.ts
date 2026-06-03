@@ -36,6 +36,7 @@ export const HOOK_EVENT_TYPES: readonly HookEventType[] = [
   "CwdChanged",
   "FileChanged",
   "PermissionDenied",
+  "MessageDisplay",
 ] satisfies readonly HookEventType[];
 
 export type { HookEventType };

@@ -1040,23 +1040,29 @@ impl ProtocolState {
                                     .collect::<HashMap<_, _>>()
                             });
 
-                    // Recalculate cost using our pricing table for accurate third-party model costs.
-                    // CLI uses its own (often Claude-based) pricing, which is wrong for providers
-                    // like DeepSeek, MiniMax, etc.
+                    // Cost source (#149): trust the CLI's reported cost for native Claude/OpenAI
+                    // — it knows its own pricing (incl. $0 for subscription/Max plans) and stays
+                    // correct across model releases without app updates. Only recalculate when a
+                    // third-party provider is present, since the CLI mis-prices those as Claude.
                     let (cost, model_usage) = if let Some(mut mu) = model_usage {
-                        let mut total = 0.0_f64;
-                        for (model_name, entry) in mu.iter_mut() {
-                            let recalculated = crate::pricing::estimate_cost(
-                                model_name,
-                                entry.input_tokens,
-                                entry.output_tokens,
-                                entry.cache_read_tokens,
-                                entry.cache_write_tokens,
-                            );
-                            entry.cost_usd = recalculated;
-                            total += recalculated;
+                        if mu.keys().any(|m| crate::pricing::is_third_party(m)) {
+                            let mut total = 0.0_f64;
+                            for (model_name, entry) in mu.iter_mut() {
+                                let recalculated = crate::pricing::estimate_cost(
+                                    model_name,
+                                    entry.input_tokens,
+                                    entry.output_tokens,
+                                    entry.cache_read_tokens,
+                                    entry.cache_write_tokens,
+                                );
+                                entry.cost_usd = recalculated;
+                                total += recalculated;
+                            }
+                            (total, Some(mu))
+                        } else {
+                            // Native only — keep the CLI's total_cost_usd and per-model costUSD.
+                            (cost, Some(mu))
                         }
-                        (total, Some(mu))
                     } else {
                         (cost, None)
                     };
@@ -1192,15 +1198,17 @@ impl ProtocolState {
                         subtype,
                         &error_msg[..error_msg.len().min(200)]
                     );
+                    // HC#1: result event = turn complete (→ idle), NOT session end.
+                    // CLI process is still alive; the session can accept another turn.
+                    // The error is surfaced via the `error` field, and finalize_meta on
+                    // EOF reads meta.result_subtype to decide the terminal status.
                     events.push(BusEvent::RunState {
                         run_id: run_id.to_string(),
-                        state: "failed".to_string(),
+                        state: "idle".to_string(),
                         exit_code: None,
                         error: Some(error_msg),
                     });
                 } else {
-                    // "idle" = turn complete, waiting for next user input.
-                    // The actual "completed" state is emitted on process EOF (read_stdout cleanup).
                     events.push(BusEvent::RunState {
                         run_id: run_id.to_string(),
                         state: "idle".to_string(),
@@ -2106,7 +2114,9 @@ mod tests {
             "usage": {"input_tokens": 100, "output_tokens": 50}
         });
         let events = ps.map_event(RUN, &raw);
-        // UsageUpdate + RunState(failed)
+        // UsageUpdate + RunState(idle, error) — HC#1: result event = turn complete (→ idle).
+        // Terminal failed/completed is decided in session_actor::finalize_meta on EOF
+        // using meta.result_subtype.
         assert!(events.len() >= 2);
         let run_state = events
             .iter()
@@ -2114,7 +2124,7 @@ mod tests {
             .unwrap();
         match run_state {
             BusEvent::RunState { state, error, .. } => {
-                assert_eq!(state, "failed");
+                assert_eq!(state, "idle");
                 assert_eq!(error.as_deref(), Some("Max turns reached"));
             }
             _ => unreachable!(),

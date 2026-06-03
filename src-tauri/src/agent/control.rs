@@ -297,7 +297,7 @@ pub fn fallback_cli_info() -> CliInfo {
             CliModelInfo {
                 value: "opus".to_string(),
                 display_name: "Opus".to_string(),
-                description: "Opus 4.7".to_string(),
+                description: "Opus 4.8".to_string(),
                 supports_effort: Some(true),
                 supported_effort_levels: Some(vec![
                     "low".into(),

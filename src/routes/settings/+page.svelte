@@ -17,9 +17,11 @@
   import Button from "$lib/components/Button.svelte";
   import Input from "$lib/components/Input.svelte";
   import KeybindingEditor from "$lib/components/KeybindingEditor.svelte";
+  import ProviderIcon from "$lib/components/ProviderIcon.svelte";
   import { formatKeyDisplay } from "$lib/stores/keybindings.svelte";
   import {
     PLATFORM_PRESETS,
+    PRESET_CATEGORIES,
     buildPlatformList,
     isCustomPlatform,
     findCredential,
@@ -117,6 +119,22 @@
 
   // Derive merged platform list (static presets + dynamic custom endpoints)
   let platformList = $derived(buildPlatformList(platformCredentials));
+
+  // Group platforms by category for the grid; sort alphabetically within each group,
+  // but pin Anthropic first (official default) in the provider group.
+  let groupedPlatforms = $derived.by(() => {
+    const groups: { id: string; label: string; items: PlatformPreset[] }[] = [];
+    for (const cat of PRESET_CATEGORIES) {
+      const items = platformList.filter((p) => p.id !== "custom" && p.category === cat.id);
+      const sorted = [...items].sort((a, b) => a.name.localeCompare(b.name));
+      if (cat.id === "provider") {
+        const idx = sorted.findIndex((p) => p.id === "anthropic");
+        if (idx > 0) sorted.unshift(sorted.splice(idx, 1)[0]);
+      }
+      groups.push({ id: cat.id, label: cat.label, items: sorted });
+    }
+    return groups;
+  });
 
   // Derive selected platform from id (search merged list, not just static presets)
   let selectedPlatform = $derived<PlatformPreset | null>(
@@ -2440,81 +2458,93 @@
                 >
                 <!-- Platform grid (always visible) -->
                 <div class="grid grid-cols-4 gap-1.5">
-                  {#each platformList.filter((p) => p.id !== "custom") as preset}
-                    <button
-                      class="flex flex-col gap-0 rounded-md p-2 text-left transition-colors relative group
-                      {selectedPlatformId === preset.id
-                        ? 'bg-primary/10 ring-1 ring-primary'
-                        : 'bg-muted/40 hover:bg-muted/70'}"
-                      onclick={() => applyPlatformPreset(preset)}
+                  {#each groupedPlatforms as group}
+                    <div
+                      class="col-span-4 px-1 pt-2 pb-0.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/60"
                     >
-                      <span class="text-xs font-medium truncate">{preset.name}</span>
-                      <span class="text-[10px] text-muted-foreground truncate"
-                        >{preset.description}</span
+                      {group.label}
+                    </div>
+                    {#each group.items as preset}
+                      <button
+                        class="flex items-center gap-2 rounded-md p-2 text-left transition-colors relative group
+                      {selectedPlatformId === preset.id
+                          ? 'bg-primary/10 ring-1 ring-primary'
+                          : 'bg-muted/40 hover:bg-muted/70'}"
+                        onclick={() => applyPlatformPreset(preset)}
                       >
-                      {#if isCustomPlatform(preset.id)}
-                        <span
-                          role="button"
-                          tabindex="0"
-                          class="absolute top-1 right-1 opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive transition-all p-0.5 cursor-pointer"
-                          onclick={(e: MouseEvent) => {
-                            e.stopPropagation();
-                            deleteCustomEndpoint(preset.id);
-                          }}
-                          onkeydown={(e: KeyboardEvent) => {
-                            if (e.key === "Enter" || e.key === " ") {
-                              e.stopPropagation();
-                              deleteCustomEndpoint(preset.id);
-                            }
-                          }}
-                          title={t("settings_general_deleteCustom")}
-                        >
-                          <svg
-                            class="h-3 w-3"
-                            viewBox="0 0 24 24"
-                            fill="none"
-                            stroke="currentColor"
-                            stroke-width="2"><path d="M18 6 6 18" /><path d="m6 6 12 12" /></svg
+                        <ProviderIcon id={preset.id} name={preset.name} />
+                        <span class="flex flex-col min-w-0 flex-1">
+                          <span class="text-xs font-medium truncate">{preset.name}</span>
+                          <span class="text-[10px] text-muted-foreground truncate"
+                            >{preset.description}</span
                           >
                         </span>
-                      {/if}
-                      {#if preset.category === "local"}
-                        {@const ps = localProxyStatuses[preset.id]}
-                        <span
-                          class="absolute bottom-1 right-1 h-1.5 w-1.5 rounded-full {ps?.running &&
-                          !ps.needsAuth
-                            ? 'bg-green-500'
-                            : ps?.running && ps.needsAuth
-                              ? 'bg-amber-500'
-                              : 'bg-muted-foreground/30'}"
-                          title={ps?.running && !ps.needsAuth
-                            ? t("settings_local_running")
-                            : ps?.running && ps.needsAuth
-                              ? t("settings_local_needsAuth")
-                              : t("settings_local_notDetected")}
-                        ></span>
-                      {:else if findCredential(platformCredentials, preset.id)?.api_key}
-                        <span
-                          class="absolute bottom-1 right-1 h-1.5 w-1.5 rounded-full bg-green-500"
-                          title="Key saved"
-                        ></span>
-                      {/if}
-                    </button>
+                        {#if isCustomPlatform(preset.id)}
+                          <span
+                            role="button"
+                            tabindex="0"
+                            class="absolute top-1 right-1 opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive transition-all p-0.5 cursor-pointer"
+                            onclick={(e: MouseEvent) => {
+                              e.stopPropagation();
+                              deleteCustomEndpoint(preset.id);
+                            }}
+                            onkeydown={(e: KeyboardEvent) => {
+                              if (e.key === "Enter" || e.key === " ") {
+                                e.stopPropagation();
+                                deleteCustomEndpoint(preset.id);
+                              }
+                            }}
+                            title={t("settings_general_deleteCustom")}
+                          >
+                            <svg
+                              class="h-3 w-3"
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              stroke="currentColor"
+                              stroke-width="2"><path d="M18 6 6 18" /><path d="m6 6 12 12" /></svg
+                            >
+                          </span>
+                        {/if}
+                        {#if preset.category === "local"}
+                          {@const ps = localProxyStatuses[preset.id]}
+                          <span
+                            class="absolute bottom-1 right-1 h-1.5 w-1.5 rounded-full {ps?.running &&
+                            !ps.needsAuth
+                              ? 'bg-green-500'
+                              : ps?.running && ps.needsAuth
+                                ? 'bg-amber-500'
+                                : 'bg-muted-foreground/30'}"
+                            title={ps?.running && !ps.needsAuth
+                              ? t("settings_local_running")
+                              : ps?.running && ps.needsAuth
+                                ? t("settings_local_needsAuth")
+                                : t("settings_local_notDetected")}
+                          ></span>
+                        {:else if findCredential(platformCredentials, preset.id)?.api_key}
+                          <span
+                            class="absolute bottom-1 right-1 h-1.5 w-1.5 rounded-full bg-green-500"
+                            title="Key saved"
+                          ></span>
+                        {/if}
+                      </button>
+                    {/each}
+                    {#if group.id === "custom"}
+                      <!-- Add Custom -->
+                      <button
+                        class="flex flex-col items-center justify-center gap-1 rounded-md border border-dashed border-muted-foreground/30 p-2 text-muted-foreground hover:border-primary/50 hover:text-foreground hover:bg-muted/40 transition-colors"
+                        onclick={() => addCustomEndpoint()}
+                      >
+                        <svg
+                          class="h-4 w-4"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2"><path d="M12 5v14" /><path d="M5 12h14" /></svg
+                        >
+                        <span class="text-[10px]">{t("settings_general_addCustom")}</span>
+                      </button>
+                    {/if}
                   {/each}
-                  <!-- Add Custom -->
-                  <button
-                    class="flex flex-col items-center justify-center gap-1 rounded-md border border-dashed border-muted-foreground/30 p-2 text-muted-foreground hover:border-primary/50 hover:text-foreground hover:bg-muted/40 transition-colors"
-                    onclick={() => addCustomEndpoint()}
-                  >
-                    <svg
-                      class="h-4 w-4"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      stroke-width="2"><path d="M12 5v14" /><path d="M5 12h14" /></svg
-                    >
-                    <span class="text-[10px]">{t("settings_general_addCustom")}</span>
-                  </button>
                 </div>
               </div>
 

@@ -600,4 +600,56 @@ describe("EventMiddleware", () => {
       expect(mockTransport.unsubscribeRun).toHaveBeenCalledWith("run-1");
     });
   });
+
+  // ── Idle-aware flush ──
+  //
+  // Under fake timers: performance.now() starts at 0 and advances with
+  // advanceTimersByTime; requestAnimationFrame is undefined, so the
+  // non-idle branch falls through to setTimeout(_BATCH_INTERVAL).
+  describe("idle-aware flush", () => {
+    it("flushes the first token after an idle gap via microtask (no timer wait)", async () => {
+      await mw.start();
+      const store = mockStore();
+      mw.subscribeCurrent("run-1", store as any);
+
+      // Prime: flush an initial event so _lastFlushTime is recorded.
+      fireBusEvent(makeBusEvent("run-1", "message_complete", { message_id: "m0", text: "a" }));
+      vi.advanceTimersByTime(16);
+      expect(store.applyEvent).toHaveBeenCalledTimes(1);
+
+      // Idle for >_IDLE_GAP_MS, then a new burst arrives.
+      vi.advanceTimersByTime(150);
+      fireBusEvent(makeBusEvent("run-1", "message_complete", { message_id: "m1", text: "b" }));
+
+      // Microtask path: resolves without advancing timers (no rAF/setTimeout wait).
+      await Promise.resolve();
+      expect(store.applyEvent).toHaveBeenCalledTimes(2);
+    });
+
+    it("batches consecutive tokens within the idle gap (timer path, not microtask)", async () => {
+      await mw.start();
+      const store = mockStore();
+      mw.subscribeCurrent("run-1", store as any);
+
+      // Prime a flush to set _lastFlushTime.
+      fireBusEvent(makeBusEvent("run-1", "message_complete", { message_id: "m0", text: "a" }));
+      vi.advanceTimersByTime(16);
+      store.applyEvent.mockClear();
+      store.applyEventBatch.mockClear();
+
+      // Two tokens arrive <_IDLE_GAP_MS after the last flush → non-idle branch.
+      vi.advanceTimersByTime(10);
+      fireBusEvent(makeBusEvent("run-1", "message_complete", { message_id: "m1", text: "b" }));
+      fireBusEvent(makeBusEvent("run-1", "message_complete", { message_id: "m2", text: "c" }));
+
+      // Microtask alone must NOT flush (proves it took the timer path).
+      await Promise.resolve();
+      expect(store.applyEvent).not.toHaveBeenCalled();
+      expect(store.applyEventBatch).not.toHaveBeenCalled();
+
+      // Timer fires → batched flush.
+      vi.advanceTimersByTime(16);
+      expect(store.applyEventBatch).toHaveBeenCalledTimes(1);
+    });
+  });
 });

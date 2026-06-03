@@ -166,7 +166,7 @@
       const abs = basePath.replace(/\\/g, "/") + "/" + src.replace(/\\/g, "/");
       dbg("markdown", "resolve-img", { src, abs });
 
-      readFileBase64(abs)
+      readFileBase64(abs, basePath)
         .then(([base64, mime]) => {
           img.src = `data:${mime};base64,${base64}`;
         })

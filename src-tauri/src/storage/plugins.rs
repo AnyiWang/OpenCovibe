@@ -255,12 +255,16 @@ fn visit_md_stems(dir: &Path, prefix: &str, depth: usize, visit: &mut dyn FnMut(
 
     for entry in entries.flatten() {
         let path = entry.path();
-        // Use the entry's file_type to avoid following symlinks into cycles.
-        let file_type = match entry.file_type() {
-            Ok(t) => t,
-            Err(_) => continue,
+        // Resolve metadata via the path (which follows symlinks) rather than
+        // entry.file_type() or entry.metadata() (both report symlink-itself).
+        // Users commonly symlink shared .md files or whole subdirectories from
+        // a dotfiles repo into ~/.claude/commands/ — those must surface in the
+        // slash menu. Cycles are bounded by MAX_COMMAND_DEPTH.
+        let metadata = match std::fs::metadata(&path) {
+            Ok(m) => m,
+            Err(_) => continue, // broken symlink or unreadable — skip silently
         };
-        if file_type.is_dir() {
+        if metadata.is_dir() {
             if let Some(dir_name) = path.file_name().and_then(|n| n.to_str()) {
                 let new_prefix = if prefix.is_empty() {
                     dir_name.to_string()
@@ -269,7 +273,7 @@ fn visit_md_stems(dir: &Path, prefix: &str, depth: usize, visit: &mut dyn FnMut(
                 };
                 visit_md_stems(&path, &new_prefix, depth + 1, visit);
             }
-        } else if file_type.is_file() && path.extension().map(|ext| ext == "md").unwrap_or(false) {
+        } else if metadata.is_file() && path.extension().map(|ext| ext == "md").unwrap_or(false) {
             if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
                 let command_name = if prefix.is_empty() {
                     stem.to_string()
@@ -2832,6 +2836,75 @@ mod tests {
         assert_eq!(commands[0].name, "opsx:apply");
         assert_eq!(commands[0].description, "Apply an opsx change");
         assert!(seen.contains("opsx:apply"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn list_md_stems_follows_symlinked_file() {
+        use std::os::unix::fs::symlink;
+        // A common pattern: shared command files in a dotfiles repo, symlinked
+        // into ~/.claude/commands/ so they show up in the slash menu.
+        let real_dir = tempdir().unwrap();
+        let link_dir = tempdir().unwrap();
+        let target = real_dir.path().join("review.md");
+        fs::write(&target, "---\nname: review\n---").unwrap();
+        symlink(&target, link_dir.path().join("review.md")).unwrap();
+
+        let stems = list_md_stems(link_dir.path());
+        let names = names(&stems);
+        assert_eq!(stems.len(), 1, "symlinked .md must be discovered");
+        assert!(names.contains(&"review"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn list_md_stems_follows_symlinked_dir() {
+        use std::os::unix::fs::symlink;
+        // Whole-directory symlink (e.g. `commands/team -> ~/dotfiles/team-commands/`).
+        // Nested entries must surface with the symlink name as the prefix.
+        let real_dir = tempdir().unwrap();
+        let link_dir = tempdir().unwrap();
+        fs::create_dir_all(real_dir.path().join("nested")).unwrap();
+        fs::write(real_dir.path().join("nested").join("apply.md"), "x").unwrap();
+        fs::write(real_dir.path().join("plain.md"), "x").unwrap();
+
+        symlink(real_dir.path(), link_dir.path().join("team")).unwrap();
+
+        let stems = list_md_stems(link_dir.path());
+        let names = names(&stems);
+        assert!(
+            names.contains(&"team:plain"),
+            "flat .md under symlinked dir missing; got: {:?}",
+            names
+        );
+        assert!(
+            names.contains(&"team:nested:apply"),
+            "nested .md under symlinked dir missing; got: {:?}",
+            names
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn list_md_stems_terminates_on_symlink_cycle() {
+        use std::os::unix::fs::symlink;
+        // a/loop -> .. (creates a cycle a/loop/loop/loop/...). MAX_COMMAND_DEPTH
+        // must bound the recursion regardless of follow-symlinks behaviour.
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("a")).unwrap();
+        fs::write(dir.path().join("a").join("real.md"), "x").unwrap();
+        symlink(dir.path().join("a"), dir.path().join("a").join("loop")).unwrap();
+
+        // Should return without hanging. We don't assert an exact count — the
+        // depth cap may duplicate the real.md entry along each loop level — but
+        // we DO require at least one occurrence of "a:real" or "real".
+        let stems = list_md_stems(dir.path());
+        let names = names(&stems);
+        assert!(
+            names.iter().any(|n| n.ends_with("real") || *n == "real"),
+            "expected real.md to appear despite the cycle; got: {:?}",
+            names
+        );
     }
 
     #[test]

@@ -28,6 +28,7 @@
     getQuickActions,
     classifyCloseReason,
     groupSlashCommands,
+    extractSlashQuery,
     VIRTUAL_COMMANDS,
   } from "$lib/utils/slash-commands";
   import type { SlashCommandGroups } from "$lib/utils/slash-commands";
@@ -393,14 +394,16 @@
   let slashBtnEl: HTMLButtonElement | undefined = $state();
   let savedInputForSlash = $state("");
 
+  // ── Chinese IME support ──
+  let isComposing = $state(false);
+
   let allCommands = $derived(mergeWithVirtual(cliCommands ?? [], agent));
   let quickActions = $derived(getQuickActions(allCommands, agent));
   let skillNameSet = $derived(new Set(availableSkills));
 
   let slashQuery = $derived.by(() => {
     if (!slashMenuOpen || slashPhase !== "commands") return null;
-    const m = inputText.match(/^\/([a-zA-Z0-9_-]*)$/);
-    return m?.[1] ?? "";
+    return extractSlashQuery(inputText) ?? "";
   });
 
   let filteredCommands = $derived.by(() => {
@@ -611,6 +614,8 @@
     const interaction = getCommandInteraction(cmd);
     dbg("slash", `select:${interaction}:${trigger}`, { name: cmd.name });
 
+    // Both / and 、 triggers normalize to / when filling inputText below,
+    // so the backend always sees the standard slash form.
     switch (interaction) {
       case "immediate":
         if (trigger === "enter") {
@@ -751,14 +756,31 @@
     onSend(`/${cmd.name}`, []);
   }
 
+  // ── IME composition event handlers ──
+  function handleCompositionStart() {
+    isComposing = true;
+  }
+
+  function handleCompositionEnd() {
+    isComposing = false;
+    // Re-check input after IME completes (e.g., the dun trigger char "、")
+    handleInput();
+  }
+
   function handleInput() {
     autoResize();
 
-    // Exit history mode if user edits the recalled text
+    // Exit history mode if user edits the recalled text — runs regardless of IME
     if (histState.index >= 0 && inputText !== userHistory[histState.index]) {
       dbg("prompt-history", "exit: user edited", { index: histState.index });
       resetHistory(histState);
     }
+
+    // Skip menu detection (slash menu + @-mention menu) during IME composition
+    // to avoid flicker. History exit above runs regardless — only menu logic is
+    // deferred. Intentional: menus update once after composition completes
+    // (e.g., pinyin → 你好), not on every intermediate pinyin keystroke.
+    if (isComposing) return;
 
     // @-mention detection: runs BEFORE slashEnabled guard so it works pre-session
     const cursorPos = textareaEl?.selectionStart ?? inputText.length;
@@ -777,12 +799,12 @@
       return;
     }
 
-    // Commands phase
-    const match = inputText.match(/^\/([a-zA-Z0-9_-]*)$/);
-    if (match) {
+    // Commands phase: support both slash (/) and Chinese dun (、) triggers
+    const query = extractSlashQuery(inputText);
+    if (query !== null) {
       slashSelectedIndex = 0;
       if (!slashMenuOpen) {
-        dbg("slash", "open", { query: match[1] });
+        dbg("slash", "open", { query });
         if (modeDropdownOpen) modeDropdownOpen = false;
         slashMenuOpen = true;
         slashPhase = "commands";
@@ -1991,6 +2013,8 @@
       onkeydown={handleKeydown}
       oninput={handleInput}
       onpaste={handlePaste}
+      oncompositionstart={handleCompositionStart}
+      oncompositionend={handleCompositionEnd}
       placeholder={effectivePlaceholder}
       rows={1}
       {disabled}

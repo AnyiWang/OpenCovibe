@@ -7,6 +7,7 @@ import { dbg } from "$lib/utils/debug";
 const KNOWN_COMMAND_DESCRIPTIONS: Record<string, string> = {
   agents: "Manage agent configurations",
   clear: "Clear conversation history and free up context",
+  "code-review": "Review code quality (optional effort level: low|medium|high)",
   color: "Set the prompt bar color for this session",
   compact: "Clear conversation history but keep a summary in context",
   config: "Open config panel",
@@ -34,16 +35,19 @@ const KNOWN_COMMAND_DESCRIPTIONS: Record<string, string> = {
   plan: "Enable plan mode or view the current session plan",
   "pr-comments": "View pull request comments",
   "release-notes": "View release notes",
+  "reload-skills": "Re-scan skill directories without restarting the session",
   rename: "Rename the current conversation",
   resume: "Resume a previous conversation",
   review: "Review a pull request",
   "security-review": "Review code for security issues",
+  simplify: "Review code for cleanup (reuse, simplification, efficiency) and apply fixes",
   skills: "List available skills",
   status: "Show Claude Code status and version info",
   theme: "Change the theme",
   tasks: "List background tasks in this session",
   todos: "List current todo items",
   usage: "Show plan usage limits",
+  "usage-credits": "Show usage credits balance and history",
   vim: "Toggle between Vim and Normal editing modes",
   "add-dir": "Add a directory to the workspace",
   btw: "Ask a side question without interrupting the current task",
@@ -627,6 +631,16 @@ export function isSubViewInputValid(inputText: string, activeCmdName: string): b
   return pattern.test(inputText);
 }
 
+/**
+ * Extract the slash-command query from input text.
+ * Supports both ASCII slash (/) and Chinese dun (、) as trigger prefixes.
+ * Returns the query (text after trigger), or null if input doesn't start with a trigger.
+ */
+export function extractSlashQuery(inputText: string): string | null {
+  const m = inputText.match(/^([/、])([a-zA-Z0-9_-]*)$/);
+  return m ? m[2] : null;
+}
+
 // ── Quick action pills (L3) ──
 
 /** Ordered list of command names shown as quick-action pills above the action bar. */
@@ -692,6 +706,8 @@ const COMMAND_CATEGORY_MAP: Record<string, SlashCategory> = {
   diff: "coding",
   review: "coding",
   "security-review": "coding",
+  "code-review": "coding",
+  simplify: "coding",
   plan: "coding",
   init: "coding",
   "pr-comments": "coding",
@@ -716,6 +732,7 @@ const COMMAND_CATEGORY_MAP: Record<string, SlashCategory> = {
   plugin: "config",
   ide: "config",
   "add-dir": "config",
+  "reload-skills": "config",
   // Coding (continued)
   "team-onboarding": "coding",
   // Help
@@ -724,6 +741,7 @@ const COMMAND_CATEGORY_MAP: Record<string, SlashCategory> = {
   insights: "help",
   stats: "help",
   usage: "help",
+  "usage-credits": "help",
   skills: "help",
   bug: "help",
   login: "help",

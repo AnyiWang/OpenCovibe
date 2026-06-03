@@ -974,7 +974,9 @@ impl SessionActor {
     }
 
     /// Ralph state transition on turn end. Uses action-first pattern to avoid borrow conflicts.
-    fn ralph_on_turn_end(&mut self, turn: &ActiveTurn, state: &str) {
+    /// `turn_failed`: caller's classification of the just-ended turn (true for error results
+    /// or process-level failures, false for clean idle).
+    fn ralph_on_turn_end(&mut self, turn: &ActiveTurn, turn_failed: bool) {
         if self.ralph_loop.is_none() {
             return;
         }
@@ -995,7 +997,7 @@ impl SessionActor {
                 TurnOrigin::Ralph => {
                     let is_cancel_pending = ralph.phase == RalphPhase::CancelPending;
 
-                    if state == "failed" {
+                    if turn_failed {
                         if is_cancel_pending {
                             RalphAction::Complete(RalphCompleteReason::Cancelled)
                         } else {
@@ -2034,30 +2036,51 @@ impl SessionActor {
                     error,
                     ..
                 } => {
-                    // Handle interrupt: CLI emits result(error) but session is alive.
+                    // HC#1: parser emits idle on both success and error result events
+                    // (CLI is still alive). On user interrupt, the result is just the
+                    // cancel ack — suppress error and clear protocol error tracking so
+                    // finalize_meta on EOF does not mark the run as Failed.
                     let (emit_state, emit_error) =
                         if self.pending_interrupt && (state == "idle" || state == "failed") {
                             self.pending_interrupt = false;
-                            if state == "failed" {
-                                self.protocol.got_result_event = false;
-                                self.protocol.result_subtype = None;
-                                log::debug!("[actor] interrupt result → converted failed to idle");
-                                (String::from("idle"), None)
-                            } else {
-                                (state.clone(), error.clone())
-                            }
+                            self.protocol.got_result_event = false;
+                            self.protocol.result_subtype = None;
+                            log::debug!("[actor] interrupt result → idle, error tracking cleared");
+                            (String::from("idle"), None)
                         } else {
                             (state.clone(), error.clone())
                         };
 
                     self.emit_state(&emit_state, *exit_code, emit_error.clone(), false);
 
-                    // Persist idle status to meta (uses normalized emit_state, not raw state)
                     if emit_state == "idle" {
                         self.persist_idle_running(RunStatus::Idle);
+                        // If the result event indicated an error, persist subtype+message
+                        // to meta so finalize_meta on EOF can mark the run Failed.
+                        let had_result_error = self
+                            .protocol
+                            .result_subtype
+                            .as_deref()
+                            .map(|s| s.starts_with("error"))
+                            .unwrap_or(false);
+                        if had_result_error {
+                            log::debug!(
+                                "[actor] persisting idle-with-error: subtype={:?}, error={:?}",
+                                self.protocol.result_subtype,
+                                emit_error
+                            );
+                            if let Err(e) = storage::runs::persist_result_error(
+                                &self.run_id,
+                                emit_error.clone(),
+                                self.protocol.result_subtype.clone(),
+                            ) {
+                                log::warn!("[actor] failed to persist result error: {}", e);
+                            }
+                        }
                     }
 
-                    // Persist result error on failed
+                    // Defensive: handle_eof emits failed directly (not via process_event),
+                    // but keep this branch in case any other emitter routes failed here.
                     if emit_state == "failed" {
                         log::debug!(
                             "[actor] persisting result error: subtype={:?}, error={:?}",
@@ -2066,7 +2089,7 @@ impl SessionActor {
                         );
                         if let Err(e) = storage::runs::persist_result_error(
                             &self.run_id,
-                            emit_error,
+                            emit_error.clone(),
                             self.protocol.result_subtype.clone(),
                         ) {
                             log::warn!("[actor] failed to persist result error: {}", e);
@@ -2082,8 +2105,13 @@ impl SessionActor {
                         self.active_extractor = None;
                         self.protocol.set_pending_slash_command(None);
 
-                        // Ralph loop: state transition on turn end
-                        self.ralph_on_turn_end(&turn, &emit_state);
+                        // Ralph loop: classify turn outcome.
+                        // emit_state is now "idle" on both success and error result events,
+                        // so use the presence of emit_error (cleared above on interrupt) to
+                        // distinguish a failed turn from a successful one.
+                        let turn_failed = emit_state == "failed"
+                            || (emit_state == "idle" && emit_error.is_some());
+                        self.ralph_on_turn_end(&turn, turn_failed);
 
                         self.try_dispatch().await;
                     }
@@ -2685,6 +2713,14 @@ impl SessionActor {
                         e
                     );
                 }
+                // Also reset the in-mem error tracking. The parser sets result_subtype
+                // only on error results and never clears it on success (see claude_protocol
+                // test "success doesn't set got_result_event"). Without this, a stale error
+                // subtype from an earlier turn survives into a later successful turn and
+                // gets re-persisted at that turn's idle (had_result_error), making
+                // finalize_meta on EOF wrongly mark a 0-exit run as Failed. Mirrors the
+                // meta clear above and the interrupt path's reset.
+                self.protocol.result_subtype = None;
             }
 
             // Persist result error details on failed

@@ -58,11 +58,20 @@ jobs:
           $zipName = [System.IO.Path]::ChangeExtension($exe.Name, ".zip")
           Compress-Archive -Path $exe.FullName -DestinationPath "$exeDir/$zipName"
 
-      - name: Upload artifacts
+      - name: Upload NSIS/DMG artifacts
         uses: actions/upload-artifact@v4
         with:
           name: release-${{ matrix.target }}
           path: ${{ matrix.asset_glob }}
+          if-no-files-found: error
+
+      # MSI is already produced by bundle.targets="all"; the build step just never collected it.
+      - name: Upload MSI artifact
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.target }}-msi
+          path: src-tauri/target/${{ matrix.target }}/release/bundle/msi/*.msi
           if-no-files-found: error
 
   publish:

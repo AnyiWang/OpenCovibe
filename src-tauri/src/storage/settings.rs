@@ -73,7 +73,11 @@ fn known_provider_defaults(pid: &str) -> Option<ProviderDefaults> {
     match pid {
         "deepseek" => Some(ProviderDefaults {
             base_url: Some("https://api.deepseek.com/anthropic"),
-            models: Some(vec!["deepseek-v4-pro".to_string()]),
+            // 2 models → [opus+sonnet]=v4-pro[1m], [haiku]=v4-flash (per official CC guide)
+            models: Some(vec![
+                "deepseek-v4-pro[1m]".to_string(),
+                "deepseek-v4-flash".to_string(),
+            ]),
             extra_env: Some(HashMap::from([(
                 "API_TIMEOUT_MS".to_string(),
                 "600000".to_string(),
@@ -90,19 +94,25 @@ fn known_provider_defaults(pid: &str) -> Option<ProviderDefaults> {
         }),
         "kimi-coding" => Some(ProviderDefaults {
             base_url: Some("https://api.kimi.com/coding/"),
-            models: Some(vec!["kimi-for-coding".to_string()]),
+            // No model override — Kimi Coding routes server-side regardless of ANTHROPIC_MODEL
+            models: None,
             extra_env: None,
             key_optional: false,
-            auth_env_var: None,
+            // Official docs use ANTHROPIC_API_KEY (x-api-key), not Bearer token
+            auth_env_var: Some("ANTHROPIC_API_KEY"),
         }),
         "zhipu" => Some(ProviderDefaults {
             base_url: Some("https://open.bigmodel.cn/api/anthropic"),
+            // Tier map per z.ai/bigmodel docs: opus=glm-5.1, sonnet=glm-5-turbo, haiku=glm-4.5-air
             models: Some(vec![
                 "glm-5.1".to_string(),
-                "glm-5".to_string(),
-                "glm-4.7".to_string(),
+                "glm-5-turbo".to_string(),
+                "glm-4.5-air".to_string(),
             ]),
-            extra_env: None,
+            extra_env: Some(HashMap::from([(
+                "API_TIMEOUT_MS".to_string(),
+                "3000000".to_string(),
+            )])),
             key_optional: false,
             auth_env_var: None,
         }),
@@ -110,10 +120,13 @@ fn known_provider_defaults(pid: &str) -> Option<ProviderDefaults> {
             base_url: Some("https://api.z.ai/api/anthropic"),
             models: Some(vec![
                 "glm-5.1".to_string(),
-                "glm-5".to_string(),
-                "glm-4.7".to_string(),
+                "glm-5-turbo".to_string(),
+                "glm-4.5-air".to_string(),
             ]),
-            extra_env: None,
+            extra_env: Some(HashMap::from([(
+                "API_TIMEOUT_MS".to_string(),
+                "3000000".to_string(),
+            )])),
             key_optional: false,
             auth_env_var: None,
         }),
@@ -146,15 +159,21 @@ fn known_provider_defaults(pid: &str) -> Option<ProviderDefaults> {
         }),
         "minimax" => Some(ProviderDefaults {
             base_url: Some("https://api.minimax.io/anthropic"),
-            models: Some(vec!["MiniMax-M2.7".to_string()]),
-            extra_env: None,
+            models: Some(vec!["MiniMax-M3".to_string()]),
+            extra_env: Some(HashMap::from([(
+                "API_TIMEOUT_MS".to_string(),
+                "3000000".to_string(),
+            )])),
             key_optional: false,
             auth_env_var: None,
         }),
         "minimax-cn" => Some(ProviderDefaults {
             base_url: Some("https://api.minimaxi.com/anthropic"),
-            models: Some(vec!["MiniMax-M2.7".to_string()]),
-            extra_env: None,
+            models: Some(vec!["MiniMax-M3".to_string()]),
+            extra_env: Some(HashMap::from([(
+                "API_TIMEOUT_MS".to_string(),
+                "3000000".to_string(),
+            )])),
             key_optional: false,
             auth_env_var: None,
         }),
@@ -177,7 +196,8 @@ fn known_provider_defaults(pid: &str) -> Option<ProviderDefaults> {
             models: None,
             extra_env: None,
             key_optional: false,
-            auth_env_var: None,
+            // Official docs use ANTHROPIC_API_KEY (x-api-key), not Bearer token
+            auth_env_var: Some("ANTHROPIC_API_KEY"),
         }),
         "hunyuan" => Some(ProviderDefaults {
             base_url: Some("https://api.hunyuan.cloud.tencent.com/anthropic"),
@@ -185,6 +205,39 @@ fn known_provider_defaults(pid: &str) -> Option<ProviderDefaults> {
                 "hunyuan-2.0-thinking-20251109".to_string(),
                 "hunyuan-2.0-instruct-20251111".to_string(),
             ]),
+            extra_env: None,
+            key_optional: false,
+            auth_env_var: None,
+        }),
+        "stepfun" => Some(ProviderDefaults {
+            base_url: Some("https://api.stepfun.ai/step_plan"),
+            models: Some(vec!["step-3.7-flash".to_string()]),
+            extra_env: None,
+            key_optional: false,
+            auth_env_var: None,
+        }),
+        "longcat" => Some(ProviderDefaults {
+            base_url: Some("https://api.longcat.chat/anthropic"),
+            models: Some(vec!["LongCat-2.0-Preview".to_string()]),
+            extra_env: None,
+            key_optional: false,
+            auth_env_var: None,
+        }),
+        "iflytek" => Some(ProviderDefaults {
+            base_url: Some("https://maas-coding-api.cn-huabei-1.xf-yun.com/anthropic"),
+            models: Some(vec!["astron-code-latest".to_string()]),
+            extra_env: Some(HashMap::from([(
+                "API_TIMEOUT_MS".to_string(),
+                "600000".to_string(),
+            )])),
+            key_optional: false,
+            auth_env_var: None,
+        }),
+        "tencent-coding" => Some(ProviderDefaults {
+            // Tencent TokenHub Coding Plan — distinct from `hunyuan` (PAYG). Serves multiple
+            // models (e.g. glm-5); no fixed default, user picks via ANTHROPIC_MODEL.
+            base_url: Some("https://api.lkeap.cloud.tencent.com/coding/anthropic"),
+            models: None,
             extra_env: None,
             key_optional: false,
             auth_env_var: None,
@@ -215,6 +268,39 @@ fn known_provider_defaults(pid: &str) -> Option<ProviderDefaults> {
         }),
         "vercel" => Some(ProviderDefaults {
             base_url: Some("https://ai-gateway.vercel.sh"),
+            models: None,
+            extra_env: None,
+            key_optional: false,
+            auth_env_var: None,
+        }),
+        "requesty" => Some(ProviderDefaults {
+            // Model uses provider/model-name format (e.g. anthropic/claude-sonnet-4-5) — user picks
+            base_url: Some("https://router.requesty.ai"),
+            models: None,
+            extra_env: None,
+            key_optional: false,
+            auth_env_var: None,
+        }),
+        "fireworks" => Some(ProviderDefaults {
+            // Base ends at /inference — SDK appends /v1/messages. Model uses
+            // accounts/fireworks/models/<name> format, so no fixed default.
+            base_url: Some("https://api.fireworks.ai/inference"),
+            models: None,
+            extra_env: None,
+            key_optional: false,
+            auth_env_var: None,
+        }),
+        "deepinfra" => Some(ProviderDefaults {
+            // Hosts OSS models via Anthropic protocol — model uses org/name format
+            // (e.g. deepseek-ai/DeepSeek-V3.1-Terminus), so no fixed default.
+            base_url: Some("https://api.deepinfra.com/anthropic"),
+            models: None,
+            extra_env: None,
+            key_optional: false,
+            auth_env_var: None,
+        }),
+        "novita" => Some(ProviderDefaults {
+            base_url: Some("https://api.novita.ai/anthropic"),
             models: None,
             extra_env: None,
             key_optional: false,
@@ -261,8 +347,10 @@ fn migrate_platform_credentials(settings: &mut AllSettings) -> bool {
         ("minimax-cn", "ANTHROPIC_AUTH_TOKEN"),
         ("mimo", "ANTHROPIC_AUTH_TOKEN"),
         ("bailian", "ANTHROPIC_AUTH_TOKEN"),
-        ("kimi-coding", "ANTHROPIC_AUTH_TOKEN"),
         ("aihubmix", "ANTHROPIC_AUTH_TOKEN"),
+        // These two use x-api-key per official docs — migrate stale AUTH_TOKEN creds to API_KEY
+        ("kimi-coding", "ANTHROPIC_API_KEY"),
+        ("siliconflow", "ANTHROPIC_API_KEY"),
     ];
     let mut changed = false;
 
@@ -376,26 +464,68 @@ fn migrate_platform_credentials(settings: &mut AllSettings) -> bool {
     changed
 }
 
-pub fn save(settings: &AllSettings) -> Result<(), String> {
-    log::debug!("[storage/settings] saving settings");
-    let path = settings_path();
-    super::ensure_dir(path.parent().unwrap()).map_err(|e| e.to_string())?;
-    let json = serde_json::to_string_pretty(settings).map_err(|e| e.to_string())?;
-    fs::write(&path, &json).map_err(|e| e.to_string())?;
+/// Atomic JSON-to-file write with 0600 perms. Mirrors storage::runs::save_meta:
+/// write to a unique tmp file, lock perms, rename. Used by save() to avoid
+/// leaving settings.json truncated on crash (API keys must not be lost).
+fn write_atomic_0600(path: &std::path::Path, json: &str) -> Result<(), String> {
+    let dir = path
+        .parent()
+        .ok_or_else(|| "path has no parent".to_string())?;
+    let file_name = path
+        .file_name()
+        .and_then(|f| f.to_str())
+        .ok_or_else(|| "path has no filename".to_string())?;
+    let tmp = dir.join(format!(
+        "{}.{}.{}.tmp",
+        file_name,
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    fs::write(&tmp, json).map_err(|e| format!("write tmp: {e}"))?;
 
-    // Restrict file permissions — settings may contain API keys
+    // Restrict perms on the tmp file BEFORE rename so the destination is never
+    // briefly world-readable.
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        if let Err(e) = fs::set_permissions(&path, fs::Permissions::from_mode(0o600)) {
+        if let Err(e) = fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600)) {
             log::warn!(
-                "[storage/settings] failed to set permissions on settings.json: {}",
+                "[storage/settings] failed to set 0600 perms on tmp settings.json: {}",
                 e
             );
         }
     }
 
-    Ok(())
+    // Rename with PermissionDenied retry (Windows AV may briefly lock the target).
+    for attempt in 0..3u8 {
+        match fs::rename(&tmp, path) {
+            Ok(()) => return Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied && attempt < 2 => {
+                log::debug!(
+                    "[storage/settings] save rename PermissionDenied, retry {}",
+                    attempt + 1
+                );
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(e) => {
+                let _ = fs::remove_file(&tmp);
+                return Err(format!("rename: {e}"));
+            }
+        }
+    }
+    let _ = fs::remove_file(&tmp);
+    Err("rename: PermissionDenied after 3 retries".to_string())
+}
+
+pub fn save(settings: &AllSettings) -> Result<(), String> {
+    log::debug!("[storage/settings] saving settings");
+    let path = settings_path();
+    super::ensure_dir(path.parent().unwrap()).map_err(|e| e.to_string())?;
+    let json = serde_json::to_string_pretty(settings).map_err(|e| e.to_string())?;
+    write_atomic_0600(&path, &json)
 }
 
 pub fn get_user_settings() -> UserSettings {
@@ -893,5 +1023,65 @@ mod tests {
         apply_agent_patch(&mut s, &serde_json::json!({ "permission_mode": "ask" }));
         apply_agent_patch(&mut s, &serde_json::json!({ "model": "opus" }));
         assert_eq!(s.permission_mode, Some("ask".to_string()));
+    }
+
+    #[test]
+    fn write_atomic_writes_content_and_replaces_existing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+
+        // First write to a fresh path
+        write_atomic_0600(&path, "{\"a\":1}").unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "{\"a\":1}");
+
+        // Overwrite — must replace cleanly with no leftover tmp file
+        write_atomic_0600(&path, "{\"a\":2,\"b\":3}").unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "{\"a\":2,\"b\":3}");
+
+        // No stray .tmp files left behind in the dir
+        let leftover_tmps: Vec<_> = fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".tmp"))
+            .collect();
+        assert!(
+            leftover_tmps.is_empty(),
+            "no .tmp files should remain after successful writes, found: {:?}",
+            leftover_tmps
+                .iter()
+                .map(|e| e.file_name())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_atomic_sets_0600_perms() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        write_atomic_0600(&path, "{\"secret\":\"value\"}").unwrap();
+        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "destination must be owner-only readable/writable"
+        );
+    }
+
+    #[test]
+    fn write_atomic_preserves_existing_file_when_serialize_path_fails() {
+        // Sanity: if the rename fails (e.g. dir does not exist), the original
+        // file (if any) is untouched. We simulate this by pointing at a path
+        // whose parent does not exist.
+        let dir = tempfile::tempdir().unwrap();
+        let good_path = dir.path().join("settings.json");
+        write_atomic_0600(&good_path, "original").unwrap();
+
+        let bad_path = dir.path().join("missing-subdir").join("settings.json");
+        let result = write_atomic_0600(&bad_path, "new");
+        assert!(result.is_err(), "write to nonexistent dir should fail");
+
+        // Original untouched
+        assert_eq!(fs::read_to_string(&good_path).unwrap(), "original");
     }
 }

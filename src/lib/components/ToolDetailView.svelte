@@ -3,7 +3,7 @@
   import { dbg } from "$lib/utils/debug";
   import { ansiToHtml, hasAnsiCodes, escapeHtml, stripAnsi } from "$lib/utils/ansi";
   import { colorizeCommand } from "$lib/utils/shell-colorize";
-  import type { BusToolItem } from "$lib/types";
+  import type { BusToolItem, TodoItem } from "$lib/types";
   import {
     extractOutputText,
     getLanguageFromPath,
@@ -412,11 +412,6 @@
   );
 
   // Structured TodoWrite result from tool_use_result
-  interface TodoItem {
-    content: string;
-    status: "pending" | "in_progress" | "completed";
-    activeForm: string;
-  }
   interface TodoWriteResultMeta {
     oldTodos: TodoItem[];
     newTodos: TodoItem[];

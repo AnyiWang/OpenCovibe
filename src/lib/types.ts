@@ -1227,6 +1227,23 @@ export type TimelineEntry =
   | { kind: "separator"; id: string; anchorId: string; content: string; ts: string }
   | { kind: "command_output"; id: string; anchorId: string; content: string; ts: string };
 
+/** One row of a TodoWrite checklist (lives in a tool's `tool_use_result.newTodos`). */
+export interface TodoItem {
+  content: string;
+  status: "pending" | "in_progress" | "completed";
+  activeForm: string;
+}
+
+/**
+ * Unified task row for the TodoPanel, normalized from either source:
+ * the Tasks system (TaskCreate/TaskUpdate, aggregated) or legacy TodoWrite snapshots.
+ */
+export interface PanelTask {
+  id: string;
+  text: string;
+  status: "pending" | "in_progress" | "completed";
+}
+
 // ── App Updates ──
 
 export interface UpdateInfo {
@@ -1272,7 +1289,8 @@ export type HookEventType =
   | "TaskCreated"
   | "CwdChanged"
   | "FileChanged"
-  | "PermissionDenied";
+  | "PermissionDenied"
+  | "MessageDisplay";
 
 export interface HookHandler {
   type: "command" | "prompt" | "http" | "mcp_tool";

@@ -15,6 +15,9 @@ describe("HOOK_EVENT_TYPES", () => {
     expect(HOOK_EVENT_TYPES).toContain("Notification");
     expect(HOOK_EVENT_TYPES).toContain("Stop");
   });
+  it("contains MessageDisplay (CLI 2.1.152)", () => {
+    expect(HOOK_EVENT_TYPES).toContain("MessageDisplay");
+  });
 });
 
 describe("ensureHooksObject", () => {

@@ -56,6 +56,7 @@
   import McpStatusPanel from "$lib/components/McpStatusPanel.svelte";
   import PromptInput from "$lib/components/PromptInput.svelte";
   import ScheduledTasksChip from "$lib/components/ScheduledTasksChip.svelte";
+  import TodoPanel from "$lib/components/TodoPanel.svelte";
   import PermissionPanel from "$lib/components/PermissionPanel.svelte";
   import ElicitationDialog from "$lib/components/ElicitationDialog.svelte";
   import AuthSourceBadge from "$lib/components/AuthSourceBadge.svelte";
@@ -626,7 +627,7 @@
       runId: store.run.id,
       runName: store.run.name,
       cwd: store.sessionCwd || store.run.cwd,
-      numTurns: store.numTurns,
+      numTurns: store.userTurnCount,
       status: store.run.status ?? "pending",
       startedAt: store.run.started_at ?? null,
       endedAt: store.run.ended_at ?? null,
@@ -884,6 +885,22 @@
       }
     } finally {
       loadingMore = false;
+    }
+
+    // IntersectionObserver only refires on state changes. If anchor compensation
+    // produced ~zero delta (collapsed/unmeasured entries above the viewport, or
+    // a stable layout where the prepended content all sits within rootMargin),
+    // the sentinel stays "still intersecting" with no new state to deliver — and
+    // the user-scroll re-arm path (handleChatScroll) never fires either because
+    // a same-value scrollTop write may dispatch no scroll event. Re-observing
+    // forces a fresh callback delivery: if the sentinel exited the viewport,
+    // the callback returns early; if still intersecting, it kicks off another
+    // batch, naturally terminating once `filteredTimeline.length <= renderLimit`
+    // or the sentinel exits.
+    if (_topObserver && topSentinel && filteredTimeline.length > renderLimit) {
+      loadMoreArmed = true;
+      _topObserver.unobserve(topSentinel);
+      _topObserver.observe(topSentinel);
     }
   }
 
@@ -3009,41 +3026,20 @@
       // Escape markdown special chars in todo content
       const esc = (s: string) => s.replace(/([\\*_~`[\]#>|])/g, "\\$1");
 
-      // Find the last TodoWrite tool_end in timeline with newTodos
-      const lastTodo = [...store.timeline]
-        .reverse()
-        .find(
-          (e): e is Extract<TimelineEntry, { kind: "tool" }> =>
-            e.kind === "tool" &&
-            e.tool.tool_name === "TodoWrite" &&
-            e.tool.status === "success" &&
-            e.tool.tool_use_result != null &&
-            typeof e.tool.tool_use_result === "object" &&
-            "newTodos" in e.tool.tool_use_result &&
-            Array.isArray(e.tool.tool_use_result.newTodos),
-        );
-
-      if (lastTodo) {
-        const todos = lastTodo.tool.tool_use_result!.newTodos as Array<{
-          content: string;
-          status: "pending" | "in_progress" | "completed";
-        }>;
-        if (todos.length === 0) {
-          appendCommandOutput(t("todos_empty"));
-        } else {
-          const lines = todos.map((td) => {
-            const text = esc(td.content);
-            if (td.status === "completed") return `- [x] ~~${text}~~`;
-            if (td.status === "in_progress") return `- [ ] **⏳ ${text}**`;
-            return `- [ ] ${text}`;
-          });
-          appendCommandOutput(lines.join("\n"));
-        }
-      } else {
-        // No TodoWrite in timeline — show local prompt
-        // CLI /todos is an internal command that doesn't produce timeline events,
-        // so fallback to sendMessage would just create an empty turn.
+      // Same source as the TodoPanel (Tasks system or legacy TodoWrite). Empty covers
+      // both "no tasks yet" and an empty list — CLI /todos produces no timeline event,
+      // so there's nothing to send.
+      const tasks = store.panelTasks;
+      if (tasks.length === 0) {
         appendCommandOutput(t("todos_empty"));
+      } else {
+        const lines = tasks.map((task) => {
+          const text = esc(task.text);
+          if (task.status === "completed") return `- [x] ~~${text}~~`;
+          if (task.status === "in_progress") return `- [ ] **⏳ ${text}**`;
+          return `- [ ] ${text}`;
+        });
+        appendCommandOutput(lines.join("\n"));
       }
     } else if (action === "show-diff") {
       const cwd = store.effectiveCwd || localStorage.getItem("ocv:project-cwd") || "";
@@ -3765,11 +3761,16 @@
         }
       }
 
-      // Phase 2: parallel file read (concurrency=2 to limit memory)
+      // Phase 2: parallel file read (concurrency=2 to limit memory).
+      // Pass project cwd to read_file_base64 so the backend can validate the
+      // path is inside an allowed root. Files outside the project will reject
+      // — the existing "rejected → path ref" fallback below handles that
+      // gracefully so the user still gets the attachment as a path reference.
+      const dropCwd = store.sessionCwd || store.run?.cwd || "";
       const fileResults = await mapSettled(
         fileEntries,
         async ({ p, name }) => {
-          const [base64, mime] = await api.readFileBase64(p);
+          const [base64, mime] = await api.readFileBase64(p, dropCwd);
           const bytes = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
           return { file: new File([bytes], name, { type: mime }), name, mime, size: bytes.length };
         },
@@ -4421,7 +4422,8 @@
       {platformModels}
       fastModeState={store.fastModeState}
       verbose={verboseEnabled}
-      numTurns={store.numTurns}
+      numTurns={store.userTurnCount}
+      contextTokens={store.contextTokens}
       durationMs={store.durationMs}
       persistedFiles={store.persistedFiles}
       onRewind={store.caps.supportsSnapshots && store.sessionAlive && !store.isRunning
@@ -5491,6 +5493,8 @@
       onCancel={(id) => store.sendMessage(`Cancel scheduled task ${id}`, [])}
       onList={() => store.sendMessage("Show me my scheduled tasks", [])}
     />
+
+    <TodoPanel tasks={store.panelTasks} />
 
     {#if store.sessionAlive || !store.run || store.phase === "empty" || store.phase === "ready" || TERMINAL_PHASES.includes(store.phase)}
       <PromptInput

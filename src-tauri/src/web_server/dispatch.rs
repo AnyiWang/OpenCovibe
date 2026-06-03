@@ -264,7 +264,7 @@ pub async fn dispatch_command(
         }
         "read_file_base64" => {
             let path = extract_str(&params, "path")?;
-            let cwd = params.get("cwd").and_then(|v| v.as_str()).map(String::from);
+            let cwd = extract_str(&params, "cwd")?;
             let result = crate::commands::fs::read_file_base64(path, cwd)?;
             serde_json::to_value(result).map_err(|e| e.to_string())
         }

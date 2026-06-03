@@ -1213,12 +1213,14 @@ describe("SessionStore reducer", () => {
   // ── result_subtype error flows ──
 
   describe("result_subtype", () => {
-    it("error flows through to phase and error state", () => {
+    it("error flows through to error state but phase stays non-terminal (HC#1)", () => {
       store.run = makeRun("run-err-1");
       store.phase = "running";
       store.applyEventBatch(resultErrorMaxTurnsEvents as BusEvent[]);
 
-      expect(store.phase).toBe("failed");
+      // HC#1 (#140): a result event = turn complete (→ idle), NOT session end.
+      // Terminal failed/completed is decided in the backend on process EOF.
+      expect(store.phase).toBe("idle");
       expect(store.error).toBe("Max turns reached");
       expect(store.timeline).toHaveLength(2); // user + assistant
     });
@@ -5659,6 +5661,285 @@ describe("SessionStore reducer", () => {
       expect(s.rateLimitType).toBe("five_hour");
       expect(s.rateLimitUtilization).toBe(0.85);
       expect(s.rateLimitResetsAt).toBe(1711900000);
+    });
+  });
+
+  // ── latestTodos getter (drives the TodoPanel) ──
+
+  describe("latestTodos getter", () => {
+    const td = (content: string, status: "pending" | "in_progress" | "completed") => ({
+      content,
+      status,
+      activeForm: content,
+    });
+
+    function todoEvents(
+      useId: string,
+      todos: ReturnType<typeof td>[],
+      status: "success" | "error" = "success",
+    ): BusEvent[] {
+      return [
+        {
+          type: "tool_start",
+          run_id: "run-todo",
+          tool_use_id: useId,
+          tool_name: "TodoWrite",
+          input: { todos },
+        },
+        {
+          type: "tool_end",
+          run_id: "run-todo",
+          tool_use_id: useId,
+          tool_name: "TodoWrite",
+          status,
+          tool_use_result: { oldTodos: [], newTodos: todos },
+        },
+      ] as BusEvent[];
+    }
+
+    beforeEach(() => {
+      store.run = makeRun("run-todo");
+      store.phase = "running";
+    });
+
+    it("returns the most recent TodoWrite's newTodos", () => {
+      store.applyEventBatch(todoEvents("t1", [td("a", "completed"), td("b", "in_progress")]));
+      store.applyEventBatch(
+        todoEvents("t2", [td("a", "completed"), td("b", "completed"), td("c", "in_progress")]),
+      );
+      expect(store.latestTodos.map((t) => t.content)).toEqual(["a", "b", "c"]);
+      expect(store.latestTodos[1].status).toBe("completed");
+    });
+
+    it("ignores non-TodoWrite tools", () => {
+      store.applyEventBatch(todoEvents("t1", [td("a", "in_progress")]));
+      store.applyEventBatch([
+        {
+          type: "tool_start",
+          run_id: "run-todo",
+          tool_use_id: "bash-1",
+          tool_name: "Bash",
+          input: { command: "ls" },
+        },
+        {
+          type: "tool_end",
+          run_id: "run-todo",
+          tool_use_id: "bash-1",
+          tool_name: "Bash",
+          status: "success",
+          tool_use_result: { stdout: "x" },
+        },
+      ] as BusEvent[]);
+      expect(store.latestTodos.map((t) => t.content)).toEqual(["a"]);
+    });
+
+    it("returns [] when no TodoWrite has run", () => {
+      expect(store.latestTodos).toEqual([]);
+    });
+
+    it("skips a failed TodoWrite and keeps the last successful one", () => {
+      store.applyEventBatch(todoEvents("t1", [td("a", "completed")]));
+      store.applyEventBatch(todoEvents("t2", [td("b", "in_progress")], "error"));
+      expect(store.latestTodos.map((t) => t.content)).toEqual(["a"]);
+    });
+  });
+
+  // ── taskList / panelTasks (Tasks system: TaskCreate/TaskUpdate) ──
+
+  describe("taskList getter (Tasks system aggregation)", () => {
+    function taskCreate(id: string, subject: string): BusEvent[] {
+      return [
+        {
+          type: "tool_start",
+          run_id: "run-task",
+          tool_use_id: `c-${id}`,
+          tool_name: "TaskCreate",
+          input: { subject },
+        },
+        {
+          type: "tool_end",
+          run_id: "run-task",
+          tool_use_id: `c-${id}`,
+          tool_name: "TaskCreate",
+          status: "success",
+          tool_use_result: { task: { id, subject } },
+        },
+      ] as BusEvent[];
+    }
+
+    function taskUpdate(id: string, to: string, useId: string): BusEvent[] {
+      return [
+        {
+          type: "tool_start",
+          run_id: "run-task",
+          tool_use_id: useId,
+          tool_name: "TaskUpdate",
+          input: { taskId: id, status: to },
+        },
+        {
+          type: "tool_end",
+          run_id: "run-task",
+          tool_use_id: useId,
+          tool_name: "TaskUpdate",
+          status: "success",
+          tool_use_result: { taskId: id, statusChange: { from: "pending", to }, success: true },
+        },
+      ] as BusEvent[];
+    }
+
+    beforeEach(() => {
+      store.run = makeRun("run-task");
+      store.phase = "running";
+    });
+
+    it("aggregates TaskCreate into a pending list, preserving creation order", () => {
+      store.applyEventBatch(taskCreate("1", "build a.txt"));
+      store.applyEventBatch(taskCreate("2", "build b.txt"));
+      expect(store.taskList).toEqual([
+        { id: "1", text: "build a.txt", status: "pending" },
+        { id: "2", text: "build b.txt", status: "pending" },
+      ]);
+    });
+
+    it("applies TaskUpdate status changes by taskId", () => {
+      store.applyEventBatch(taskCreate("1", "a"));
+      store.applyEventBatch(taskCreate("2", "b"));
+      store.applyEventBatch(taskUpdate("1", "in_progress", "u1"));
+      store.applyEventBatch(taskUpdate("1", "completed", "u2"));
+      expect(store.taskList.map((t) => t.status)).toEqual(["completed", "pending"]);
+    });
+
+    it("removes a task when updated to deleted", () => {
+      store.applyEventBatch(taskCreate("1", "a"));
+      store.applyEventBatch(taskCreate("2", "b"));
+      store.applyEventBatch(taskUpdate("1", "deleted", "u1"));
+      expect(store.taskList.map((t) => t.id)).toEqual(["2"]);
+    });
+  });
+
+  describe("panelTasks getter (unified source)", () => {
+    beforeEach(() => {
+      store.run = makeRun("run-panel");
+      store.phase = "running";
+    });
+
+    it("prefers the Tasks system when TaskCreate events exist", () => {
+      store.applyEventBatch([
+        {
+          type: "tool_start",
+          run_id: "run-panel",
+          tool_use_id: "c1",
+          tool_name: "TaskCreate",
+          input: {},
+        },
+        {
+          type: "tool_end",
+          run_id: "run-panel",
+          tool_use_id: "c1",
+          tool_name: "TaskCreate",
+          status: "success",
+          tool_use_result: { task: { id: "1", subject: "from tasks" } },
+        },
+      ] as BusEvent[]);
+      expect(store.panelTasks).toEqual([{ id: "1", text: "from tasks", status: "pending" }]);
+    });
+
+    it("falls back to legacy TodoWrite when no Tasks events exist", () => {
+      store.applyEventBatch([
+        {
+          type: "tool_start",
+          run_id: "run-panel",
+          tool_use_id: "w1",
+          tool_name: "TodoWrite",
+          input: {},
+        },
+        {
+          type: "tool_end",
+          run_id: "run-panel",
+          tool_use_id: "w1",
+          tool_name: "TodoWrite",
+          status: "success",
+          tool_use_result: {
+            oldTodos: [],
+            newTodos: [{ content: "from todo", status: "in_progress", activeForm: "from todo" }],
+          },
+        },
+      ] as BusEvent[]);
+      expect(store.panelTasks).toEqual([{ id: "0", text: "from todo", status: "in_progress" }]);
+    });
+
+    it("returns [] when neither source has run", () => {
+      expect(store.panelTasks).toEqual([]);
+    });
+  });
+
+  // ── context occupancy uses last request, not turn-summed usage (#149) ──
+
+  describe("context occupancy (#149)", () => {
+    beforeEach(() => {
+      store.run = makeRun("run-ctx");
+      store.phase = "running";
+    });
+
+    function msg(id: string, input: number, cacheRead: number, cacheCreation: number): BusEvent {
+      return {
+        type: "message_complete",
+        run_id: "run-ctx",
+        message_id: id,
+        text: "ok",
+        message_usage: {
+          input_tokens: input,
+          cache_read_input_tokens: cacheRead,
+          cache_creation_input_tokens: cacheCreation,
+        },
+      } as BusEvent;
+    }
+
+    function result(cacheReadSummed: number, win: number): BusEvent {
+      return {
+        type: "usage_update",
+        run_id: "run-ctx",
+        input_tokens: 3000,
+        output_tokens: 500,
+        cache_read_tokens: cacheReadSummed,
+        cache_write_tokens: 69000,
+        total_cost_usd: 0.4,
+        model_usage: {
+          "claude-opus-4-8": {
+            input_tokens: 3000,
+            output_tokens: 500,
+            cache_read_tokens: cacheReadSummed,
+            cache_write_tokens: 69000,
+            web_search_requests: 0,
+            cost_usd: 0.4,
+            context_window: win,
+          },
+        },
+      } as BusEvent;
+    }
+
+    it("uses the last request's context, not the summed result usage", () => {
+      store.applyEventBatch([
+        { type: "user_message", run_id: "run-ctx", text: "go" },
+        msg("m1", 1000, 0, 30000), // 31k
+        msg("m2", 1000, 30000, 20000), // 51k
+        msg("m3", 1000, 50000, 19000), // 70k ← last request
+        result(80000, 1_000_000), // turn-summed cache_read inflated
+      ] as BusEvent[]);
+      expect(store.lastReqContextTokens).toBe(70000);
+      // 70k, NOT the summed 3000 + 80000 + 69000 = 152000
+      expect(store.contextTokens).toBe(70000);
+    });
+
+    it("falls back to summed usage when messages carry no per-request usage", () => {
+      store.applyEventBatch([
+        { type: "user_message", run_id: "run-ctx", text: "go" },
+        { type: "message_complete", run_id: "run-ctx", message_id: "m1", text: "ok" },
+        result(50000, 200_000),
+      ] as BusEvent[]);
+      expect(store.lastReqContextTokens).toBe(0);
+      // fallback = input 3000 + cache_read 50000 + cache_write 69000
+      expect(store.contextTokens).toBe(122000);
     });
   });
 });

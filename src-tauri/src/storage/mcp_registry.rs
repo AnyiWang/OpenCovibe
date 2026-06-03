@@ -675,6 +675,40 @@ pub async fn remove_server(
 /// Toggle an MCP server's disabled state by modifying the config file directly.
 /// Claude CLI does not support toggle via the stream-json control protocol,
 /// so we set/remove `"disabled": true` in the config JSON.
+/// Atomically replace an existing config file (write tmp in the same dir → rename),
+/// preserving its current permissions. Prevents a crash/interrupt mid-write from
+/// truncating shared, high-value files like `~/.claude.json` (which holds all of the
+/// CLI's project config + secrets). The file is expected to exist. (audit #6)
+fn write_config_atomic(path: &std::path::Path, content: &str) -> Result<(), String> {
+    let dir = path
+        .parent()
+        .ok_or_else(|| "config path has no parent".to_string())?;
+    let file_name = path
+        .file_name()
+        .and_then(|f| f.to_str())
+        .ok_or_else(|| "config path has no filename".to_string())?;
+    let tmp = dir.join(format!(
+        ".{}.{}.{}.tmp",
+        file_name,
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    std::fs::write(&tmp, content).map_err(|e| format!("write tmp: {e}"))?;
+    // Preserve the original file's permissions on the replacement (don't widen or
+    // narrow perms on a project .mcp.json or a 0600 ~/.claude.json).
+    if let Ok(meta) = std::fs::metadata(path) {
+        let _ = std::fs::set_permissions(&tmp, meta.permissions());
+    }
+    std::fs::rename(&tmp, path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        format!("rename: {e}")
+    })?;
+    Ok(())
+}
+
 pub fn toggle_server_config(
     name: &str,
     enabled: bool,
@@ -743,7 +777,7 @@ pub fn toggle_server_config(
 
     let output = serde_json::to_string_pretty(&root)
         .map_err(|e| format!("Failed to serialize config: {}", e))?;
-    std::fs::write(&config_path, output)
+    write_config_atomic(&config_path, &output)
         .map_err(|e| format!("Failed to write {}: {}", config_path.display(), e))?;
 
     let action = if enabled { "Enabled" } else { "Disabled" };

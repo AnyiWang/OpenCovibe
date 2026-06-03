@@ -280,10 +280,10 @@ export async function resolveRemoteHome(hostName: string): Promise<string> {
   return invoke<string>("resolve_remote_home", { hostName });
 }
 
-export async function readFileBase64(path: string, cwd?: string): Promise<[string, string]> {
+export async function readFileBase64(path: string, cwd: string): Promise<[string, string]> {
   return perfMarkAsync(
     "ipc-readFileBase64",
-    () => invoke<[string, string]>("read_file_base64", { path, cwd: cwd ?? null }),
+    () => invoke<[string, string]>("read_file_base64", { path, cwd }),
     { path },
   );
 }

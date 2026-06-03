@@ -74,21 +74,13 @@ pub fn check_is_directory(path: String) -> bool {
 /// Shared by chat drag-drop and Explorer image preview.
 const MAX_BASE64_FILE_SIZE: u64 = 100 * 1024 * 1024;
 
-/// Read a file as base64 with MIME detection.
-///
-/// **Path validation**: only enforced when `cwd` is `Some` (Explorer context).
-/// When `cwd` is `None` (chat drag-drop), any absolute path is accepted because
-/// the user explicitly initiated the drop. New call sites that browse the
-/// filesystem MUST pass `cwd` to get boundary enforcement.
+/// Read a file as base64 with MIME detection. `cwd` is required and is passed
+/// to validate_file_path as the caller-provided allowed dir, in addition to
+/// the always-allowed `~/.opencovibe` / `~/.claude` / settings.working_directory.
 #[tauri::command]
-pub fn read_file_base64(path: String, cwd: Option<String>) -> Result<(String, String), String> {
-    log::debug!("[fs] read_file_base64: path={path}, cwd={cwd:?}");
-    let validated = if cwd.is_some() {
-        super::files::validate_file_path(&path, cwd.as_deref())?
-    } else {
-        log::debug!("[fs] read_file_base64: no cwd, skipping path boundary check");
-        std::path::PathBuf::from(&path)
-    };
+pub fn read_file_base64(path: String, cwd: String) -> Result<(String, String), String> {
+    log::debug!("[fs] read_file_base64: path={path}, cwd={cwd}");
+    let validated = super::files::validate_file_path(&path, Some(cwd.as_str()))?;
     let p = validated.as_path();
     let meta = p
         .metadata()
@@ -158,9 +150,28 @@ mod tests {
     use super::*;
     use std::io::Write;
 
-    /// cwd=None (drag-drop): any absolute path should succeed without boundary check.
+    /// Path outside the allowed cwd should be rejected.
     #[test]
-    fn read_file_base64_no_cwd_allows_any_path() {
+    fn read_file_base64_rejects_outside_cwd() {
+        let allowed_dir = tempfile::tempdir().unwrap();
+        let outside_dir = tempfile::tempdir().unwrap();
+        let outside_file = outside_dir.path().join("secret.txt");
+        std::fs::write(&outside_file, b"secret").unwrap();
+
+        let result = read_file_base64(
+            outside_file.to_string_lossy().into(),
+            allowed_dir.path().to_string_lossy().into(),
+        );
+        assert!(
+            result.is_err(),
+            "path outside cwd should be rejected, got: {:?}",
+            result
+        );
+    }
+
+    /// Path inside the allowed cwd should succeed.
+    #[test]
+    fn read_file_base64_allows_inside_cwd() {
         let dir = tempfile::tempdir().unwrap();
         let img = dir.path().join("test.png");
         // Minimal 1x1 PNG
@@ -179,48 +190,29 @@ mod tests {
             .write_all(png_bytes)
             .unwrap();
 
-        let result = read_file_base64(img.to_string_lossy().into(), None);
-        assert!(result.is_ok(), "cwd=None should allow any path");
+        let result = read_file_base64(
+            img.to_string_lossy().into(),
+            dir.path().to_string_lossy().into(),
+        );
+        assert!(result.is_ok(), "path inside cwd should succeed");
         let (base64, mime) = result.unwrap();
         assert!(!base64.is_empty());
         assert_eq!(mime, "image/png");
     }
 
-    /// cwd=Some: path outside the allowed directory should be rejected.
+    /// Empty cwd should reject any absolute path (cannot canonicalize "" against
+    /// validate_file_path's allowed roots).
     #[test]
-    fn read_file_base64_with_cwd_rejects_outside_path() {
-        let allowed_dir = tempfile::tempdir().unwrap();
-        let outside_dir = tempfile::tempdir().unwrap();
-        let outside_file = outside_dir.path().join("secret.txt");
-        std::fs::write(&outside_file, b"secret").unwrap();
-
-        let result = read_file_base64(
-            outside_file.to_string_lossy().into(),
-            Some(allowed_dir.path().to_string_lossy().into()),
-        );
-        assert!(
-            result.is_err(),
-            "cwd=Some should reject path outside allowed dir"
-        );
-    }
-
-    /// cwd=Some: path inside the allowed directory should succeed.
-    #[test]
-    fn read_file_base64_with_cwd_allows_inside_path() {
+    fn read_file_base64_rejects_empty_cwd() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("hello.txt");
         std::fs::write(&file, b"hello").unwrap();
 
-        let result = read_file_base64(
-            file.to_string_lossy().into(),
-            Some(dir.path().to_string_lossy().into()),
-        );
+        let result = read_file_base64(file.to_string_lossy().into(), String::new());
         assert!(
-            result.is_ok(),
-            "cwd=Some should allow path inside allowed dir"
+            result.is_err(),
+            "empty cwd should not bypass validation, got: {:?}",
+            result
         );
-        let (base64, mime) = result.unwrap();
-        assert!(!base64.is_empty());
-        assert!(mime.contains("text"), "expected text mime, got {}", mime);
     }
 }
