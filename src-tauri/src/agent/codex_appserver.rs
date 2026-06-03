@@ -390,14 +390,28 @@ impl CodexAppServer {
                 out.lifecycle = Some(LifecycleSignal::TurnFailed(err));
             }
             "error" => {
-                let m = params
-                    .get("message")
+                // ErrorNotification = { error: TurnError, willRetry: bool, threadId, turnId }.
+                // The message lives in `error.message` (a TurnError) — NOT a top-level `message`.
+                // `willRetry: true` is a transient failure Codex auto-retries (e.g. a flaky
+                // upstream connection); the turn recovers, so don't alarm the user — log only.
+                let err = params.get("error");
+                let m = err
+                    .and_then(|e| e.get("message"))
                     .and_then(|v| v.as_str())
+                    .or_else(|| params.get("message").and_then(|v| v.as_str()))
                     .unwrap_or("unknown error");
-                out.events.push(BusEvent::CommandOutput {
-                    run_id: run_id.to_string(),
-                    content: format!("[error] {m}"),
-                });
+                let will_retry = params
+                    .get("willRetry")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                if will_retry {
+                    log::debug!("[codex] transient error (will retry): {m}");
+                } else {
+                    out.events.push(BusEvent::CommandOutput {
+                        run_id: run_id.to_string(),
+                        content: format!("[error] {m}"),
+                    });
+                }
             }
             "item/agentMessage/delta" => {
                 if let Some(delta) = params.get("delta").and_then(|v| v.as_str()) {
@@ -905,6 +919,21 @@ mod tests {
     }
 
     #[test]
+    fn user_turn_attaches_local_images() {
+        let mut s = ready_server();
+        let msgs = s.frame_user_turn("describe this", &["/x/a.png".to_string()]);
+        let input = &msgs[0]["params"]["input"];
+        // text first, then one localImage item per path.
+        assert_eq!(input[0]["type"], "text");
+        assert_eq!(input[0]["text"], "describe this");
+        assert_eq!(input[1]["type"], "localImage");
+        assert_eq!(input[1]["path"], "/x/a.png");
+        // No images → no localImage items.
+        let none = s.frame_user_turn("hi", &[]);
+        assert_eq!(none[0]["params"]["input"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
     fn agent_message_delta_to_message_delta() {
         let mut s = ready_server();
         let out = s.parse_line(
@@ -1201,6 +1230,32 @@ mod tests {
             }
             e => panic!("expected CommandOutput, got {e:?}"),
         }
+    }
+
+    #[test]
+    fn error_notification_extracts_message_and_respects_will_retry() {
+        let mut s = ready_server();
+        // Terminal error: message is nested under `error.message` (TurnError), surfaced.
+        let out = s.parse_line(
+            "r",
+            r#"{"method":"error","params":{"error":{"message":"model overloaded"},"willRetry":false,"threadId":"t","turnId":"u"}}"#,
+        );
+        match &out.events[0] {
+            BusEvent::CommandOutput { content, .. } => {
+                assert_eq!(content, "[error] model overloaded")
+            }
+            e => panic!("expected CommandOutput, got {e:?}"),
+        }
+        // Transient error (willRetry): Codex auto-retries → no user-facing event.
+        let out = s.parse_line(
+            "r",
+            r#"{"method":"error","params":{"error":{"message":"tls handshake eof"},"willRetry":true,"threadId":"t","turnId":"u"}}"#,
+        );
+        assert!(
+            out.events.is_empty(),
+            "transient willRetry error must not surface, got {:?}",
+            out.events
+        );
     }
 
     #[test]

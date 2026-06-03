@@ -1214,16 +1214,47 @@ impl SessionActor {
         attachments: &[AttachmentData],
     ) -> Result<String, String> {
         // Codex app-server: frame the user message as turn/start instead of stream-json.
-        // v1 sends text only; image attachments (app-server `localImage` needs a path) are
-        // not yet materialized to temp files on this transport.
+        // Codex takes attachments as local file *paths* (not base64 blocks like Claude):
+        // images become `localImage` input items (real vision input), and every attachment
+        // is also listed in a text breadcrumb so Codex can `Read` non-image files. This
+        // mirrors the exec path (chat.rs / spawn.rs `--image=`).
         if self.codex.is_some() {
-            if !attachments.is_empty() {
+            let mut image_paths: Vec<String> = Vec::new();
+            let mut breadcrumb_files: Vec<String> = Vec::new();
+            for att in attachments {
+                let Some(path) = save_attachment_to_disk(&self.run_id, att) else {
+                    continue;
+                };
+                let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+                if att.media_type.starts_with("image/") {
+                    image_paths.push(path.clone());
+                }
+                breadcrumb_files.push(format!(
+                    "- {} ({}, {} bytes) => {}",
+                    att.filename, att.media_type, size, path
+                ));
+            }
+            let augmented = if breadcrumb_files.is_empty() {
+                text.to_string()
+            } else {
+                format!(
+                    "{}\n\nAttached files:\n{}\nUse these local file paths directly when needed.",
+                    text,
+                    breadcrumb_files.join("\n")
+                )
+            };
+            if !breadcrumb_files.is_empty() {
                 log::debug!(
-                    "[codex] {} attachment(s) dropped on app-server turn (text-only in v1)",
-                    attachments.len()
+                    "[codex] app-server turn with {} attachment(s), {} image(s)",
+                    breadcrumb_files.len(),
+                    image_paths.len()
                 );
             }
-            let lines = self.codex.as_mut().unwrap().frame_user_turn(text, &[]);
+            let lines = self
+                .codex
+                .as_mut()
+                .unwrap()
+                .frame_user_turn(&augmented, &image_paths);
             for line in &lines {
                 self.write_json_line(line, "codex turn/start").await?;
             }
