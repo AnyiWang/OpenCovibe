@@ -2010,6 +2010,7 @@ async fn spawn_codex_appserver_process(
     Ok((child, stdin, stdout, stderr))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn spawn_cli_process(
     cwd: &str,
     prompt: &str,

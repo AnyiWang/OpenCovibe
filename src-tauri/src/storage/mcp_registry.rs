@@ -1256,16 +1256,12 @@ pub fn list_codex_configured(cwd: Option<&str>) -> Vec<ConfiguredMcpServer> {
         Err(e) => {
             log::warn!("[codex_mcp] codex_config_path error: {}", e);
             // Still try project configs
-            let project_roots = cwd
-                .map(|c| project_codex_config_paths(c))
-                .unwrap_or_default();
+            let project_roots = cwd.map(project_codex_config_paths).unwrap_or_default();
             return list_codex_configured_with_paths(std::path::Path::new(""), &project_roots);
         }
     };
 
-    let project_roots = cwd
-        .map(|c| project_codex_config_paths(c))
-        .unwrap_or_default();
+    let project_roots = cwd.map(project_codex_config_paths).unwrap_or_default();
 
     list_codex_configured_with_paths(&user_config, &project_roots)
 }

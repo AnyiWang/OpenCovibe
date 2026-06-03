@@ -62,6 +62,7 @@ fn extension_for_mime(mime: &str) -> &str {
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn send_chat_message(
     app: tauri::AppHandle,
     process_map: tauri::State<'_, ProcessMap>,

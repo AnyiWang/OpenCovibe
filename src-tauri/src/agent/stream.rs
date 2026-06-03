@@ -89,6 +89,7 @@ fn decode_utf8_chunk(leftover: Vec<u8>, chunk: &[u8]) -> (String, Vec<u8>) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn run_agent(
     app: AppHandle,
     process_map: ProcessMap,

@@ -535,6 +535,7 @@ impl CodexRolloutImporter {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn record_event(
         &mut self,
         event: BusEvent,

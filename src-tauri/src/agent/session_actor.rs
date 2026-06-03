@@ -1259,11 +1259,10 @@ impl SessionActor {
                 );
             }
             let overrides = self.codex_overrides.clone();
-            let lines =
-                self.codex
-                    .as_mut()
-                    .unwrap()
-                    .frame_user_turn(&augmented, &image_paths, &overrides);
+            let Some(codex) = self.codex.as_mut() else {
+                return Err("codex driver missing".to_string());
+            };
+            let lines = codex.frame_user_turn(&augmented, &image_paths, &overrides);
             for line in &lines {
                 self.write_json_line(line, "codex turn/start").await?;
             }
@@ -1642,20 +1641,15 @@ impl SessionActor {
         request_id: &str,
         response: Value,
     ) -> Result<(), String> {
-        if self.codex.is_some() {
-            let lines = self
-                .codex
-                .as_mut()
-                .unwrap()
-                .frame_response(kind, request_id, response);
-            for line in &lines {
-                self.write_json_line(line, "codex interactive response")
-                    .await?;
-            }
-            Ok(())
-        } else {
-            self.write_control_response(request_id, response).await
+        let Some(codex) = self.codex.as_mut() else {
+            return self.write_control_response(request_id, response).await;
+        };
+        let lines = codex.frame_response(kind, request_id, response);
+        for line in &lines {
+            self.write_json_line(line, "codex interactive response")
+                .await?;
         }
+        Ok(())
     }
 
     /// Clear pending interactive request if it matches the given request_id.

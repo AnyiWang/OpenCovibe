@@ -438,6 +438,7 @@ fn collect_tmp_codex_agents(
 /// Checks `seen_tmp_aliases` (marketplace-free) to block .tmp→cache duplicates.
 /// Uses marketplace-aware key in `seen_cache` so same-name plugins from
 /// different marketplaces coexist.
+#[allow(clippy::too_many_arguments)]
 fn collect_cache_codex_agents(
     dir: &Path,
     source: &str,
@@ -513,9 +514,10 @@ fn is_codex_plugin_disabled(
 
 /// Discover agents from installed Codex plugins.
 /// Scans two locations:
-///   1. Primary: ~/.codex/.tmp/plugins/plugins/*/agents/
-///   2. Fallback: ~/.codex/plugins/cache/{marketplace}/{plugin}/{version}/agents/
-///              + skills/*/agents/
+/// 1. Primary: ~/.codex/.tmp/plugins/plugins/*/agents/
+/// 2. Fallback: ~/.codex/plugins/cache/{marketplace}/{plugin}/{version}/agents/
+///    + skills/*/agents/
+///
 /// Respects enabled/disabled state from config.toml [plugins.*].
 fn discover_codex_plugin_agents() -> Vec<AgentDefinitionSummary> {
     let codex_home = match crate::storage::cli_config::codex_home_dir() {

@@ -871,6 +871,7 @@ fn project_layers(cwd: &str) -> Vec<PathBuf> {
 }
 
 /// Recursive directory walker collecting SKILL.md files.
+#[allow(clippy::too_many_arguments)]
 fn walk_codex_skills(
     dir: &Path,
     depth: usize,
@@ -1033,10 +1034,10 @@ fn scan_codex_skills_dir_with_roots(
             false
         } else {
             skill_md_path.exists()
-                && skills_root_canonical.as_ref().map_or(false, |root| {
+                && skills_root_canonical.as_ref().is_some_and(|root| {
                     std::fs::canonicalize(&skill_md_path)
                         .ok()
-                        .map_or(false, |cp| {
+                        .is_some_and(|cp| {
                             // Check it's not inside bundled dir
                             if let Some(bd) = bundled_dir {
                                 if let Ok(bd_canon) = std::fs::canonicalize(bd) {
@@ -1285,8 +1286,8 @@ fn apply_codex_skill_config(config_path: &Path, skills: &mut [StandaloneSkill]) 
         let mut result_disabled_by = None;
 
         for rule in &rules {
-            let matches_path = rule.path.as_ref().map_or(false, |rp| skill.path == *rp);
-            let matches_name = rule.name.as_ref().map_or(false, |rn| skill.name == *rn);
+            let matches_path = rule.path.as_ref().is_some_and(|rp| skill.path == *rp);
+            let matches_name = rule.name.as_ref().is_some_and(|rn| skill.name == *rn);
 
             if matches_path || matches_name {
                 result_enabled = rule.enabled;

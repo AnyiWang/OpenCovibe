@@ -518,7 +518,8 @@ impl PipeStdoutParser for CodexStdoutParser {
             "turn.completed" => self.map_turn_completed(run_id, raw),
             "turn.failed" => self.map_turn_failed(run_id, raw),
             "error" => self.map_error(run_id, raw),
-            "thread.started" | _ => vec![],
+            // thread.started (+ any unknown type) → no events.
+            _ => vec![],
         }
     }
 }
