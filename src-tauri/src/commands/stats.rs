@@ -41,7 +41,7 @@ fn merge_overviews(a: UsageOverview, b: UsageOverview) -> UsageOverview {
 
     // by_model: aggregate by model name (Claude/Codex names are distinct in practice).
     let mut model_map: HashMap<String, ModelAggregate> = HashMap::new();
-    for m in a.by_model.into_iter().chain(b.by_model.into_iter()) {
+    for m in a.by_model.into_iter().chain(b.by_model) {
         let e = model_map
             .entry(m.model.clone())
             .or_insert_with(|| ModelAggregate {
@@ -78,7 +78,7 @@ fn merge_overviews(a: UsageOverview, b: UsageOverview) -> UsageOverview {
     // daily: merge by date. Keep Claude's message/session/tool counts + model_breakdown
     // (Codex daily has none); sum cost/tokens so the daily-trend chart covers both.
     let mut day_map: HashMap<String, DailyAggregate> = HashMap::new();
-    for d in a.daily.into_iter().chain(b.daily.into_iter()) {
+    for d in a.daily.into_iter().chain(b.daily) {
         match day_map.get_mut(&d.date) {
             Some(e) => {
                 e.cost_usd += d.cost_usd;
