@@ -5494,4 +5494,74 @@ describe("SessionStore reducer", () => {
       expect(store.panelTasks).toEqual([]);
     });
   });
+
+  // ── context occupancy uses last request, not turn-summed usage (#149) ──
+
+  describe("context occupancy (#149)", () => {
+    beforeEach(() => {
+      store.run = makeRun("run-ctx");
+      store.phase = "running";
+    });
+
+    function msg(id: string, input: number, cacheRead: number, cacheCreation: number): BusEvent {
+      return {
+        type: "message_complete",
+        run_id: "run-ctx",
+        message_id: id,
+        text: "ok",
+        message_usage: {
+          input_tokens: input,
+          cache_read_input_tokens: cacheRead,
+          cache_creation_input_tokens: cacheCreation,
+        },
+      } as BusEvent;
+    }
+
+    function result(cacheReadSummed: number, win: number): BusEvent {
+      return {
+        type: "usage_update",
+        run_id: "run-ctx",
+        input_tokens: 3000,
+        output_tokens: 500,
+        cache_read_tokens: cacheReadSummed,
+        cache_write_tokens: 69000,
+        total_cost_usd: 0.4,
+        model_usage: {
+          "claude-opus-4-8": {
+            input_tokens: 3000,
+            output_tokens: 500,
+            cache_read_tokens: cacheReadSummed,
+            cache_write_tokens: 69000,
+            web_search_requests: 0,
+            cost_usd: 0.4,
+            context_window: win,
+          },
+        },
+      } as BusEvent;
+    }
+
+    it("uses the last request's context, not the summed result usage", () => {
+      store.applyEventBatch([
+        { type: "user_message", run_id: "run-ctx", text: "go" },
+        msg("m1", 1000, 0, 30000), // 31k
+        msg("m2", 1000, 30000, 20000), // 51k
+        msg("m3", 1000, 50000, 19000), // 70k ← last request
+        result(80000, 1_000_000), // turn-summed cache_read inflated
+      ] as BusEvent[]);
+      expect(store.lastReqContextTokens).toBe(70000);
+      // 70k, NOT the summed 3000 + 80000 + 69000 = 152000
+      expect(store.contextTokens).toBe(70000);
+    });
+
+    it("falls back to summed usage when messages carry no per-request usage", () => {
+      store.applyEventBatch([
+        { type: "user_message", run_id: "run-ctx", text: "go" },
+        { type: "message_complete", run_id: "run-ctx", message_id: "m1", text: "ok" },
+        result(50000, 200_000),
+      ] as BusEvent[]);
+      expect(store.lastReqContextTokens).toBe(0);
+      // fallback = input 3000 + cache_read 50000 + cache_write 69000
+      expect(store.contextTokens).toBe(122000);
+    });
+  });
 });
