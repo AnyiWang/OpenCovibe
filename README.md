@@ -139,7 +139,7 @@ npm run tauri dev
 
 On first launch, OpenCovibe guides you through:
 
-1. **CLI Detection** — Auto-detects Claude Code CLI, offers installation if missing
+1. **CLI Detection** — Auto-detects Claude Code and Codex CLIs, offers installation if missing
 2. **Authentication** — OAuth login or API key for 15+ providers
 3. **Ready** — Start coding
 
