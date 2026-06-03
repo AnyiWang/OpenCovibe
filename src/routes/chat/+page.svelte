@@ -3715,6 +3715,29 @@
   let dragProcessingCount = $state(0);
   let dragProcessing = $derived(dragProcessingCount > 0);
 
+  // Safety net: the native `tauri://drag-leave` / `drag-drop` events can be dropped on some
+  // platforms/webviews, leaving pageDragActive stuck true → the z-50 hover overlay swallows
+  // every click and the whole UI looks frozen. A pointerdown cannot reach the webview while an
+  // OS file-drag is in progress, so receiving one means the drag is over — force-clear the
+  // stale hover. Escape does the same. Does NOT touch dragProcessing (real in-flight work).
+  $effect(() => {
+    function clearStaleHover() {
+      if (pageDragActive) {
+        pageDragActive = false;
+        dbg("chat", "drag-hover safety-net cleared stale pageDragActive");
+      }
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") clearStaleHover();
+    }
+    window.addEventListener("pointerdown", clearStaleHover);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("pointerdown", clearStaleHover);
+      window.removeEventListener("keydown", onKey);
+    };
+  });
+
   /** Concurrency-limited parallel map returning PromiseSettledResult for each item. */
   async function handleTauriDrop(payload: { paths: string[] }) {
     pageDragActive = false;
