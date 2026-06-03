@@ -256,6 +256,11 @@ pub struct UserSettings {
     /// Active Codex third-party provider (OpenAI Responses API). None = plain `codex login`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub codex_provider: Option<CodexProviderCredential>,
+    /// Codex session transport: "app_server" (bidirectional JSON-RPC — interactive tools:
+    /// approvals, requestUserInput, MCP elicitation) or "exec" (one-way NDJSON, no interactivity).
+    /// None / "exec" = legacy exec path. Drives the default execution_path for new Codex runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codex_transport: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ui_zoom: Option<f64>,
     #[serde(default)]
@@ -380,6 +385,7 @@ impl Default for UserSettings {
             platform_credentials: vec![],
             active_platform_id: None,
             codex_provider: None,
+            codex_transport: None,
             ui_zoom: None,
             onboarding_completed: false,
             web_server_enabled: None,
@@ -1002,6 +1008,17 @@ pub struct CliInfo {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub current_model: Option<String>,
     pub fetched_at: String,
+}
+
+/// Codex model catalog fetched live from `codex app-server` (model/list).
+/// Unlike Claude (see CliInfo), Codex has no control protocol on the exec path,
+/// so models are pulled via the experimental app-server JSON-RPC instead.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CodexModelList {
+    pub models: Vec<CliModelInfo>,
+    /// The model marked `isDefault` in the catalog — used when the user hasn't picked one.
+    #[serde(rename = "defaultModel", skip_serializing_if = "Option::is_none")]
+    pub default_model: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

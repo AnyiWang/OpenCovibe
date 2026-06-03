@@ -2175,8 +2175,7 @@ describe("SessionStore reducer", () => {
 
     it("live applyEvent path (ctx=null) joins start↔end via timeline lookup", () => {
       // Live WebSocket path delivers events one-by-one via applyEvent (ctx=null).
-      // CronCreate at tool_end must still find tool_start.input through the timeline,
-      // not just the batch-local toolInputByUseId map.
+      // CronCreate at tool_end must find tool_start.input through the timeline.
       store.run = makeRun("run-cron");
       store.phase = "running";
       const [start, end] = makeCronEvents();

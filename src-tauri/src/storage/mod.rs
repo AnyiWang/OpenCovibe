@@ -5,6 +5,7 @@ pub mod cli_config;
 pub mod cli_sessions;
 pub mod cli_sessions_common;
 pub mod codex_sessions;
+pub mod codex_usage;
 pub mod community_skills;
 pub mod events;
 pub mod favorites;

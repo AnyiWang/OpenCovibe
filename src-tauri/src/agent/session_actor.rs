@@ -8,7 +8,9 @@
 
 use crate::agent::adapter::ActorSessionMap;
 use crate::agent::claude_protocol::{validate_bus_event, ProtocolState};
+use crate::agent::codex_appserver::CodexAppServer;
 use crate::agent::notify::notify_if_background;
+use crate::agent::session_protocol::{LifecycleSignal, PendingKind, SessionProtocol};
 use crate::agent::turn_engine::{
     apply_activity_reset, ActiveTurn, ContextExtractor, InternalExtractor, InternalJob, TurnOrigin,
     TurnPhase, UserTurnKind, UserTurnTicket, INTERNAL_HARD_TIMEOUT, INTERNAL_SOFT_TIMEOUT,
@@ -30,6 +32,29 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout};
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
+
+/// Strip ANSI/CSI escape sequences (e.g. `\x1b[31m`) so colored CLI stderr renders cleanly.
+fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' {
+            // ESC [ ... <final byte in @..~> — consume the whole CSI sequence.
+            if chars.peek() == Some(&'[') {
+                chars.next();
+                while let Some(&n) = chars.peek() {
+                    chars.next();
+                    if ('@'..='~').contains(&n) {
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
+        out.push(c);
+    }
+    out
+}
 
 /// Extract content from `<promise>...</promise>` tag in text.
 fn extract_promise_tag(text: &str) -> Option<&str> {
@@ -166,6 +191,13 @@ pub enum ActorCommand {
         response: Value,
         reply: oneshot::Sender<Result<(), String>>,
     },
+    /// Codex `request_user_input` (multiple-choice) answer → JSON-RPC response on the
+    /// app-server thread. `response` carries `{answers: {qid: [labels]}}`.
+    RespondUserInput {
+        request_id: String,
+        response: Value,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
     /// Start a Ralph loop (auto-iterate same prompt until completion).
     StartRalphLoop {
         prompt: String,
@@ -201,6 +233,13 @@ struct SessionActor {
     run_id: String,
     tag: Arc<()>,
     protocol: ProtocolState,
+    /// Codex `app-server` protocol driver. `Some` routes the wire seams (startup, user turn,
+    /// stdout parse, response framing) through it; `None` = Claude stream-json (unchanged).
+    codex: Option<CodexAppServer>,
+    /// Codex handshake messages to write once at run start (initialize + thread/start|resume).
+    codex_startup: Vec<Value>,
+    /// Codex thread/started seen — gates turn dispatch until the thread is open.
+    codex_ready: bool,
     /// Current RunState string — identity dedup: skip emit if unchanged.
     state: String,
     stdin: Option<ChildStdin>,
@@ -278,6 +317,9 @@ pub fn spawn_actor(
     cancel: CancellationToken,
     initial_turn_index: u32,
     initial_auto_ctx_id: u32,
+    // Codex app-server transport: the driver + its handshake messages. `None`/empty = Claude.
+    codex: Option<CodexAppServer>,
+    codex_startup: Vec<Value>,
 ) -> SessionActorHandle {
     let tag = Arc::new(());
     let (cmd_tx, cmd_rx) = mpsc::channel::<ActorCommand>(64);
@@ -297,6 +339,9 @@ pub fn spawn_actor(
         run_id: run_id.clone(),
         tag: tag.clone(),
         protocol: ProtocolState::new(is_resume),
+        codex,
+        codex_startup,
+        codex_ready: false,
         state: String::new(),
         stdin: Some(stdin),
         child: Some(child),
@@ -359,6 +404,17 @@ impl SessionActor {
             self.protocol.is_resume()
         );
 
+        // Codex app-server handshake: write initialize + thread/start|resume before the loop.
+        // The thread isn't open until thread/started arrives (gates try_dispatch via codex_ready).
+        if !self.codex_startup.is_empty() {
+            let msgs = std::mem::take(&mut self.codex_startup);
+            for msg in &msgs {
+                if let Err(e) = self.write_json_line(msg, "codex handshake").await {
+                    log::error!("[actor] codex handshake write failed: {}", e);
+                }
+            }
+        }
+
         loop {
             // HC #18: terminated → break loop
             if self.terminated {
@@ -403,7 +459,13 @@ impl SessionActor {
                         Some(ActorCommand::RespondElicitation { request_id, response, reply }) => {
                             log::debug!("[actor] RespondElicitation: run_id={}, req_id={}", self.run_id, request_id);
                             self.clear_pending_interactive_request(&request_id);
-                            let result = self.write_control_response(&request_id, response).await;
+                            let result = self.write_interactive_response(PendingKind::Elicitation, &request_id, response).await;
+                            let _ = reply.send(result);
+                        }
+                        Some(ActorCommand::RespondUserInput { request_id, response, reply }) => {
+                            log::debug!("[actor] RespondUserInput: run_id={}, req_id={}", self.run_id, request_id);
+                            self.clear_pending_interactive_request(&request_id);
+                            let result = self.write_interactive_response(PendingKind::UserInput, &request_id, response).await;
                             let _ = reply.send(result);
                         }
                         Some(ActorCommand::StartRalphLoop { prompt, max_iterations, completion_promise, reply }) => {
@@ -585,6 +647,10 @@ impl SessionActor {
     /// Try to dispatch next queued item. HC #1: One turn at a time.
     async fn try_dispatch(&mut self) {
         if self.active_turn.is_some() || self.quarantine_until_result || self.terminated {
+            return;
+        }
+        // Codex: hold dispatch until the app-server thread is open (thread/started seen).
+        if self.codex.is_some() && !self.codex_ready {
             return;
         }
 
@@ -1147,6 +1213,23 @@ impl SessionActor {
         text: &str,
         attachments: &[AttachmentData],
     ) -> Result<String, String> {
+        // Codex app-server: frame the user message as turn/start instead of stream-json.
+        // v1 sends text only; image attachments (app-server `localImage` needs a path) are
+        // not yet materialized to temp files on this transport.
+        if self.codex.is_some() {
+            if !attachments.is_empty() {
+                log::debug!(
+                    "[codex] {} attachment(s) dropped on app-server turn (text-only in v1)",
+                    attachments.len()
+                );
+            }
+            let lines = self.codex.as_mut().unwrap().frame_user_turn(text, &[]);
+            for line in &lines {
+                self.write_json_line(line, "codex turn/start").await?;
+            }
+            return Ok(uuid::Uuid::new_v4().to_string());
+        }
+
         let stdin = self
             .stdin
             .as_mut()
@@ -1300,7 +1383,32 @@ impl SessionActor {
             request_id,
         );
         self.clear_pending_interactive_request(request_id);
-        self.write_control_response(request_id, response).await
+        self.write_interactive_response(PendingKind::Permission, request_id, response)
+            .await
+    }
+
+    /// Write a response to a pending interactive request. Codex frames it as a JSON-RPC
+    /// response via the protocol driver; Claude uses the stream-json control_response.
+    async fn write_interactive_response(
+        &mut self,
+        kind: PendingKind,
+        request_id: &str,
+        response: Value,
+    ) -> Result<(), String> {
+        if self.codex.is_some() {
+            let lines = self
+                .codex
+                .as_mut()
+                .unwrap()
+                .frame_response(kind, request_id, response);
+            for line in &lines {
+                self.write_json_line(line, "codex interactive response")
+                    .await?;
+            }
+            Ok(())
+        } else {
+            self.write_control_response(request_id, response).await
+        }
     }
 
     /// Clear pending interactive request if it matches the given request_id.
@@ -1395,12 +1503,106 @@ impl SessionActor {
     // ── I/O handlers ──
 
     /// Handle a stdout line from CLI — three-way routing: quarantine → control → map events.
+    /// Codex `app-server` stdout handling. Parses one JSON-RPC line via the protocol driver
+    /// and routes its events / lifecycle / interactive / thread-id signals into the *shared*
+    /// turn engine (`end_turn_and_dispatch`, `emit_state`) — no Claude control protocol.
+    async fn handle_codex_line(&mut self, text: &str) {
+        apply_activity_reset(self.quarantine_until_result, &mut self.active_turn);
+
+        let parsed = self.codex.as_mut().unwrap().parse_line(&self.run_id, text);
+
+        // Persist the thread id (resume key) as soon as it's known.
+        if let Some(tid) = parsed.thread_id {
+            let rid = self.run_id.clone();
+            if let Err(e) = crate::storage::runs::with_meta(&rid, |meta| {
+                meta.conversation_ref =
+                    Some(crate::models::ConversationRef::CodexThread(tid.clone()));
+                Ok(())
+            }) {
+                log::warn!("[codex] failed to persist conversation_ref: {}", e);
+            } else {
+                log::debug!(
+                    "[codex] captured thread_id as conversation_ref for run_id={}",
+                    rid
+                );
+            }
+        }
+
+        // Open the dispatch gate once the thread is ready (new thread/started or resume ack),
+        // then flush the queued initial/user message.
+        if !self.codex_ready && self.codex.as_ref().map(|c| c.is_ready()).unwrap_or(false) {
+            self.codex_ready = true;
+            log::debug!(
+                "[codex] thread ready for run_id={}; dispatching queue",
+                self.run_id
+            );
+            self.try_dispatch().await;
+        }
+
+        // Emit mapped events (message/tool/usage + any interactive prompt events).
+        for event in &parsed.events {
+            if let Some(warn) = validate_bus_event(event) {
+                log::warn!(
+                    "[actor] invalid codex event dropped: {}.{}: {}",
+                    warn.event_type,
+                    warn.field,
+                    warn.detail
+                );
+                continue;
+            }
+            self.persist_and_emit(event);
+        }
+
+        // Track a pending interactive request (observability + desktop notification).
+        if let Some(pi) = parsed.interactive {
+            let subtype = match pi.kind {
+                PendingKind::Permission => "can_use_tool",
+                PendingKind::Elicitation => "elicitation",
+                PendingKind::UserInput => "request_user_input",
+            };
+            self.pending_interactive_request = Some(PendingInteractiveRequest {
+                request_id: pi.request_id,
+                subtype: subtype.to_string(),
+                detail: String::new(),
+                received_at: Instant::now(),
+            });
+            notify_if_background(self.emitter.app(), "Codex", "needs your input");
+        }
+
+        // Turn lifecycle → RunState + advance the shared turn queue.
+        if let Some(sig) = parsed.lifecycle {
+            match sig {
+                LifecycleSignal::TurnStarted => {
+                    self.emit_state("running", None, None, false);
+                }
+                LifecycleSignal::TurnCompleted => {
+                    self.emit_state("idle", Some(0), None, true);
+                    self.persist_idle_running(RunStatus::Idle);
+                    self.end_turn_and_dispatch().await;
+                }
+                LifecycleSignal::TurnFailed(err) => {
+                    // Codex turn failure keeps the session alive (input box returns).
+                    self.emit_state("idle", None, err, true);
+                    self.persist_idle_running(RunStatus::Idle);
+                    self.end_turn_and_dispatch().await;
+                }
+            }
+        }
+    }
+
     async fn handle_stdout_line(&mut self, text: &str, line_num: u64) {
         let text = text.trim();
         if text.is_empty() {
             return;
         }
         log::trace!("[actor] stdout #{}: {}", line_num, truncate_str(text, 200));
+
+        // Codex app-server transport: own parse + lifecycle handling (bypasses the
+        // stream-json control protocol path entirely; Claude code below is untouched).
+        if self.codex.is_some() {
+            self.handle_codex_line(text).await;
+            return;
+        }
 
         // Step 0: JSON parse
         let parsed = match serde_json::from_str::<Value>(text) {
@@ -2091,10 +2293,20 @@ impl SessionActor {
             truncate_str(text, 200)
         );
 
+        // Codex app-server writes verbose ANSI-colored tracing logs to stderr (DEBUG/INFO/
+        // ERROR lines, including expected ones like "exec_command failed: Rejected(rejected by
+        // user)"). Meaningful events (errors, results, approvals) all arrive via stdout
+        // JSON-RPC, so surfacing stderr as timeline cards is pure noise (and renders garbled
+        // due to the ANSI escapes). Log it for diagnostics, don't emit it.
+        if self.codex.is_some() {
+            log::debug!("[actor] codex stderr: {}", truncate_str(text, 300));
+            return;
+        }
+
         let event = BusEvent::Raw {
             run_id: self.run_id.clone(),
             source: "claude_stderr".to_string(),
-            data: Value::String(text.to_string()),
+            data: Value::String(strip_ansi(text)),
         };
         self.emitter.persist_and_emit(&self.run_id, &event);
     }
@@ -2662,5 +2874,14 @@ mod tests {
         assert_eq!(payload["type"], "user");
         assert_eq!(payload["uuid"], uuid);
         assert!(uuid::Uuid::parse_str(&uuid).is_ok());
+    }
+
+    #[test]
+    fn strip_ansi_removes_color_codes() {
+        use super::strip_ansi;
+        let input = "\u{1b}[2m2026-06-03\u{1b}[0m \u{1b}[31mERROR\u{1b}[0m codex_core: failed";
+        assert_eq!(strip_ansi(input), "2026-06-03 ERROR codex_core: failed");
+        // Plain text is unchanged.
+        assert_eq!(strip_ansi("no codes here"), "no codes here");
     }
 }

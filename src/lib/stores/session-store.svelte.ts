@@ -39,6 +39,7 @@ import { getTransport } from "$lib/transport";
 import { getAgentCaps, type AgentCapabilities } from "$lib/utils/agent-caps";
 import { getAgentFeatures, type AgentFeatures } from "$lib/utils/agent-features";
 import { dedupeMcpServersByName } from "$lib/utils/mcp";
+import { SCHEDULING_TOOLS, pickSchedule, pickCronId } from "$lib/utils/tool-rendering";
 
 // ── CLI permission mode normalization ──
 // CLI may return different names for the same mode across versions.
@@ -129,9 +130,6 @@ interface ReduceCtx {
   toolTlIndex: Map<string, number>;
   /** tool_use_id → he[] index (only HookEvent entries with tool_use_id). */
   toolHeIndex: Map<string, number>;
-  /** tool_use_id → tool_start.input. Populated in tool_start branch so
-   *  tool_end branches in the same batch can join without waiting for commit. */
-  toolInputByUseId: Map<string, Record<string, unknown>>;
   /** Local scheduled-task accumulator. Snapshotted from store at ctx
    *  creation; only committed in _commitReduceCtx. Keeps async replay
    *  stale-safe (mid-batch abort doesn't pollute live store). */
@@ -867,16 +865,13 @@ export class SessionStore {
   }
 
   /** Lookup the tool_start input for a given tool_use_id. Used by tool_end
-   *  branches (e.g. CronCreate) to join with the originating input.
-   *  Order: ctx batch map → ctx.tl → live timeline (covers live applyEvent path). */
+   *  branches (e.g. CronCreate) to join with the originating input. Reads from
+   *  the timeline — same-batch tool_start is committed by _pushTimeline before
+   *  tool_end runs. */
   private _lookupToolStartInput(
     ctx: ReduceCtx | null,
     toolUseId: string,
   ): Record<string, unknown> | undefined {
-    if (ctx) {
-      const fromMap = ctx.toolInputByUseId.get(toolUseId);
-      if (fromMap) return fromMap;
-    }
     const tl = ctx?.tl ?? this.timeline;
     const idx = this._findToolIdx(ctx, toolUseId);
     if (idx >= 0) {
@@ -1156,7 +1151,6 @@ export class SessionStore {
       turnUsages: [...this.turnUsages],
       toolTlIndex: batchTlIndex,
       toolHeIndex: batchHeIndex,
-      toolInputByUseId: new Map<string, Record<string, unknown>>(),
       scheduledTasks: [...this.scheduledTasks],
     };
   }
@@ -1564,13 +1558,17 @@ export class SessionStore {
         (obj.taskNotifications ?? []) as Array<[string, TaskNotificationItem]>,
       );
       this.scheduledTasks = Array.isArray(obj.scheduledTasks)
-        ? (obj.scheduledTasks as unknown[]).filter(
-            (t): t is ScheduledTask =>
-              !!t &&
-              typeof t === "object" &&
-              typeof (t as Record<string, unknown>).id === "string" &&
-              typeof (t as Record<string, unknown>).humanSchedule === "string",
-          )
+        ? (obj.scheduledTasks as unknown[]).filter((t): t is ScheduledTask => {
+            if (!t || typeof t !== "object") return false;
+            const o = t as Record<string, unknown>;
+            return (
+              typeof o.id === "string" &&
+              typeof o.humanSchedule === "string" &&
+              typeof o.recurring === "boolean" &&
+              typeof o.durable === "boolean" &&
+              typeof o.toolUseId === "string"
+            );
+          })
         : [];
       this._lastProcessedSeq = (obj._lastProcessedSeq as number) ?? 0;
 
@@ -2997,12 +2995,6 @@ export class SessionStore {
         this._clearTimeoutError();
         if (getSeenTool().has(ev.tool_use_id)) break;
         getSeenTool().add(ev.tool_use_id);
-        // Stash input so tool_end branches can join by tool_use_id.
-        // Batch path uses ctx map; live path falls back to timeline lookup
-        // in `_lookupToolStartInput` (entry written by _pushTimeline below).
-        if (ctx && ev.input && typeof ev.input === "object") {
-          ctx.toolInputByUseId.set(ev.tool_use_id, ev.input as Record<string, unknown>);
-        }
         // Subagent routing: nest inside parent tool's subTimeline
         if (ev.parent_tool_use_id) {
           const parentIdx = this._findParentToolIdx(ctx, ev.parent_tool_use_id);
@@ -3121,11 +3113,8 @@ export class SessionStore {
           }
         }
 
-        // Scheduled-task tracking: CronCreate / CronDelete maintain scheduledTasks state.
-        // Writes go through ctx.scheduledTasks (batch path) or this.scheduledTasks
-        // (live applyEvent path with ctx=null) to keep async-replay stale-safety.
         // CronList is intentionally not consumed — output shape is unverified upstream.
-        if (resolvedStatus === "success") {
+        if (resolvedStatus === "success" && SCHEDULING_TOOLS.has(ev.tool_name)) {
           const readTasks = (): ScheduledTask[] => (ctx ? ctx.scheduledTasks : this.scheduledTasks);
           const writeTasks = (next: ScheduledTask[]): void => {
             if (ctx) ctx.scheduledTasks = next;
@@ -3145,14 +3134,7 @@ export class SessionStore {
                 recurring: result.recurring === true,
                 durable: result.durable === true,
                 prompt: typeof startInput?.prompt === "string" ? startInput.prompt : undefined,
-                cron:
-                  typeof startInput?.cron === "string"
-                    ? startInput.cron
-                    : typeof startInput?.schedule === "string"
-                      ? (startInput.schedule as string)
-                      : typeof startInput?.expression === "string"
-                        ? (startInput.expression as string)
-                        : undefined,
+                cron: pickSchedule(startInput),
                 toolUseId: ev.tool_use_id,
               };
               // Replace-by-id: if CLI re-emits the same id (e.g. snapshot + live
@@ -3174,13 +3156,11 @@ export class SessionStore {
             const result = ev.tool_use_result as Record<string, unknown> | undefined;
             const startInput = this._lookupToolStartInput(ctx, ev.tool_use_id);
             const id =
-              (typeof result?.id === "string" && result.id) ||
-              (typeof startInput?.id === "string" && (startInput.id as string)) ||
-              (typeof startInput?.task_id === "string" && (startInput.task_id as string)) ||
-              (typeof startInput?.cronId === "string" && (startInput.cronId as string)) ||
-              null;
+              (typeof result?.id === "string" && result.id) || pickCronId(startInput) || null;
             if (id) {
-              writeTasks(readTasks().filter((t) => t.id !== id));
+              const cur = readTasks();
+              const next = cur.filter((t) => t.id !== id);
+              if (next.length !== cur.length) writeTasks(next);
             } else {
               dbgWarn("store", "CronDelete tool_end could not resolve id", { result, startInput });
             }

@@ -2,6 +2,7 @@
   import { onDestroy } from "svelte";
   import type { ScheduledTask } from "$lib/stores/session-store.svelte";
   import { t } from "$lib/i18n/index.svelte";
+  import { truncate } from "$lib/utils/format";
 
   type Props = {
     tasks: ScheduledTask[];
@@ -70,11 +71,6 @@
     if (busy) return;
     onList();
   }
-
-  function truncate(s: string, max = 60): string {
-    if (s.length <= max) return s;
-    return s.slice(0, max - 1) + "…";
-  }
 </script>
 
 {#if tasks.length > 0}
@@ -86,11 +82,38 @@
           onclick={() => (open = !open)}
           aria-expanded={open}
         >
-          <span aria-hidden="true">📋</span>
+          <svg
+            class="h-4 w-4"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <circle cx="12" cy="12" r="10" />
+            <polyline points="12 6 12 12 16 14" />
+          </svg>
           <span class="font-medium">
             {t("scheduled_tasks_count", { count: String(tasks.length) })}
           </span>
-          <span class="text-amber-500/70" aria-hidden="true">{open ? "▾" : "▸"}</span>
+          <svg
+            class="h-3 w-3 opacity-70"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            {#if open}
+              <path d="m6 9 6 6 6-6" />
+            {:else}
+              <path d="m9 6 6 6-6 6" />
+            {/if}
+          </svg>
         </button>
         <button
           class="rounded px-2 py-0.5 text-xs text-amber-500 hover:bg-amber-500/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
@@ -118,7 +141,7 @@
                 </div>
                 {#if task.prompt}
                   <div class="text-xs text-amber-500/60 truncate" title={task.prompt}>
-                    {truncate(task.prompt)}
+                    {truncate(task.prompt, 60)}
                   </div>
                 {/if}
                 {#if state === "pending"}

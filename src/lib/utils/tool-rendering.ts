@@ -581,13 +581,37 @@ export function getToolRenderLevel(toolName: string, status: BusToolItem["status
 
 import type { PermissionSuggestion } from "$lib/types";
 
+/** Tool names whose tool_end updates scheduledTasks state. */
+export const SCHEDULING_TOOLS = new Set(["CronCreate", "CronDelete"]);
+
+/** First defined string value at any of the keys in `input`. */
+function pickString(
+  input: Record<string, unknown> | undefined,
+  keys: readonly string[],
+): string | undefined {
+  if (!input) return undefined;
+  for (const k of keys) {
+    const v = input[k];
+    if (typeof v === "string" && v.length > 0) return v;
+  }
+  return undefined;
+}
+
+/** Cron-expression field on CronCreate input (CLI naming has drifted historically). */
+export function pickSchedule(input: Record<string, unknown> | undefined): string | undefined {
+  return pickString(input, ["cron", "schedule", "expression"]);
+}
+
+/** Cron-task id field on CronDelete input (CLI naming has drifted historically). */
+export function pickCronId(input: Record<string, unknown> | undefined): string | undefined {
+  return pickString(input, ["id", "task_id", "cronId"]);
+}
+
 /** Extract a human-readable detail string from tool input (file path, command, pattern, etc.). */
 export function getToolDetail(input: Record<string, unknown> | undefined): string {
   if (!input || Object.keys(input).length === 0) return "";
-  // Scheduling tools: show schedule + prompt so cadence is visible (otherwise
-  // the prompt-only fallback hides cron expression).
-  const schedule = (input.cron ?? input.schedule ?? input.expression) as string | undefined;
-  if (typeof schedule === "string" && schedule.length > 0) {
+  const schedule = pickSchedule(input);
+  if (schedule) {
     const prompt = typeof input.prompt === "string" ? input.prompt : "";
     return prompt ? `${schedule} — ${prompt}` : schedule;
   }

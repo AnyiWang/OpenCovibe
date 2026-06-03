@@ -172,14 +172,14 @@ fn discover_plugin_components(
     lsp_servers_json: &Option<serde_json::Value>,
 ) -> PluginComponents {
     let skills = list_subdir_names(&plugin_dir.join("skills"));
-    let commands = list_md_stems(&plugin_dir.join("commands"))
-        .into_iter()
-        .map(|(name, _)| name)
-        .collect::<Vec<_>>();
-    let agents = list_md_stems(&plugin_dir.join("agents"))
-        .into_iter()
-        .map(|(name, _)| name)
-        .collect::<Vec<_>>();
+    let mut commands = Vec::new();
+    visit_md_stems(&plugin_dir.join("commands"), "", 0, &mut |name, _| {
+        commands.push(name)
+    });
+    let mut agents = Vec::new();
+    visit_md_stems(&plugin_dir.join("agents"), "", 0, &mut |name, _| {
+        agents.push(name)
+    });
     let hooks = plugin_dir.join("hooks").is_dir() || plugin_dir.join("hooks.json").is_file();
 
     let mcp_servers = if let Some(mcp) =
@@ -221,7 +221,9 @@ fn list_subdir_names(dir: &Path) -> Vec<String> {
     };
     entries
         .flatten()
-        .filter(|e| e.path().is_dir())
+        // Use file_type to avoid following symlinks into cycles (matches
+        // visit_md_stems).
+        .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
         .filter_map(|e| e.file_name().to_str().map(String::from))
         .collect()
 }
@@ -232,7 +234,7 @@ fn list_subdir_names(dir: &Path) -> Vec<String> {
 /// (e.g. `.claude/commands/opsx/apply.md` → `("opsx:apply", <path>)`).
 fn list_md_stems(dir: &Path) -> Vec<(String, PathBuf)> {
     let mut stems = Vec::new();
-    collect_md_stems_recursive(dir, "", 0, &mut stems);
+    visit_md_stems(dir, "", 0, &mut |name, path| stems.push((name, path)));
     stems
 }
 
@@ -240,12 +242,9 @@ fn list_md_stems(dir: &Path) -> Vec<(String, PathBuf)> {
 /// pathological structures or symlink cycles.
 const MAX_COMMAND_DEPTH: usize = 8;
 
-fn collect_md_stems_recursive(
-    dir: &Path,
-    prefix: &str,
-    depth: usize,
-    stems: &mut Vec<(String, PathBuf)>,
-) {
+/// Recursively walk `.md` files and invoke `visit(command_name, file_path)` for each.
+/// Lets callers that don't need the path skip the per-entry PathBuf allocation.
+fn visit_md_stems(dir: &Path, prefix: &str, depth: usize, visit: &mut dyn FnMut(String, PathBuf)) {
     if depth > MAX_COMMAND_DEPTH {
         return;
     }
@@ -268,7 +267,7 @@ fn collect_md_stems_recursive(
                 } else {
                     format!("{}:{}", prefix, dir_name)
                 };
-                collect_md_stems_recursive(&path, &new_prefix, depth + 1, stems);
+                visit_md_stems(&path, &new_prefix, depth + 1, visit);
             }
         } else if file_type.is_file() && path.extension().map(|ext| ext == "md").unwrap_or(false) {
             if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
@@ -277,7 +276,7 @@ fn collect_md_stems_recursive(
                 } else {
                     format!("{}:{}", prefix, stem)
                 };
-                stems.push((command_name, path));
+                visit(command_name, path);
             }
         }
     }
@@ -393,23 +392,26 @@ fn scan_skills_dir(dir: &Path, scope: &str, skills: &mut Vec<StandaloneSkill>) {
 /// Parse YAML frontmatter from a SKILL.md file.
 /// Extracts `name` and `description` from between `---` delimiters.
 fn parse_skill_frontmatter(path: &Path) -> (String, String) {
-    let content = match std::fs::read_to_string(path) {
-        Ok(c) => c,
+    use std::io::Read;
+    // Read at most 1KB — command/agent .md bodies can be tens of KB and we
+    // never look past the frontmatter delimiter.
+    let mut buf = Vec::with_capacity(1024);
+    let read_ok = std::fs::File::open(path)
+        .and_then(|f| f.take(1024).read_to_end(&mut buf))
+        .is_ok();
+    if !read_ok {
+        return (String::new(), String::new());
+    }
+    // Truncate at the last UTF-8 char boundary so str::from_utf8 cannot panic.
+    let mut end = buf.len();
+    while end > 0 && std::str::from_utf8(&buf[..end]).is_err() {
+        end -= 1;
+    }
+    let head = match std::str::from_utf8(&buf[..end]) {
+        Ok(s) => s,
         Err(_) => return (String::new(), String::new()),
     };
 
-    // Only look at first 1KB (find safe UTF-8 char boundary to avoid panic)
-    let head: &str = if content.len() > 1024 {
-        let mut end = 1024;
-        while !content.is_char_boundary(end) {
-            end -= 1;
-        }
-        &content[..end]
-    } else {
-        &content
-    };
-
-    // Find frontmatter between --- delimiters
     if !head.starts_with("---") {
         return (String::new(), String::new());
     }

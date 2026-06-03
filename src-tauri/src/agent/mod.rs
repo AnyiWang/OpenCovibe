@@ -1,11 +1,14 @@
 pub mod adapter;
 pub mod claude_protocol;
 pub mod claude_stream;
+pub mod codex_appserver;
+pub mod codex_control;
 pub mod codex_parser;
 pub mod control;
 pub mod notify;
 pub mod pipe_parser;
 pub mod session_actor;
+pub mod session_protocol;
 pub mod spawn;
 pub mod spawn_locks;
 pub mod ssh;

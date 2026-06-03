@@ -1,7 +1,10 @@
 use crate::agent::adapter::{self, ActorSessionMap};
 use crate::agent::claude_stream;
+use crate::agent::codex_appserver::CodexAppServer;
 use crate::agent::session_actor::{self, ActorCommand, AttachmentData, RalphCancelResult};
+use crate::agent::session_protocol::{SessionProtocol, StartupCtx};
 use crate::agent::spawn_locks::SpawnLocks;
+use crate::models::ConversationRef;
 use crate::models::{BusEvent, RemoteHost, RunMeta, RunStatus, SessionMode, UserSettings};
 use crate::process_ext::HideConsole;
 use crate::storage;
@@ -632,26 +635,65 @@ pub(crate) async fn start_session_impl(
         );
     }
 
-    // 6. Spawn CLI process (no initial stdin write — actor handles it)
+    // 6. Spawn CLI process (no initial stdin write — actor handles it).
+    // Codex on the session_actor path uses the bidirectional `codex app-server` transport;
+    // everything else (Claude, and Codex would-be-pipe_exec) uses the stream-json child.
     let effective_cwd = meta.remote_cwd.as_deref().unwrap_or(&meta.cwd);
-    let (child, stdin, stdout, stderr) = spawn_cli_process(
-        effective_cwd,
-        &meta.prompt,
-        &adapter_settings,
-        &session_mode,
-        resume_session_id.as_deref(),
-        is_new,
-        &att_list,
-        remote.as_ref(),
-        meta.remote_cwd.as_deref(),
-        resolved.api_key.as_deref(),
-        resolved.auth_token.as_deref(),
-        resolved.base_url.as_deref(),
-        &run_id,
-        resolved.models.as_deref(),
-        resolved.extra_env.as_ref(),
-    )
-    .await?;
+    let is_codex = meta.agent == "codex";
+    let (child, stdin, stdout, stderr, codex, codex_startup) = if is_codex {
+        if remote.is_some() {
+            return Err("Codex app-server transport is not supported on remote hosts yet".into());
+        }
+        let (c, si, so, se) = spawn_codex_appserver_process(
+            effective_cwd,
+            &adapter_settings,
+            resolved.extra_env.as_ref(),
+        )
+        .await?;
+        let resume_tid = meta.resolved_conversation_ref().and_then(|r| match r {
+            ConversationRef::CodexThread(t) => Some(t),
+            _ => None,
+        });
+        let mut driver = CodexAppServer::new();
+        let ctx = StartupCtx {
+            cwd: effective_cwd.to_string(),
+            resume_thread_id: resume_tid,
+            model: adapter_settings.model.clone(),
+            model_provider: adapter_settings
+                .codex_provider
+                .as_ref()
+                .map(|p| p.id.clone()),
+            // `on-request`: the recommended interactive-approval policy (what Codex's own TUI
+            // uses); Codex surfaces an approval card when a command needs to escape the sandbox.
+            // (Previously `on-failure`, but Codex 0.136 deprecated it and warned on every turn.)
+            approval_policy: Some("on-request".to_string()),
+            sandbox: Some(codex_sandbox_for(
+                adapter_settings.permission_mode.as_deref(),
+            )),
+        };
+        let startup = driver.startup_messages(&ctx);
+        (c, si, so, se, Some(driver), startup)
+    } else {
+        let (c, si, so, se) = spawn_cli_process(
+            effective_cwd,
+            &meta.prompt,
+            &adapter_settings,
+            &session_mode,
+            resume_session_id.as_deref(),
+            is_new,
+            &att_list,
+            remote.as_ref(),
+            meta.remote_cwd.as_deref(),
+            resolved.api_key.as_deref(),
+            resolved.auth_token.as_deref(),
+            resolved.base_url.as_deref(),
+            &run_id,
+            resolved.models.as_deref(),
+            resolved.extra_env.as_ref(),
+        )
+        .await?;
+        (c, si, so, se, None, vec![])
+    };
 
     // 7. Compute turn baselines — 1-based: next_turn_index = N means next message gets turnIndex=N.
     // New session: first message gets turnIndex=1. Resume: first new message gets total+1.
@@ -680,16 +722,24 @@ pub(crate) async fn start_session_impl(
         cancel_token.clone(),
         initial_turn_index,
         initial_auto_ctx_id,
+        codex,
+        codex_startup,
     );
     let cmd_tx = actor_handle.cmd_tx.clone();
     sessions.lock().await.insert(run_id.clone(), actor_handle);
 
-    // 9. Send initial message through actor (unified entry point for Turn Engine)
-    let initial_text = if is_new {
-        Some(meta.prompt.clone())
-    } else {
-        initial_message.clone()
-    };
+    // 9. Send initial message through actor (unified entry point for Turn Engine).
+    // Prefer an explicitly-provided follow-up message; fall back to the stored prompt only
+    // for a brand-new run's first turn. A stopped session re-spawned with a new message
+    // passes initial_message (mode defaults to New, but the Codex thread resumes via
+    // conversation_ref) — it must send that message, NOT re-run the original prompt.
+    let initial_text = initial_message.clone().or_else(|| {
+        if is_new {
+            Some(meta.prompt.clone())
+        } else {
+            None
+        }
+    });
     if let Some(text) = initial_text {
         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
         cmd_tx
@@ -1278,6 +1328,8 @@ pub(crate) async fn approve_session_tool_impl(
         cancel_token.clone(),
         total + 1,
         normal + 1,
+        None, // Claude transport
+        vec![],
     );
     sessions.lock().await.insert(run_id.clone(), actor_handle);
 
@@ -1487,6 +1539,46 @@ pub async fn cancel_control_request(
 }
 
 /// Respond to an MCP elicitation control request.
+/// Answer a Codex `request_user_input` (multiple-choice) prompt. `answers` maps each
+/// question id to the selected option label(s): `{ "<qid>": ["<label>", ...] }`. Routed to
+/// the app-server as a JSON-RPC response on the pending request (Codex transport only).
+#[tauri::command]
+pub async fn respond_user_input(
+    sessions: State<'_, ActorSessionMap>,
+    run_id: String,
+    request_id: String,
+    answers: serde_json::Value,
+) -> Result<(), String> {
+    log::debug!(
+        "[session] respond_user_input: run_id={}, req_id={}",
+        run_id,
+        request_id
+    );
+    if !answers.is_object() {
+        return Err("answers must be a JSON object keyed by question id".into());
+    }
+    let response = serde_json::json!({ "answers": answers });
+
+    let cmd_tx = get_cmd_tx(&sessions, &run_id).await?;
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    cmd_tx
+        .send(ActorCommand::RespondUserInput {
+            request_id: request_id.clone(),
+            response,
+            reply: reply_tx,
+        })
+        .await
+        .map_err(|_| "Actor dead".to_string())?;
+    reply_rx
+        .await
+        .map_err(|_| "Actor dropped reply".to_string())??;
+    log::debug!(
+        "[session] respond_user_input: delivered req_id={}",
+        request_id
+    );
+    Ok(())
+}
+
 /// Writes a control_response back to CLI stdin via the actor.
 #[tauri::command]
 pub async fn respond_elicitation(
@@ -1671,6 +1763,100 @@ fn augment_with_shell_auth(
 /// Sends the initial prompt via stdin for new sessions.
 /// For remote sessions, wraps the CLI command in SSH.
 #[allow(clippy::too_many_arguments)]
+/// Map OpenCovibe permission_mode → Codex app-server `sandbox` mode.
+fn codex_sandbox_for(perm: Option<&str>) -> String {
+    match perm {
+        Some("plan") => "read-only".to_string(),
+        Some("bypassPermissions") | Some("dontAsk") => "danger-full-access".to_string(),
+        _ => "workspace-write".to_string(),
+    }
+}
+
+/// Spawn `codex app-server` (bidirectional JSON-RPC) for an interactive Codex session.
+/// Local only — remote/SSH app-server is out of scope for v1. The `--enable
+/// default_mode_request_user_input` flag is REQUIRED for the multiple-choice tool to fire
+/// in normal sessions (verified codex 0.136 — otherwise "unavailable in Default mode").
+async fn spawn_codex_appserver_process(
+    cwd: &str,
+    settings: &adapter::AdapterSettings,
+    extra_env: Option<&std::collections::HashMap<String, String>>,
+) -> Result<
+    (
+        tokio::process::Child,
+        tokio::process::ChildStdin,
+        tokio::process::ChildStdout,
+        tokio::process::ChildStderr,
+    ),
+    String,
+> {
+    use tokio::process::Command;
+
+    let codex_bin = claude_stream::which_binary("codex")
+        .ok_or_else(|| "Codex CLI not found in PATH".to_string())?;
+
+    let mut args: Vec<String> = vec![
+        "app-server".into(),
+        "--enable".into(),
+        "default_mode_request_user_input".into(),
+        "-c".into(),
+        "suppress_unstable_features_warning=true".into(),
+    ];
+
+    // Third-party provider overrides (mirror spawn.rs exec path).
+    if let Some(p) = &settings.codex_provider {
+        let id = &p.id;
+        args.push("-c".into());
+        args.push(format!("model_provider=\"{}\"", id));
+        args.push("-c".into());
+        args.push(format!("model_providers.{}.name=\"{}\"", id, p.name));
+        args.push("-c".into());
+        args.push(format!(
+            "model_providers.{}.base_url=\"{}\"",
+            id, p.base_url
+        ));
+        if !p.env_key.is_empty() {
+            args.push("-c".into());
+            args.push(format!("model_providers.{}.env_key=\"{}\"", id, p.env_key));
+        }
+        args.push("-c".into());
+        args.push(format!(
+            "model_providers.{}.wire_api=\"{}\"",
+            id, p.wire_api
+        ));
+        args.push("-c".into());
+        args.push(format!("model_providers.{}.requires_openai_auth=false", id));
+    }
+
+    let mut cmd = Command::new(&codex_bin);
+    for a in &args {
+        cmd.arg(a);
+    }
+    let path_env = claude_stream::augmented_path();
+    cmd.current_dir(cwd)
+        .env("PATH", &path_env)
+        .env_remove("ANTHROPIC_API_KEY")
+        .env_remove("ANTHROPIC_AUTH_TOKEN")
+        .env_remove("CLAUDECODE")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .hide_console()
+        .kill_on_drop(true);
+    if let Some(env) = extra_env {
+        for (k, v) in env {
+            cmd.env(k, v);
+        }
+    }
+
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("Failed to spawn codex app-server: {}", e))?;
+    let stdin = child.stdin.take().ok_or("no app-server stdin")?;
+    let stdout = child.stdout.take().ok_or("no app-server stdout")?;
+    let stderr = child.stderr.take().ok_or("no app-server stderr")?;
+    Ok((child, stdin, stdout, stderr))
+}
+
 async fn spawn_cli_process(
     cwd: &str,
     prompt: &str,

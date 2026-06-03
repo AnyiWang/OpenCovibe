@@ -8,6 +8,7 @@ pub mod storage;
 pub mod web_server;
 
 use agent::adapter::new_actor_session_map;
+use agent::codex_control::CodexInfoCache;
 use agent::control::CliInfoCache;
 use agent::spawn_locks::SpawnLocks;
 use agent::stream::new_process_map;
@@ -124,6 +125,7 @@ pub fn run() {
         .manage(new_process_map())
         .manage(new_actor_session_map())
         .manage(CliInfoCache::new())
+        .manage(CodexInfoCache::new())
         .manage(Arc::new(EventWriter::new()))
         .manage(SpawnLocks::new())
         .manage(ShutdownGate::new())
@@ -211,7 +213,9 @@ pub fn run() {
             commands::session::respond_permission,
             commands::session::respond_hook_callback,
             commands::session::respond_elicitation,
+            commands::session::respond_user_input,
             commands::control::get_cli_info,
+            commands::control::get_codex_models,
             commands::teams::list_teams,
             commands::teams::get_team_config,
             commands::teams::list_team_tasks,

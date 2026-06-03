@@ -19,7 +19,110 @@ fn parse_started_date_utc(started_at: &str) -> Option<chrono::NaiveDate> {
 #[tauri::command]
 pub fn get_global_usage_overview(days: Option<u32>) -> Result<UsageOverview, String> {
     log::debug!("[stats] get_global_usage_overview: days={:?}", days);
-    storage::claude_usage::read_global_usage(days)
+    let claude = storage::claude_usage::read_global_usage(days)?;
+    // Codex sessions live in ~/.codex/sessions (parallel to ~/.claude/projects). Merge so
+    // Global covers both agents. Codex failures degrade gracefully to Claude-only.
+    match storage::codex_usage::read_global_codex_usage(days) {
+        Ok(codex) => Ok(merge_overviews(claude, codex)),
+        Err(e) => {
+            log::warn!("[stats] codex global usage failed: {}, claude-only", e);
+            Ok(claude)
+        }
+    }
+}
+
+/// Merge two global UsageOverviews (Claude + Codex) into one. Totals add; by-model and
+/// daily aggregate by key. Activity/streaks keep Claude's (primary) — Codex-only-active
+/// days are not yet folded into the streak count.
+fn merge_overviews(a: UsageOverview, b: UsageOverview) -> UsageOverview {
+    let total_cost = a.total_cost_usd + b.total_cost_usd;
+    let total_tokens = a.total_tokens + b.total_tokens;
+    let total_runs = a.total_runs + b.total_runs;
+
+    // by_model: aggregate by model name (Claude/Codex names are distinct in practice).
+    let mut model_map: HashMap<String, ModelAggregate> = HashMap::new();
+    for m in a.by_model.into_iter().chain(b.by_model.into_iter()) {
+        let e = model_map
+            .entry(m.model.clone())
+            .or_insert_with(|| ModelAggregate {
+                model: m.model.clone(),
+                runs: 0,
+                input_tokens: 0,
+                output_tokens: 0,
+                cache_read_tokens: 0,
+                cache_write_tokens: 0,
+                cost_usd: 0.0,
+                pct: 0.0,
+            });
+        e.runs += m.runs;
+        e.input_tokens += m.input_tokens;
+        e.output_tokens += m.output_tokens;
+        e.cache_read_tokens += m.cache_read_tokens;
+        e.cache_write_tokens += m.cache_write_tokens;
+        e.cost_usd += m.cost_usd;
+    }
+    let mut by_model: Vec<ModelAggregate> = model_map.into_values().collect();
+    for m in &mut by_model {
+        m.pct = if total_cost > 0.0 {
+            m.cost_usd / total_cost * 100.0
+        } else {
+            0.0
+        };
+    }
+    by_model.sort_by(|x, y| {
+        y.cost_usd
+            .partial_cmp(&x.cost_usd)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    // daily: merge by date. Keep Claude's message/session/tool counts + model_breakdown
+    // (Codex daily has none); sum cost/tokens so the daily-trend chart covers both.
+    let mut day_map: HashMap<String, DailyAggregate> = HashMap::new();
+    for d in a.daily.into_iter().chain(b.daily.into_iter()) {
+        match day_map.get_mut(&d.date) {
+            Some(e) => {
+                e.cost_usd += d.cost_usd;
+                e.runs += d.runs;
+                e.input_tokens += d.input_tokens;
+                e.output_tokens += d.output_tokens;
+                if e.message_count.is_none() {
+                    e.message_count = d.message_count;
+                }
+                if e.session_count.is_none() {
+                    e.session_count = d.session_count;
+                }
+                if e.tool_call_count.is_none() {
+                    e.tool_call_count = d.tool_call_count;
+                }
+                if e.model_breakdown.is_none() {
+                    e.model_breakdown = d.model_breakdown;
+                }
+            }
+            None => {
+                day_map.insert(d.date.clone(), d);
+            }
+        }
+    }
+    let mut daily: Vec<DailyAggregate> = day_map.into_values().collect();
+    daily.sort_by(|x, y| x.date.cmp(&y.date));
+
+    UsageOverview {
+        total_cost_usd: total_cost,
+        total_tokens,
+        total_runs,
+        avg_cost_per_run: if total_runs > 0 {
+            total_cost / total_runs as f64
+        } else {
+            0.0
+        },
+        by_model,
+        daily,
+        runs: a.runs,
+        scan_mode: a.scan_mode,
+        active_days: a.active_days,
+        current_streak: a.current_streak,
+        longest_streak: a.longest_streak,
+    }
 }
 
 /// Per-model aggregate builder (internal, not serialized).
@@ -335,7 +438,8 @@ pub fn get_heatmap_daily(scope: String) -> Result<Vec<DailyAggregate>, String> {
     log::debug!("[stats] get_heatmap_daily: scope={}", scope);
     let raw = match scope.as_str() {
         "global" => {
-            let overview = storage::claude_usage::read_global_usage(Some(365))?;
+            // Merge Claude + Codex daily so the global heatmap reflects both agents.
+            let overview = get_global_usage_overview(Some(365))?;
             overview.daily
         }
         "app" => get_app_heatmap_daily()?,

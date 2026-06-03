@@ -670,6 +670,7 @@ mod tests {
             platform_credentials: vec![],
             active_platform_id: None,
             codex_provider: None,
+            codex_transport: None,
             ui_zoom: None,
             onboarding_completed: false,
             web_server_enabled: None,
