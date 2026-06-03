@@ -59,8 +59,7 @@
   import TodoPanel from "$lib/components/TodoPanel.svelte";
   import PermissionPanel from "$lib/components/PermissionPanel.svelte";
   import ElicitationDialog from "$lib/components/ElicitationDialog.svelte";
-  import AuthSourceBadge from "$lib/components/AuthSourceBadge.svelte";
-  import CodexAuthBadge from "$lib/components/CodexAuthBadge.svelte";
+  import AgentAuthBadge from "$lib/components/AgentAuthBadge.svelte";
   import AgentSelector from "$lib/components/AgentSelector.svelte";
 
   import ToolActivity from "$lib/components/ToolActivity.svelte";
@@ -4655,34 +4654,20 @@
                 >
                   <!-- Agent switcher in the hero, synced with the composer's AgentSelector
                        (both call handleAgentChange → store.agent). Switching here also swaps the
-                       auth badge below (Claude → AuthSourceBadge, Codex → CodexAuthBadge). -->
+                       auth badge below (OAuth / API Key, per agent). -->
                   <AgentSelector value={effectiveAgent} onchange={(a) => handleAgentChange(a)} />
                   <span class="text-muted-foreground">·</span>
-                  {#if effectiveAgent === "codex"}
-                    <CodexAuthBadge
-                      codexProvider={settings?.codex_provider ?? null}
-                      hasRun={false}
-                      variant="hero"
-                      onChanged={async () => {
-                        settings = await api.getUserSettings();
-                      }}
-                    />
-                  {:else}
-                    <AuthSourceBadge
-                      {authOverview}
-                      authSourceLabel={store.authSourceLabel}
-                      authSourceCategory={store.authSourceCategory}
-                      apiKeySource={store.apiKeySource}
-                      hasRun={false}
-                      authMode={store.authMode}
-                      platformCredentials={settings?.platform_credentials ?? []}
-                      platformId={store.platformId ?? "anthropic"}
-                      onAuthModeChange={handleAuthModeChange}
-                      onPlatformChange={handlePlatformChange}
-                      {localProxyStatuses}
-                      variant="hero"
-                    />
-                  {/if}
+                  <AgentAuthBadge
+                    agent={effectiveAgent}
+                    {authOverview}
+                    onAuthModeChange={handleAuthModeChange}
+                    codexProvider={settings?.codex_provider ?? null}
+                    onChanged={async () => {
+                      settings = await api.getUserSettings();
+                    }}
+                    hasRun={false}
+                    variant="hero"
+                  />
                   <span class="text-muted-foreground">·</span>
                   {@render heroMetaItems()}
                 </div>

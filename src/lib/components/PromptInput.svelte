@@ -2118,8 +2118,9 @@
           {t("permissions_rules")}
         </button>
         {#if showAuthBadge && !hasRun && agent !== "codex"}
-          <!-- Codex uses the Codex-specific hero badge (CodexAuthBadge); this legacy Claude
-               badge would show wrong Anthropic/version data for Codex, so skip it. -->
+          <!-- Legacy composer auth badge (Claude only). The hero's AgentAuthBadge is the
+               canonical auth surface now; this is slated for removal post hero-migration and
+               is skipped for Codex (it would show wrong Anthropic/version data). -->
           <AuthSourceBadge
             {authOverview}
             {authSourceLabel}
