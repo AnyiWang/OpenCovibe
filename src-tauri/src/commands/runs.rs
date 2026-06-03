@@ -96,12 +96,14 @@ pub fn start_run(
                     .codex_transport
                     .as_deref()
                     != Some("exec")
+                && crate::commands::session::codex_appserver_supported()
             {
                 // Codex DEFAULTS to the app-server (bidirectional session_actor) path so the
                 // interactive tools (approvals, steer, fork/rewind/compact/goal, images, live
                 // command output) work out of the box — most of the Codex feature surface
-                // depends on it. Only an explicit "exec" setting opts back into the one-shot
-                // legacy transport (escape hatch for older/incompatible Codex CLIs).
+                // depends on it. Only an explicit "exec" setting opts out, OR an installed
+                // Codex CLI too old for `codex app-server --enable …` (the probe) — in which
+                // case we auto-fall back to the one-shot exec transport so the run still works.
                 ExecutionPath::SessionActor
             } else {
                 ExecutionPath::PipeExec

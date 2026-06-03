@@ -1874,6 +1874,57 @@ pub(crate) fn codex_approval_for(perm: Option<&str>) -> String {
     }
 }
 
+/// Auto-fallback probe: does the installed Codex CLI support the app-server transport?
+///
+/// Codex now defaults to app-server (see `commands/runs.rs`), but an old/incompatible CLI
+/// would reject `codex app-server --enable …` and the session would die before the handshake
+/// (process spawns, then exits — NOT a spawn error, so it can't be caught at spawn time).
+/// To avoid that, we probe once: `codex app-server --help` exits 0 AND lists the `--enable`
+/// option only on a CLI new enough to run our interactive transport. If not, the run falls
+/// back to the one-shot `exec` path. `--help` returns immediately, so this is a cheap sync
+/// check; the result is cached for the process lifetime (re-probed only after an app restart,
+/// e.g. following a Codex upgrade).
+pub(crate) fn codex_appserver_supported() -> bool {
+    use std::sync::OnceLock;
+    static CACHE: OnceLock<bool> = OnceLock::new();
+    *CACHE.get_or_init(|| {
+        let Some(bin) = claude_stream::which_binary("codex") else {
+            log::warn!("[codex] app-server probe: codex binary not found → exec fallback");
+            return false;
+        };
+        let out = std::process::Command::new(&bin)
+            .arg("app-server")
+            .arg("--help")
+            .env("PATH", claude_stream::augmented_path())
+            .output();
+        match out {
+            Ok(o) => {
+                let txt = format!(
+                    "{}{}",
+                    String::from_utf8_lossy(&o.stdout),
+                    String::from_utf8_lossy(&o.stderr)
+                );
+                // Need both the subcommand (exit 0) and the `--enable` feature flag we rely on.
+                let ok = o.status.success() && txt.contains("--enable");
+                if ok {
+                    log::debug!("[codex] app-server supported → using interactive transport");
+                } else {
+                    log::warn!(
+                        "[codex] app-server unsupported (help exit={:?}, has --enable={}) → exec fallback",
+                        o.status.code(),
+                        txt.contains("--enable")
+                    );
+                }
+                ok
+            }
+            Err(e) => {
+                log::warn!("[codex] app-server probe failed: {} → exec fallback", e);
+                false
+            }
+        }
+    })
+}
+
 /// Spawn `codex app-server` (bidirectional JSON-RPC) for an interactive Codex session.
 /// Local only — remote/SSH app-server is out of scope for v1. The `--enable
 /// default_mode_request_user_input` flag is REQUIRED for the multiple-choice tool to fire
