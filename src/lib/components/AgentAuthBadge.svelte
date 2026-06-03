@@ -34,6 +34,7 @@
 
   let isCodex = $derived(agent === "codex");
   let codexStatus = $state<CodexAuthResult | null>(null);
+  let codexLoaded = $state(false);
   let dropdownOpen = $state(false);
   let wrapperEl: HTMLDivElement | undefined = $state();
   let buttonEl: HTMLButtonElement | undefined = $state();
@@ -43,6 +44,16 @@
   let mode = $derived.by<"oauth" | "api">(() => {
     if (isCodex) return codexProvider ? "api" : "oauth";
     return authOverview?.auth_mode === "api" ? "api" : "oauth";
+  });
+
+  // Load Codex auth state when the agent IS Codex — covers switching Claude→Codex after
+  // mount (onMount's one-shot load would have early-returned while the agent was Claude,
+  // leaving the OAuth dot stuck amber even though `codex login` is active).
+  $effect(() => {
+    if (isCodex && !codexLoaded) {
+      codexLoaded = true;
+      void loadCodexStatus();
+    }
   });
 
   let oauthOk = $derived(isCodex ? !!codexStatus?.logged_in : !!authOverview?.cli_login_available);
@@ -140,7 +151,8 @@
   }
 
   onMount(() => {
-    void loadCodexStatus();
+    // Codex status is loaded by the $effect above (reactive to isCodex); here we only
+    // wire the dropdown's outside-click/Escape handlers + the auth-changed refresh.
     function onDocClick(e: MouseEvent) {
       if (dropdownOpen && wrapperEl && !wrapperEl.contains(e.target as Node)) dropdownOpen = false;
     }
