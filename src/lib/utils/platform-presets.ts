@@ -4,7 +4,9 @@ export const PLATFORM_PRESETS: PlatformPreset[] = [
   // ── LLM Providers ──
   {
     id: "anthropic",
-    name: "Anthropic",
+    // The CLI being wrapped is "Claude Code" (Anthropic is the company). Label the native
+    // option by the CLI name; third-party providers below keep their own names.
+    name: "Claude Code",
     base_url: "",
     auth_env_var: "ANTHROPIC_API_KEY",
     description: "Claude official API",

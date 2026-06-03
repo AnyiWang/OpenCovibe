@@ -31,7 +31,8 @@
 
   // app mode = a third-party provider is configured; otherwise codex login (cli).
   let authMode = $derived<"cli" | "app">(codexProvider ? "app" : "cli");
-  let version = $derived(codexStatus?.version ?? null);
+  // Version is shown by the hero's shared meta row (heroMetaItems), not inline here —
+  // keeps the Codex badge single-line and visually consistent with AuthSourceBadge.
 
   let triggerLabel = $derived.by(() => {
     if (authMode === "app") return codexProvider?.name ?? t("codexAuth_appLabel");
@@ -157,9 +158,6 @@
     >
       <span class="inline-block h-1.5 w-1.5 rounded-full {dotColor}"></span>
       {triggerLabel}
-      {#if version}
-        <span class="text-muted-foreground/60">· v{version}</span>
-      {/if}
       <svg
         class="h-2.5 w-2.5 text-muted-foreground"
         viewBox="0 0 24 24"

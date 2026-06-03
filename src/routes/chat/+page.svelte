@@ -685,6 +685,21 @@
     return cliVersionInfo.channel === "stable" ? cliVersionInfo.stable : cliVersionInfo.latest;
   });
 
+  // ── Hero meta version (agent-correct) ──
+  // Codex → codex-cli version (strip the "codex-cli " prefix + leading "v" so chat_cliVersion's
+  // "v{version}" renders cleanly); Claude → its CLI version. The update-check is Claude-only.
+  let heroCliVersion = $derived(
+    effectiveAgent === "codex"
+      ? (getCodexVersion() ?? "").replace(/^codex-cli\s*/i, "").replace(/^v/i, "")
+      : (cliVersionInfo?.installed ?? ""),
+  );
+  let heroHasUpdate = $derived(
+    effectiveAgent !== "codex" &&
+      !!cliVersionInfo?.installed &&
+      !!channelLatest &&
+      cliVersionInfo.installed !== channelLatest,
+  );
+
   // ── Platform display name ──
   let platformDisplayName = $derived.by(() => {
     const pid = store.platformId;
@@ -4260,19 +4275,14 @@
 {/snippet}
 
 {#snippet heroMetaItems()}
-  {@const hasUpdate = !!(
-    cliVersionInfo?.installed &&
-    channelLatest &&
-    cliVersionInfo.installed !== channelLatest
-  )}
-  {#if cliVersionInfo?.installed}
+  {#if heroCliVersion}
     <button
       class="tabular-nums hover:text-muted-foreground transition-colors"
       onclick={() => goto("/release-notes")}
     >
-      {t("chat_cliVersion").replace("{version}", cliVersionInfo.installed)}
+      {t("chat_cliVersion").replace("{version}", heroCliVersion)}
     </button>
-    {#if hasUpdate}
+    {#if heroHasUpdate}
       <span class="text-primary/70">·</span>
       <button
         class="text-primary/70 hover:text-primary transition-colors"
@@ -4284,7 +4294,7 @@
     {/if}
   {/if}
   {#if remoteHosts.length > 0}
-    {#if cliVersionInfo?.installed}
+    {#if heroCliVersion}
       <span class="text-muted-foreground">·</span>
     {/if}
     <div class="relative inline-flex items-center">
