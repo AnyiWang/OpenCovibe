@@ -61,6 +61,7 @@
   import ElicitationDialog from "$lib/components/ElicitationDialog.svelte";
   import AuthSourceBadge from "$lib/components/AuthSourceBadge.svelte";
   import CodexAuthBadge from "$lib/components/CodexAuthBadge.svelte";
+  import AgentSelector from "$lib/components/AgentSelector.svelte";
 
   import ToolActivity from "$lib/components/ToolActivity.svelte";
   import ShortcutHelpPanel from "$lib/components/ShortcutHelpPanel.svelte";
@@ -4642,6 +4643,11 @@
                 <div
                   class="mt-4 flex items-center justify-center gap-1.5 text-xs text-muted-foreground"
                 >
+                  <!-- Agent switcher in the hero, synced with the composer's AgentSelector
+                       (both call handleAgentChange → store.agent). Switching here also swaps the
+                       auth badge below (Claude → AuthSourceBadge, Codex → CodexAuthBadge). -->
+                  <AgentSelector value={effectiveAgent} onchange={(a) => handleAgentChange(a)} />
+                  <span class="text-muted-foreground">·</span>
                   {#if effectiveAgent === "codex"}
                     <CodexAuthBadge
                       codexProvider={settings?.codex_provider ?? null}
