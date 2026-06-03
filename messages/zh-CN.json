@@ -71,7 +71,7 @@
   "settings_codexProvider_title": "Codex 第三方 Provider",
   "settings_codexProvider_desc": "让 Codex 指向第三方 OpenAI Responses API provider。仅支持 Responses 的网关可用——仅 Chat 的 provider 需要翻译代理。",
   "settings_codexTransport_label": "交互式传输 (app-server)",
-  "settings_codexTransport_desc": "用 Codex 的双向 app-server 取代单向 exec 运行。解锁交互式工具——命令/文件审批、多选提问、MCP elicitation。实验性；仅本地会话。",
+  "settings_codexTransport_desc": "默认开启——用 Codex 的双向 app-server 运行，绝大多数交互功能（审批、steer、fork/rewind/compact/goal、图片、实时输出）都依赖它。关闭则回退到单向 exec 旧传输（如旧版 Codex CLI 可用）。实验性。",
   "settings_codexProvider_model": "模型",
   "settings_codexProvider_apiKey": "API Key",
   "settings_codexProvider_keyEnvNote": "启动时注入为 {env}。",

@@ -71,7 +71,7 @@
   "settings_codexProvider_title": "Codex Provider",
   "settings_codexProvider_desc": "Point Codex at a third-party OpenAI Responses-API provider. Only Responses-capable gateways work — Chat-only providers need a translation proxy.",
   "settings_codexTransport_label": "Interactive transport (app-server)",
-  "settings_codexTransport_desc": "Run Codex over its bidirectional app-server instead of one-way exec. Unlocks interactive tools — command/file approvals, multiple-choice prompts, and MCP elicitation. Experimental; local sessions only.",
+  "settings_codexTransport_desc": "On by default — runs Codex over its bidirectional app-server, which powers most interactive features (approvals, steer, fork/rewind/compact/goal, images, live output). Turn off to fall back to the legacy one-shot exec transport (e.g. for older Codex CLIs). Experimental.",
   "settings_codexProvider_model": "Model",
   "settings_codexProvider_apiKey": "API Key",
   "settings_codexProvider_keyEnvNote": "Injected at launch as {env}.",

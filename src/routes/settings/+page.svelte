@@ -3194,7 +3194,7 @@
                   <input
                     type="checkbox"
                     class="mt-0.5 rounded"
-                    checked={settings.codex_transport === "app_server"}
+                    checked={settings.codex_transport !== "exec"}
                     onchange={async (e) => {
                       const on = (e.currentTarget as HTMLInputElement).checked;
                       settings = await api.updateUserSettings({

@@ -95,9 +95,13 @@ pub fn start_run(
                 && storage::settings::get_user_settings()
                     .codex_transport
                     .as_deref()
-                    == Some("app_server")
+                    != Some("exec")
             {
-                // Codex app-server transport → bidirectional session_actor path.
+                // Codex DEFAULTS to the app-server (bidirectional session_actor) path so the
+                // interactive tools (approvals, steer, fork/rewind/compact/goal, images, live
+                // command output) work out of the box — most of the Codex feature surface
+                // depends on it. Only an explicit "exec" setting opts back into the one-shot
+                // legacy transport (escape hatch for older/incompatible Codex CLIs).
                 ExecutionPath::SessionActor
             } else {
                 ExecutionPath::PipeExec
