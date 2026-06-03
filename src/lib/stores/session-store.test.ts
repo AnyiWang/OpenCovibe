@@ -20,6 +20,7 @@ vi.mock("$lib/api", () => ({
   stopSession: vi.fn(),
   stopRun: vi.fn(),
   sendSessionControl: vi.fn(),
+  steerSession: vi.fn(),
   syncCliSession: vi.fn().mockResolvedValue({ newEvents: 0 }),
 }));
 
@@ -5659,5 +5660,63 @@ describe("SessionStore reducer", () => {
       expect(s.rateLimitUtilization).toBe(0.85);
       expect(s.rateLimitResetsAt).toBe(1711900000);
     });
+  });
+});
+
+// ── Codex Wave-2: mid-turn steer routing (sendMessage) ──
+
+describe("sendMessage routing", () => {
+  let store: SessionStore;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    store = new SessionStore();
+  });
+
+  it("routes to steer when a Codex app-server turn is RUNNING", async () => {
+    store.run = makeRun("codex-steer", { agent: "codex", status: "running" });
+    store.phase = "running"; // isRunning + sessionAlive
+
+    await store.sendMessage("focus on the auth module", []);
+
+    expect(api.steerSession).toHaveBeenCalledWith("codex-steer", "focus on the auth module");
+    expect(api.sendSessionMessage).not.toHaveBeenCalled();
+  });
+
+  it("enqueues (sendSessionMessage) for a Codex app-server turn that is NOT running", async () => {
+    store.run = makeRun("codex-idle", { agent: "codex", status: "running" });
+    store.phase = "idle"; // sessionAlive but not running
+
+    await store.sendMessage("next task please", []);
+
+    expect(api.sendSessionMessage).toHaveBeenCalledWith(
+      "codex-idle",
+      "next task please",
+      undefined,
+    );
+    expect(api.steerSession).not.toHaveBeenCalled();
+  });
+
+  it("does NOT steer for a running Claude session (enqueues instead)", async () => {
+    store.run = makeRun("claude-run", { agent: "claude", status: "running" });
+    store.phase = "running";
+
+    await store.sendMessage("more detail", []);
+
+    expect(api.steerSession).not.toHaveBeenCalled();
+    expect(api.sendSessionMessage).toHaveBeenCalledWith("claude-run", "more detail", undefined);
+  });
+
+  it("falls through to enqueue when a running Codex send carries attachments", async () => {
+    store.run = makeRun("codex-attach", { agent: "codex", status: "running" });
+    store.phase = "running";
+
+    await store.sendMessage("see this", [
+      { name: "a.png", type: "image/png", size: 3, contentBase64: "AAA" },
+    ]);
+
+    // turn/steer takes plain text only — attachments use the normal enqueue path.
+    expect(api.steerSession).not.toHaveBeenCalled();
+    expect(api.sendSessionMessage).toHaveBeenCalled();
   });
 });

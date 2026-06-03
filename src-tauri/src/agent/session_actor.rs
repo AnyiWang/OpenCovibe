@@ -10,7 +10,9 @@ use crate::agent::adapter::ActorSessionMap;
 use crate::agent::claude_protocol::{validate_bus_event, ProtocolState};
 use crate::agent::codex_appserver::CodexAppServer;
 use crate::agent::notify::notify_if_background;
-use crate::agent::session_protocol::{LifecycleSignal, PendingKind, SessionProtocol};
+use crate::agent::session_protocol::{
+    CodexTurnOverrides, LifecycleSignal, PendingKind, SessionProtocol,
+};
 use crate::agent::turn_engine::{
     apply_activity_reset, ActiveTurn, ContextExtractor, InternalExtractor, InternalJob, TurnOrigin,
     TurnPhase, UserTurnKind, UserTurnTicket, INTERNAL_HARD_TIMEOUT, INTERNAL_SOFT_TIMEOUT,
@@ -240,6 +242,9 @@ struct SessionActor {
     codex_startup: Vec<Value>,
     /// Codex thread/started seen — gates turn dispatch until the thread is open.
     codex_ready: bool,
+    /// Live per-turn Codex overrides (model/effort/approval/sandbox) set via control subtypes
+    /// without respawning. Injected into each `turn/start`. Ignored for Claude.
+    codex_overrides: CodexTurnOverrides,
     /// Current RunState string — identity dedup: skip emit if unchanged.
     state: String,
     stdin: Option<ChildStdin>,
@@ -342,6 +347,7 @@ pub fn spawn_actor(
         codex,
         codex_startup,
         codex_ready: false,
+        codex_overrides: CodexTurnOverrides::default(),
         state: String::new(),
         stdin: Some(stdin),
         child: Some(child),
@@ -1250,11 +1256,12 @@ impl SessionActor {
                     image_paths.len()
                 );
             }
-            let lines = self
-                .codex
-                .as_mut()
-                .unwrap()
-                .frame_user_turn(&augmented, &image_paths);
+            let overrides = self.codex_overrides.clone();
+            let lines =
+                self.codex
+                    .as_mut()
+                    .unwrap()
+                    .frame_user_turn(&augmented, &image_paths, &overrides);
             for line in &lines {
                 self.write_json_line(line, "codex turn/start").await?;
             }
@@ -1360,13 +1367,25 @@ impl SessionActor {
         let subtype = request
             .get("subtype")
             .and_then(|v| v.as_str())
-            .unwrap_or("");
+            .unwrap_or("")
+            .to_string();
         log::debug!(
             "[actor] send_control: run_id={}, subtype={}, req_id={}",
             self.run_id,
             subtype,
             request_id
         );
+
+        // Codex app-server has no stream-json control protocol. Interpret the control subtypes
+        // locally: set_* mutate the stored per-turn overrides (applied on the next turn/start);
+        // interrupt/steer write a JSON-RPC frame to the app-server now. We resolve the control
+        // waiter synchronously here so the IPC caller's `send_session_control` returns Ok without
+        // a Claude `control_request` ever going to the wire.
+        if self.codex.is_some() {
+            return self
+                .handle_codex_control(&subtype, &request, request_id)
+                .await;
+        }
 
         if subtype == "interrupt" {
             self.pending_interrupt = true;
@@ -1384,6 +1403,96 @@ impl SessionActor {
 
         self.write_json_line(&payload, "control request").await?;
 
+        Ok((request_id, rx))
+    }
+
+    /// Codex-only control handler. Interprets the frontend's `sendSessionControl` subtypes
+    /// against the bidirectional app-server: `set_*` update the stored per-turn overrides;
+    /// `interrupt`/`steer` write a JSON-RPC frame now. Returns the same `(request_id, rx)` shape
+    /// as the Claude path, but the waiter is resolved synchronously (no wire round-trip) so the
+    /// IPC caller resolves immediately with an `{ok:true}` ack.
+    async fn handle_codex_control(
+        &mut self,
+        subtype: &str,
+        request: &Value,
+        request_id: String,
+    ) -> Result<(String, oneshot::Receiver<Value>), String> {
+        let (tx, rx) = oneshot::channel();
+
+        match subtype {
+            "interrupt" => {
+                // Native stop: turn/interrupt halts the running turn in place (no process kill,
+                // no respawn). The session stays alive for the next message.
+                let lines = self.codex.as_mut().unwrap().frame_interrupt();
+                if lines.is_empty() {
+                    log::debug!(
+                        "[actor] codex interrupt: no active turn/thread, nothing to send (run_id={})",
+                        self.run_id
+                    );
+                }
+                for line in &lines {
+                    self.write_json_line(line, "codex turn/interrupt").await?;
+                }
+            }
+            "set_permission_mode" => {
+                // {mode} → Codex AskForApproval string + sandbox mode string. Normalize the app
+                // mode through map_permission_mode first so both app names ("plan", "auto_all")
+                // and CLI names ("bypassPermissions") map consistently. Stored, applied on the
+                // next turn/start (which converts the sandbox string to a SandboxPolicy object).
+                if let Some(mode) = request.get("mode").and_then(|v| v.as_str()) {
+                    let cli_mode = crate::agent::adapter::map_permission_mode(mode);
+                    self.codex_overrides.approval_policy = Some(
+                        crate::commands::session::codex_approval_for(Some(&cli_mode)),
+                    );
+                    self.codex_overrides.sandbox =
+                        Some(crate::commands::session::codex_sandbox_for(Some(&cli_mode)));
+                    log::debug!(
+                        "[actor] codex override set_permission_mode: mode={} → approval={:?} sandbox={:?}",
+                        mode,
+                        self.codex_overrides.approval_policy,
+                        self.codex_overrides.sandbox
+                    );
+                }
+            }
+            "set_model" => {
+                if let Some(model) = request.get("model").and_then(|v| v.as_str()) {
+                    self.codex_overrides.model = Some(model.to_string());
+                    log::debug!("[actor] codex override set_model: {}", model);
+                }
+            }
+            "set_effort" => {
+                if let Some(effort) = request.get("effort").and_then(|v| v.as_str()) {
+                    self.codex_overrides.effort = Some(effort.to_string());
+                    log::debug!("[actor] codex override set_effort: {}", effort);
+                }
+            }
+            "steer" => {
+                // Mid-turn steer: inject guidance into the currently-running turn. Drops silently
+                // if there's no active turn (frame_steer returns empty + logs).
+                if let Some(text) = request.get("text").and_then(|v| v.as_str()) {
+                    let lines = self.codex.as_mut().unwrap().frame_steer(text);
+                    if lines.is_empty() {
+                        log::debug!(
+                            "[actor] codex steer: no active turn, nothing to send (run_id={})",
+                            self.run_id
+                        );
+                    }
+                    for line in &lines {
+                        self.write_json_line(line, "codex turn/steer").await?;
+                    }
+                }
+            }
+            other => {
+                log::debug!(
+                    "[actor] codex control subtype '{}' not supported — acking (run_id={})",
+                    other,
+                    self.run_id
+                );
+            }
+        }
+
+        // Resolve the waiter immediately — these are local, no wire round-trip to await.
+        let _ = tx.send(serde_json::json!({ "ok": true }));
         Ok((request_id, rx))
     }
 

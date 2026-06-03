@@ -16,12 +16,13 @@ const CLAUDE_FEATURES: AgentFeatures = {
 };
 
 const CODEX_FEATURES: AgentFeatures = {
-  // Codex reads reasoning effort from the selected model's supportedReasoningEfforts;
-  // persisted to agent settings and injected as -c model_reasoning_effort at next spawn
-  // (no control protocol, so no live switching — same as Codex model change).
+  // Codex reads reasoning effort from the selected model's supportedReasoningEfforts.
+  // Over the app-server transport the model/effort/permission overrides apply live on
+  // the next turn (control protocol: set_effort / set_model / set_permission_mode);
+  // they also persist to agent settings for future spawns.
   effortSelector: true,
   planModeToggle: true,
-  permissionModeSwitch: false,
+  permissionModeSwitch: true,
   slashCommandMenu: true,
   addDirAction: true,
 };

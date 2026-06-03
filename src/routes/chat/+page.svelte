@@ -2343,7 +2343,10 @@
     const appName = CLI_TO_APP_MODE[newMode] ?? newMode;
 
     if (effectiveAgent === "codex") {
-      // Codex: no control protocol. Persist to agent-scoped settings → takes effect on next spawn.
+      // Codex (app-server): persist to agent-scoped settings (future spawns) AND, when the
+      // session is alive, hot-switch via the control protocol so the override applies on the
+      // NEXT turn. The backend maps `newMode` (CLI mode, e.g. acceptEdits/plan/bypassPermissions)
+      // → approvalPolicy + sandboxPolicy, reusing the same semantics as the spawn-time path.
       try {
         await api.updateAgentSettings("codex", { permission_mode: appName });
         dbg("chat", "codex permission_mode persisted", { appName });
@@ -2359,8 +2362,25 @@
         return false;
       }
       if (seq !== permissionModeChangeSeq) return false;
+      // Live apply to the running app-server session (best-effort; persisted value above
+      // is the fallback for future spawns if this fails or there is no live session).
+      let liveApplied = false;
+      if (hadActiveSession && store.run) {
+        try {
+          await api.setPermissionMode(store.run.id, newMode);
+          liveApplied = true;
+          dbg("chat", "codex permission mode hot-switched via control protocol", { newMode });
+        } catch (e) {
+          dbgWarn("chat", "codex permission mode hot-switch failed (persisted for next spawn):", e);
+        }
+      }
+      if (seq !== permissionModeChangeSeq) return false;
       if (opts?.toast !== false) {
-        showChatToast(t("toast_permissionModeNextTurn", { mode: getPermModeLabel(newMode) }));
+        showChatToast(
+          liveApplied
+            ? t("toast_permissionMode", { mode: getPermModeLabel(newMode) })
+            : t("toast_permissionModeNextTurn", { mode: getPermModeLabel(newMode) }),
+        );
       }
       return true;
     }
@@ -2517,8 +2537,9 @@
       store.run ? api.updateRunModel(store.run.id, newModel) : Promise.resolve();
 
     if (effectiveAgent === "codex") {
-      // Codex: no control protocol, no default_model.
-      // No hot-switch — model change takes effect on the NEXT turn/spawn.
+      // Codex (app-server): persist to agent settings + run meta (future spawns) AND, when the
+      // session is alive, hot-switch via the control protocol so the override applies on the
+      // NEXT turn. No Codex default_model concept — agent settings carry the per-agent model.
       const [settingsResult, runResult] = await Promise.allSettled([
         api.updateAgentSettings("codex", { model: newModel }),
         persistRunModel(),
@@ -2528,6 +2549,14 @@
       }
       if (runResult.status === "rejected") {
         dbgWarn("chat", "failed to persist codex run model", runResult.reason);
+      }
+      if (store.sessionAlive && store.run) {
+        try {
+          await api.setSessionModel(store.run.id, newModel);
+          dbg("chat", "codex model hot-switched via control protocol", { newModel });
+        } catch (e) {
+          dbgWarn("chat", "codex model hot-switch failed (persisted for next turn):", e);
+        }
       }
       return;
     }
@@ -2567,13 +2596,22 @@
     currentEffort = newEffort;
 
     if (effectiveAgent === "codex") {
-      // Codex has no control protocol — persist to agent settings; spawn.rs injects
-      // -c model_reasoning_effort at the next turn. Empty clears the override (Codex
+      // Codex (app-server): persist to agent settings (future spawns inject
+      // -c model_reasoning_effort) AND, when the session is alive, hot-switch via the control
+      // protocol so the override applies on the NEXT turn. Empty clears the override (Codex
       // falls back to its own configured default).
       if (agentSettings) agentSettings.effort = newEffort;
       api.updateAgentSettings("codex", { effort: newEffort }).catch((e) => {
         dbgWarn("chat", "failed to persist codex effort", e);
       });
+      if (store.sessionAlive && store.run) {
+        try {
+          await api.setEffort(store.run.id, newEffort);
+          dbg("chat", "codex effort hot-switched via control protocol", { newEffort });
+        } catch (e) {
+          dbgWarn("chat", "codex effort hot-switch failed (persisted for next turn):", e);
+        }
+      }
       return;
     }
 

@@ -27,6 +27,23 @@ pub struct StartupCtx {
     pub sandbox: Option<String>,
 }
 
+/// Live per-turn overrides for a Codex `app-server` session. These are injected into the next
+/// `turn/start` and, per the protocol, persist "for this turn AND subsequent turns" server-side.
+/// Set via the frontend's control subtypes (`set_permission_mode` / `set_model` / `set_effort`)
+/// without respawning the process. All `None` = use the spawn-time defaults (no override).
+#[derive(Debug, Clone, Default)]
+pub struct CodexTurnOverrides {
+    /// `AskForApproval` string: "untrusted" | "on-failure" | "on-request" | "never".
+    pub approval_policy: Option<String>,
+    /// App sandbox mode string ("read-only" | "workspace-write" | "danger-full-access"); the
+    /// protocol impl converts it to the tagged `SandboxPolicy` object `turn/start` expects.
+    pub sandbox: Option<String>,
+    /// Model slug override.
+    pub model: Option<String>,
+    /// `ReasoningEffort` string ("minimal" | "low" | "medium" | "high").
+    pub effort: Option<String>,
+}
+
 /// Which interactive surface a pending server request maps to. Determines which
 /// frontend response command (and `frame_response` branch) applies.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -81,11 +98,24 @@ pub trait SessionProtocol: Send {
     /// (e.g. Codex `initialize` + `thread/start`|`thread/resume`).
     fn startup_messages(&mut self, ctx: &StartupCtx) -> Vec<Value>;
 
-    /// Frame a user message into wire line(s) (Codex: `turn/start`).
-    fn frame_user_turn(&mut self, text: &str, image_paths: &[String]) -> Vec<Value>;
+    /// Frame a user message into wire line(s) (Codex: `turn/start`). `overrides` carries live
+    /// per-turn model/effort/approval/sandbox overrides (Codex only; Claude impls ignore them).
+    fn frame_user_turn(
+        &mut self,
+        text: &str,
+        image_paths: &[String],
+        overrides: &CodexTurnOverrides,
+    ) -> Vec<Value>;
 
     /// Frame an interrupt/stop (Codex: `turn/interrupt`). Empty = nothing to send.
     fn frame_interrupt(&mut self) -> Vec<Value>;
+
+    /// Frame a mid-turn steer (Codex: `turn/steer`) — inject guidance into the *currently
+    /// running* turn without interrupting it. Empty = nothing to send (no active turn / no
+    /// thread). Default = unsupported (Claude has no steer; returns empty).
+    fn frame_steer(&mut self, _text: &str) -> Vec<Value> {
+        vec![]
+    }
 
     /// Parse one stdout line into events + lifecycle/interactive/thread-id signals.
     fn parse_line(&mut self, run_id: &str, line: &str) -> ParsedLine;

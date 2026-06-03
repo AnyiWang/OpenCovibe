@@ -1764,11 +1764,22 @@ fn augment_with_shell_auth(
 /// For remote sessions, wraps the CLI command in SSH.
 #[allow(clippy::too_many_arguments)]
 /// Map OpenCovibe permission_mode → Codex app-server `sandbox` mode.
-fn codex_sandbox_for(perm: Option<&str>) -> String {
+pub(crate) fn codex_sandbox_for(perm: Option<&str>) -> String {
     match perm {
         Some("plan") => "read-only".to_string(),
         Some("bypassPermissions") | Some("dontAsk") => "danger-full-access".to_string(),
         _ => "workspace-write".to_string(),
+    }
+}
+
+/// Map OpenCovibe permission_mode → Codex `AskForApproval` string. Mirrors the sandbox mapping
+/// (`codex_sandbox_for`): the relaxed modes get full autonomy ("never" — no approval prompts to
+/// match danger-full-access), everything else keeps the interactive "on-request" policy the TUI
+/// uses (Codex surfaces an approval card when a command needs to escape the sandbox).
+pub(crate) fn codex_approval_for(perm: Option<&str>) -> String {
+    match perm {
+        Some("bypassPermissions") | Some("dontAsk") => "never".to_string(),
+        _ => "on-request".to_string(),
     }
 }
 

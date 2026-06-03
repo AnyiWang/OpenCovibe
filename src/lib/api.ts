@@ -671,6 +671,18 @@ export async function setPermissionMode(runId: string, mode: string) {
   return sendSessionControl(runId, "set_permission_mode", { mode });
 }
 
+/** Set reasoning effort live (Codex app-server: applies on the next turn). */
+export async function setEffort(runId: string, effort: string) {
+  return sendSessionControl(runId, "set_effort", { effort });
+}
+
+/** Inject guidance into the currently-running turn without interrupting it
+ *  (Codex app-server `turn/steer`). Routed by the store when a Codex turn is
+ *  running and the user sends from the mid-turn send button. */
+export async function steerSession(runId: string, text: string) {
+  return sendSessionControl(runId, "steer", { text });
+}
+
 export async function setMaxThinkingTokens(runId: string, tokens: number) {
   return sendSessionControl(runId, "set_max_thinking_tokens", { max_thinking_tokens: tokens });
 }

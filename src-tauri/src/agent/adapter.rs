@@ -46,7 +46,7 @@ pub struct AdapterSettings {
 }
 
 /// Map OpenCovibe permission mode names to Claude CLI `--permission-mode` values.
-fn map_permission_mode(mode: &str) -> String {
+pub(crate) fn map_permission_mode(mode: &str) -> String {
     match mode {
         "ask" => "default".to_string(),
         "auto_read" => "acceptEdits".to_string(),

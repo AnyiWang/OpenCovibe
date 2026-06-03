@@ -15,7 +15,8 @@
 //! `--enable default_mode_request_user_input` to unlock it in normal sessions.
 
 use crate::agent::session_protocol::{
-    LifecycleSignal, ParsedLine, PendingInteractive, PendingKind, SessionProtocol, StartupCtx,
+    CodexTurnOverrides, LifecycleSignal, ParsedLine, PendingInteractive, PendingKind,
+    SessionProtocol, StartupCtx,
 };
 use crate::models::BusEvent;
 use serde_json::{json, Value};
@@ -47,6 +48,9 @@ struct PendingServerReq {
 pub struct CodexAppServer {
     phase: Phase,
     thread_id: Option<String>,
+    /// Id of the currently-running turn, captured from `turn/started` (`params.turn.id`).
+    /// Required by `turn/steer` (`expectedTurnId`); cleared on completion/failure/error.
+    active_turn_id: Option<String>,
     /// Our outgoing client→server request id counter (turns use 3, 4, …).
     next_client_id: i64,
     /// Pending server→client requests keyed by the request_id we surfaced to the frontend.
@@ -58,6 +62,7 @@ impl Default for CodexAppServer {
         Self {
             phase: Phase::Opening,
             thread_id: None,
+            active_turn_id: None,
             next_client_id: 3,
             pending: HashMap::new(),
         }
@@ -86,6 +91,25 @@ fn req_id_str(raw_id: &Value) -> String {
     match raw_id {
         Value::String(s) => s.clone(),
         other => other.to_string(),
+    }
+}
+
+/// Map an app sandbox mode string to the tagged `SandboxPolicy` OBJECT that `turn/start`'s
+/// per-turn override expects (distinct from `thread/start`'s `sandbox: SandboxMode` STRING).
+/// Mode strings come from `codex_sandbox_for` (commands/session.rs): "read-only",
+/// "workspace-write", "danger-full-access". Unknown values fall back to workspace-write.
+fn sandbox_policy_value(mode: &str) -> Value {
+    match mode {
+        "read-only" => json!({ "type": "readOnly", "networkAccess": false }),
+        "danger-full-access" => json!({ "type": "dangerFullAccess" }),
+        // "workspace-write" (and any unknown mode) → the standard writable-workspace policy.
+        _ => json!({
+            "type": "workspaceWrite",
+            "writableRoots": [],
+            "networkAccess": false,
+            "excludeTmpdirEnvVar": false,
+            "excludeSlashTmp": false,
+        }),
     }
 }
 
@@ -139,7 +163,12 @@ impl SessionProtocol for CodexAppServer {
         vec![initialize, open]
     }
 
-    fn frame_user_turn(&mut self, text: &str, image_paths: &[String]) -> Vec<Value> {
+    fn frame_user_turn(
+        &mut self,
+        text: &str,
+        image_paths: &[String],
+        overrides: &CodexTurnOverrides,
+    ) -> Vec<Value> {
         let thread_id = match &self.thread_id {
             Some(t) => t.clone(),
             None => {
@@ -156,11 +185,29 @@ impl SessionProtocol for CodexAppServer {
             input.push(json!({ "type": "localImage", "path": path }));
         }
         let id = self.next_id();
+        // turn/start overrides apply "for this turn AND subsequent turns" — they persist
+        // server-side, so we only need to inject a given override on the first turn after it
+        // changes, but emitting it every turn is harmless and keeps the actor stateless here.
+        let mut params = serde_json::Map::new();
+        params.insert("threadId".into(), json!(thread_id));
+        params.insert("input".into(), Value::Array(input));
+        if let Some(p) = &overrides.approval_policy {
+            params.insert("approvalPolicy".into(), json!(p));
+        }
+        if let Some(s) = &overrides.sandbox {
+            params.insert("sandboxPolicy".into(), sandbox_policy_value(s));
+        }
+        if let Some(m) = &overrides.model {
+            params.insert("model".into(), json!(m));
+        }
+        if let Some(e) = &overrides.effort {
+            params.insert("effort".into(), json!(e));
+        }
         vec![json!({
             "jsonrpc": "2.0",
             "id": id,
             "method": "turn/start",
-            "params": { "threadId": thread_id, "input": input }
+            "params": Value::Object(params)
         })]
     }
 
@@ -175,6 +222,36 @@ impl SessionProtocol for CodexAppServer {
             "id": id,
             "method": "turn/interrupt",
             "params": { "threadId": thread_id }
+        })]
+    }
+
+    fn frame_steer(&mut self, text: &str) -> Vec<Value> {
+        let thread_id = match &self.thread_id {
+            Some(t) => t.clone(),
+            None => {
+                log::warn!("[codex_appserver] frame_steer before thread/started — dropping");
+                return vec![];
+            }
+        };
+        // turn/steer requires the active turn id as a precondition; without it the server
+        // rejects the request. No active turn → nothing to steer into.
+        let expected = match &self.active_turn_id {
+            Some(t) => t.clone(),
+            None => {
+                log::warn!("[codex_appserver] frame_steer with no active turn — dropping");
+                return vec![];
+            }
+        };
+        let id = self.next_id();
+        vec![json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": "turn/steer",
+            "params": {
+                "threadId": thread_id,
+                "input": [{ "type": "text", "text": text, "text_elements": [] }],
+                "expectedTurnId": expected,
+            }
         })]
     }
 
@@ -379,9 +456,24 @@ impl CodexAppServer {
                 }
                 self.phase = Phase::Ready;
             }
-            "turn/started" => out.lifecycle = Some(LifecycleSignal::TurnStarted),
-            "turn/completed" => out.lifecycle = Some(LifecycleSignal::TurnCompleted),
+            "turn/started" => {
+                // Capture the active turn id (TurnStartedNotification.turn.id) for turn/steer's
+                // `expectedTurnId`. `params` is sometimes `{}` — tolerate the absence.
+                if let Some(id) = params
+                    .get("turn")
+                    .and_then(|t| t.get("id"))
+                    .and_then(|v| v.as_str())
+                {
+                    self.active_turn_id = Some(id.to_string());
+                }
+                out.lifecycle = Some(LifecycleSignal::TurnStarted);
+            }
+            "turn/completed" => {
+                self.active_turn_id = None;
+                out.lifecycle = Some(LifecycleSignal::TurnCompleted);
+            }
             "turn/failed" => {
+                self.active_turn_id = None;
                 let err = params
                     .get("error")
                     .and_then(|e| e.get("message"))
@@ -390,6 +482,9 @@ impl CodexAppServer {
                 out.lifecycle = Some(LifecycleSignal::TurnFailed(err));
             }
             "error" => {
+                // A top-level error ends/aborts the active turn — drop the stale turn id so a
+                // later steer doesn't target a turn that's no longer running.
+                self.active_turn_id = None;
                 // ErrorNotification = { error: TurnError, willRetry: bool, threadId, turnId }.
                 // The message lives in `error.message` (a TurnError) — NOT a top-level `message`.
                 // `willRetry: true` is a transient failure Codex auto-retries (e.g. a flaky
@@ -883,6 +978,11 @@ mod tests {
         s
     }
 
+    /// Default (no-op) overrides for the common case.
+    fn no_overrides() -> CodexTurnOverrides {
+        CodexTurnOverrides::default()
+    }
+
     #[test]
     fn startup_new_thread() {
         let mut s = CodexAppServer::new();
@@ -924,18 +1024,23 @@ mod tests {
     #[test]
     fn user_turn_requires_thread_id() {
         let mut s = CodexAppServer::new();
-        assert!(s.frame_user_turn("hi", &[]).is_empty());
+        assert!(s.frame_user_turn("hi", &[], &no_overrides()).is_empty());
         let mut s = ready_server();
-        let msgs = s.frame_user_turn("hi", &[]);
+        let msgs = s.frame_user_turn("hi", &[], &no_overrides());
         assert_eq!(msgs[0]["method"], "turn/start");
         assert_eq!(msgs[0]["params"]["threadId"], "th-123");
         assert_eq!(msgs[0]["params"]["input"][0]["text"], "hi");
+        // No overrides → none of the optional override keys are present.
+        assert!(msgs[0]["params"].get("approvalPolicy").is_none());
+        assert!(msgs[0]["params"].get("sandboxPolicy").is_none());
+        assert!(msgs[0]["params"].get("model").is_none());
+        assert!(msgs[0]["params"].get("effort").is_none());
     }
 
     #[test]
     fn user_turn_attaches_local_images() {
         let mut s = ready_server();
-        let msgs = s.frame_user_turn("describe this", &["/x/a.png".to_string()]);
+        let msgs = s.frame_user_turn("describe this", &["/x/a.png".to_string()], &no_overrides());
         let input = &msgs[0]["params"]["input"];
         // text first, then one localImage item per path.
         assert_eq!(input[0]["type"], "text");
@@ -943,8 +1048,115 @@ mod tests {
         assert_eq!(input[1]["type"], "localImage");
         assert_eq!(input[1]["path"], "/x/a.png");
         // No images → no localImage items.
-        let none = s.frame_user_turn("hi", &[]);
+        let none = s.frame_user_turn("hi", &[], &no_overrides());
         assert_eq!(none[0]["params"]["input"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn user_turn_injects_overrides_when_set() {
+        let mut s = ready_server();
+        let overrides = CodexTurnOverrides {
+            approval_policy: Some("never".into()),
+            sandbox: Some("danger-full-access".into()),
+            model: Some("gpt-5-codex".into()),
+            effort: Some("high".into()),
+        };
+        let msgs = s.frame_user_turn("go", &[], &overrides);
+        let params = &msgs[0]["params"];
+        assert_eq!(params["approvalPolicy"], "never");
+        assert_eq!(params["sandboxPolicy"]["type"], "dangerFullAccess");
+        assert_eq!(params["model"], "gpt-5-codex");
+        assert_eq!(params["effort"], "high");
+        // Partial overrides: only the Some fields appear.
+        let partial = CodexTurnOverrides {
+            model: Some("gpt-5".into()),
+            ..Default::default()
+        };
+        let msgs = s.frame_user_turn("go", &[], &partial);
+        assert_eq!(msgs[0]["params"]["model"], "gpt-5");
+        assert!(msgs[0]["params"].get("approvalPolicy").is_none());
+        assert!(msgs[0]["params"].get("sandboxPolicy").is_none());
+        assert!(msgs[0]["params"].get("effort").is_none());
+    }
+
+    #[test]
+    fn sandbox_policy_value_mapping() {
+        assert_eq!(sandbox_policy_value("read-only")["type"], "readOnly");
+        assert_eq!(sandbox_policy_value("read-only")["networkAccess"], false);
+        assert_eq!(
+            sandbox_policy_value("danger-full-access")["type"],
+            "dangerFullAccess"
+        );
+        let ws = sandbox_policy_value("workspace-write");
+        assert_eq!(ws["type"], "workspaceWrite");
+        assert_eq!(ws["writableRoots"], json!([]));
+        assert_eq!(ws["networkAccess"], false);
+        assert_eq!(ws["excludeTmpdirEnvVar"], false);
+        assert_eq!(ws["excludeSlashTmp"], false);
+        // Unknown mode falls back to workspace-write.
+        assert_eq!(sandbox_policy_value("bogus")["type"], "workspaceWrite");
+    }
+
+    #[test]
+    fn steer_carries_expected_turn_id() {
+        let mut s = ready_server();
+        // No active turn yet → frame_steer drops (server would reject without expectedTurnId).
+        assert!(s.frame_steer("hint").is_empty());
+        // Capture the active turn id from turn/started.
+        s.parse_line(
+            "r",
+            r#"{"method":"turn/started","params":{"turn":{"id":"turn-42"}}}"#,
+        );
+        let msgs = s.frame_steer("focus on tests");
+        assert_eq!(msgs[0]["method"], "turn/steer");
+        assert_eq!(msgs[0]["params"]["threadId"], "th-123");
+        assert_eq!(msgs[0]["params"]["expectedTurnId"], "turn-42");
+        assert_eq!(msgs[0]["params"]["input"][0]["type"], "text");
+        assert_eq!(msgs[0]["params"]["input"][0]["text"], "focus on tests");
+        // After completion the turn id clears → steer drops again.
+        s.parse_line("r", r#"{"method":"turn/completed","params":{}}"#);
+        assert!(s.frame_steer("late").is_empty());
+    }
+
+    #[test]
+    fn active_turn_id_capture_and_clear() {
+        let mut s = ready_server();
+        assert!(s.active_turn_id.is_none());
+        // turn/started with turn.id → captured.
+        s.parse_line(
+            "r",
+            r#"{"method":"turn/started","params":{"turn":{"id":"t-1"}}}"#,
+        );
+        assert_eq!(s.active_turn_id.as_deref(), Some("t-1"));
+        // turn/completed clears it.
+        s.parse_line("r", r#"{"method":"turn/completed","params":{}}"#);
+        assert!(s.active_turn_id.is_none());
+        // turn/failed clears it.
+        s.parse_line(
+            "r",
+            r#"{"method":"turn/started","params":{"turn":{"id":"t-2"}}}"#,
+        );
+        assert_eq!(s.active_turn_id.as_deref(), Some("t-2"));
+        s.parse_line(
+            "r",
+            r#"{"method":"turn/failed","params":{"error":{"message":"boom"}}}"#,
+        );
+        assert!(s.active_turn_id.is_none());
+        // top-level error clears it.
+        s.parse_line(
+            "r",
+            r#"{"method":"turn/started","params":{"turn":{"id":"t-3"}}}"#,
+        );
+        assert_eq!(s.active_turn_id.as_deref(), Some("t-3"));
+        s.parse_line(
+            "r",
+            r#"{"method":"error","params":{"error":{"message":"x"},"willRetry":false}}"#,
+        );
+        assert!(s.active_turn_id.is_none());
+        // turn/started with empty params (params == {}) must not panic and leaves id unset.
+        let mut s2 = ready_server();
+        s2.parse_line("r", r#"{"method":"turn/started","params":{}}"#);
+        assert!(s2.active_turn_id.is_none());
     }
 
     #[test]
@@ -1331,7 +1543,7 @@ mod tests {
         assert!(s.is_ready(), "id:2 reply must mark Ready");
         assert_eq!(out.thread_id.as_deref(), Some("th-ack"));
         // frame_user_turn now has a thread id and emits turn/start (not dropped).
-        let msgs = s.frame_user_turn("hi", &[]);
+        let msgs = s.frame_user_turn("hi", &[], &no_overrides());
         assert_eq!(msgs[0]["params"]["threadId"], "th-ack");
     }
 
@@ -1398,7 +1610,7 @@ mod tests {
                     if !sent && driver.is_ready() {
                         sent = true;
                         let prompt = "Run the shell command: echo hi > probe.txt  (create that file now).";
-                        for msg in driver.frame_user_turn(prompt, &[]) {
+                        for msg in driver.frame_user_turn(prompt, &[], &no_overrides()) {
                             let mut l = serde_json::to_string(&msg).unwrap();
                             l.push('\n');
                             stdin.write_all(l.as_bytes()).await.unwrap();
@@ -1500,7 +1712,7 @@ mod tests {
                         let prompt = "Call request_user_input to ask me ONE multiple-choice \
                                       question: header \"Pick\", question \"A or B?\", options \
                                       A and B. Call that tool now, before anything else.";
-                        for msg in driver.frame_user_turn(prompt, &[]) {
+                        for msg in driver.frame_user_turn(prompt, &[], &no_overrides()) {
                             let mut l = serde_json::to_string(&msg).unwrap();
                             l.push('\n');
                             stdin.write_all(l.as_bytes()).await.unwrap();

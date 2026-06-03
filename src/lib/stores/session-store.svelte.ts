@@ -2065,7 +2065,22 @@ export class SessionStore {
     snapshotCache.deleteSnapshot(this.run.id).catch(() => {});
 
     try {
-      if (this.useStreamSession && this.sessionAlive) {
+      if (
+        this.useStreamSession &&
+        this.sessionAlive &&
+        this.run.agent === "codex" &&
+        this.isRunning &&
+        attachments.length === 0
+      ) {
+        // Mid-turn steer (Codex app-server): a turn is RUNNING and the user sends from the
+        // mid-turn send button. Inject the text into the CURRENT turn via turn/steer instead
+        // of enqueueing a new turn. (turn/steer takes plain text input — attachments fall
+        // through to the normal enqueue path below.) The steered text still shows as a user
+        // entry via the optimistic push; the backend does not echo a separate UserMessage.
+        this._pushOptimisticUser(text, attachments);
+        await api.steerSession(this.run.id, text);
+        dbg("store", "codex mid-turn steer", { len: text.length });
+      } else if (this.useStreamSession && this.sessionAlive) {
         // Optimistic user message — matches the pattern in startSession().
         // Content-based dedup in _reduce(user_message) prevents double display
         // when the backend's UserMessage bus event arrives.
