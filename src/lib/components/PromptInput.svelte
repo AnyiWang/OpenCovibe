@@ -2117,7 +2117,9 @@
           </svg>
           {t("permissions_rules")}
         </button>
-        {#if showAuthBadge && !hasRun}
+        {#if showAuthBadge && !hasRun && agent !== "codex"}
+          <!-- Codex uses the Codex-specific hero badge (CodexAuthBadge); this legacy Claude
+               badge would show wrong Anthropic/version data for Codex, so skip it. -->
           <AuthSourceBadge
             {authOverview}
             {authSourceLabel}

@@ -60,6 +60,7 @@
   import PermissionPanel from "$lib/components/PermissionPanel.svelte";
   import ElicitationDialog from "$lib/components/ElicitationDialog.svelte";
   import AuthSourceBadge from "$lib/components/AuthSourceBadge.svelte";
+  import CodexAuthBadge from "$lib/components/CodexAuthBadge.svelte";
 
   import ToolActivity from "$lib/components/ToolActivity.svelte";
   import ShortcutHelpPanel from "$lib/components/ShortcutHelpPanel.svelte";
@@ -4641,20 +4642,31 @@
                 <div
                   class="mt-4 flex items-center justify-center gap-1.5 text-xs text-muted-foreground"
                 >
-                  <AuthSourceBadge
-                    {authOverview}
-                    authSourceLabel={store.authSourceLabel}
-                    authSourceCategory={store.authSourceCategory}
-                    apiKeySource={store.apiKeySource}
-                    hasRun={false}
-                    authMode={store.authMode}
-                    platformCredentials={settings?.platform_credentials ?? []}
-                    platformId={store.platformId ?? "anthropic"}
-                    onAuthModeChange={handleAuthModeChange}
-                    onPlatformChange={handlePlatformChange}
-                    {localProxyStatuses}
-                    variant="hero"
-                  />
+                  {#if effectiveAgent === "codex"}
+                    <CodexAuthBadge
+                      codexProvider={settings?.codex_provider ?? null}
+                      hasRun={false}
+                      variant="hero"
+                      onChanged={async () => {
+                        settings = await api.getUserSettings();
+                      }}
+                    />
+                  {:else}
+                    <AuthSourceBadge
+                      {authOverview}
+                      authSourceLabel={store.authSourceLabel}
+                      authSourceCategory={store.authSourceCategory}
+                      apiKeySource={store.apiKeySource}
+                      hasRun={false}
+                      authMode={store.authMode}
+                      platformCredentials={settings?.platform_credentials ?? []}
+                      platformId={store.platformId ?? "anthropic"}
+                      onAuthModeChange={handleAuthModeChange}
+                      onPlatformChange={handlePlatformChange}
+                      {localProxyStatuses}
+                      variant="hero"
+                    />
+                  {/if}
                   <span class="text-muted-foreground">·</span>
                   {@render heroMetaItems()}
                 </div>
