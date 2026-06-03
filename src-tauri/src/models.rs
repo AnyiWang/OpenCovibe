@@ -1348,6 +1348,17 @@ pub enum BusEvent {
         #[serde(skip_serializing_if = "Option::is_none")]
         parent_tool_use_id: Option<String>,
     },
+    /// Incremental tool output chunk — top-level event type "tool_output_delta".
+    /// Appends to an open tool card's output (keyed by `tool_use_id`) so command
+    /// output streams live instead of only appearing at completion. Codex source:
+    /// `item/commandExecution/outputDelta`.
+    ToolOutputDelta {
+        run_id: String,
+        tool_use_id: String,
+        delta: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        parent_tool_use_id: Option<String>,
+    },
     /// Tool use summary — top-level event type "tool_use_summary".
     ToolUseSummary {
         run_id: String,

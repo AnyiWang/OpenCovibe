@@ -39,7 +39,12 @@ import { getTransport } from "$lib/transport";
 import { getAgentCaps, type AgentCapabilities } from "$lib/utils/agent-caps";
 import { getAgentFeatures, type AgentFeatures } from "$lib/utils/agent-features";
 import { dedupeMcpServersByName } from "$lib/utils/mcp";
-import { SCHEDULING_TOOLS, pickSchedule, pickCronId } from "$lib/utils/tool-rendering";
+import {
+  SCHEDULING_TOOLS,
+  pickSchedule,
+  pickCronId,
+  extractOutputText,
+} from "$lib/utils/tool-rendering";
 
 // ── CLI permission mode normalization ──
 // CLI may return different names for the same mode across versions.
@@ -3836,6 +3841,40 @@ export class SessionStore {
           const updated: TimelineEntry = {
             ...old,
             tool: { ...old.tool, elapsed_time_seconds: ev.elapsed_time_seconds },
+          };
+          if (ctx) ctx.tl[idx] = updated;
+          else {
+            const u = [...this.timeline];
+            u[idx] = updated;
+            this.timeline = u;
+          }
+        }
+        break;
+      }
+
+      case "tool_output_delta": {
+        // Append a streamed output chunk to the open tool card (Codex live command
+        // output). extractOutputText reads the current {content} string ("" if absent),
+        // so deltas accumulate; tool_end later overwrites with the authoritative output.
+        if (ev.parent_tool_use_id) {
+          this._updateSubTimelineTool(
+            ev.parent_tool_use_id,
+            ev.tool_use_id,
+            (t) => ({ ...t, output: { content: extractOutputText(t.output) + ev.delta } }),
+            ctx,
+          );
+          break;
+        }
+        const tl = getTl();
+        const idx = this._findToolIdx(ctx, ev.tool_use_id);
+        if (idx >= 0) {
+          const old = tl[idx] as Extract<TimelineEntry, { kind: "tool" }>;
+          const updated: TimelineEntry = {
+            ...old,
+            tool: {
+              ...old.tool,
+              output: { content: extractOutputText(old.tool.output) + ev.delta },
+            },
           };
           if (ctx) ctx.tl[idx] = updated;
           else {

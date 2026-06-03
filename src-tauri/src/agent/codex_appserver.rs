@@ -453,10 +453,24 @@ impl CodexAppServer {
             "turn/plan/updated" => {
                 plan_updated_events(run_id, params, &mut out.events);
             }
-            // TODO(wave2): live command output needs a ToolOutputDelta BusEvent that appends
-            // into the open Bash card; CommandOutput would duplicate item/completed's
-            // aggregatedOutput.
-            "item/commandExecution/outputDelta" => {}
+            // Live command output: append the chunk into the open Bash card (keyed by
+            // itemId == ToolStart's tool_use_id). The final item/completed still carries the
+            // authoritative aggregatedOutput, which overwrites the accumulation (no dup).
+            "item/commandExecution/outputDelta" => {
+                if let (Some(id), Some(delta)) = (
+                    params.get("itemId").and_then(|v| v.as_str()),
+                    params.get("delta").and_then(|v| v.as_str()),
+                ) {
+                    if !id.is_empty() && !delta.is_empty() {
+                        out.events.push(BusEvent::ToolOutputDelta {
+                            run_id: run_id.to_string(),
+                            tool_use_id: id.to_string(),
+                            delta: delta.to_string(),
+                            parent_tool_use_id: None,
+                        });
+                    }
+                }
+            }
             // Account rate limits → map the primary window to the existing RateLimitEvent.
             "account/rateLimits/updated" => {
                 if let Some(ev) = rate_limit_event(run_id, params) {
@@ -1151,14 +1165,30 @@ mod tests {
     }
 
     #[test]
-    fn command_output_delta_is_dropped() {
-        // Dropped on purpose (see TODO(wave2)): emitting CommandOutput per delta would
-        // duplicate item/completed's aggregatedOutput. No events until a ToolOutputDelta
-        // BusEvent exists to append into the open Bash card.
+    fn command_output_delta_to_tool_output_delta() {
         let mut s = ready_server();
         let out = s.parse_line(
             "r",
             r#"{"method":"item/commandExecution/outputDelta","params":{"itemId":"call_1","delta":"line 1\n"}}"#,
+        );
+        match &out.events[0] {
+            BusEvent::ToolOutputDelta {
+                tool_use_id, delta, ..
+            } => {
+                assert_eq!(tool_use_id, "call_1");
+                assert_eq!(delta, "line 1\n");
+            }
+            e => panic!("expected ToolOutputDelta, got {e:?}"),
+        }
+        // Empty itemId or empty delta → no event (can't key into a card / nothing to append).
+        let out = s.parse_line(
+            "r",
+            r#"{"method":"item/commandExecution/outputDelta","params":{"itemId":"","delta":"x"}}"#,
+        );
+        assert!(out.events.is_empty());
+        let out = s.parse_line(
+            "r",
+            r#"{"method":"item/commandExecution/outputDelta","params":{"itemId":"call_1","delta":""}}"#,
         );
         assert!(out.events.is_empty());
     }

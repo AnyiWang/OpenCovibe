@@ -197,6 +197,73 @@ describe("SessionStore reducer", () => {
     });
   });
 
+  // ── Live command output streaming (tool_output_delta) ──
+
+  describe("tool_output_delta streaming", () => {
+    beforeEach(() => {
+      store.run = makeRun("run-1");
+      store.phase = "running";
+    });
+
+    function bashTool() {
+      return store.timeline.find((e) => e.kind === "tool" && e.id === "call_1") as Extract<
+        (typeof store.timeline)[number],
+        { kind: "tool" }
+      >;
+    }
+
+    it("accumulates streamed chunks into the open Bash card, then tool_end overwrites", () => {
+      store.applyEvent({
+        type: "tool_start",
+        run_id: "run-1",
+        tool_use_id: "call_1",
+        tool_name: "Bash",
+        input: { command: "echo hi" },
+      } as BusEvent);
+      store.applyEvent({
+        type: "tool_output_delta",
+        run_id: "run-1",
+        tool_use_id: "call_1",
+        delta: "line 1\n",
+      } as BusEvent);
+      // Visible mid-run, before completion.
+      expect(bashTool().tool.status).toBe("running");
+      expect(bashTool().tool.output?.content).toBe("line 1\n");
+
+      store.applyEvent({
+        type: "tool_output_delta",
+        run_id: "run-1",
+        tool_use_id: "call_1",
+        delta: "line 2\n",
+      } as BusEvent);
+      expect(bashTool().tool.output?.content).toBe("line 1\nline 2\n");
+
+      // tool_end carries the authoritative aggregated output → overwrites (no dup).
+      store.applyEvent({
+        type: "tool_end",
+        run_id: "run-1",
+        tool_use_id: "call_1",
+        tool_name: "Bash",
+        output: { content: "line 1\nline 2\n" },
+        status: "success",
+        duration_ms: 5,
+      } as BusEvent);
+      expect(bashTool().tool.status).toBe("success");
+      expect(bashTool().tool.output?.content).toBe("line 1\nline 2\n");
+    });
+
+    it("drops a delta with no matching open tool", () => {
+      const before = store.timeline.length;
+      store.applyEvent({
+        type: "tool_output_delta",
+        run_id: "run-1",
+        tool_use_id: "missing",
+        delta: "orphan",
+      } as BusEvent);
+      expect(store.timeline.length).toBe(before);
+    });
+  });
+
   // ── Multi-turn session ──
 
   describe("multi-turn session", () => {

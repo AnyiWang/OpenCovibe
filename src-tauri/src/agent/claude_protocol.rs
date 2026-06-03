@@ -64,6 +64,7 @@ pub fn validate_bus_event(ev: &BusEvent) -> Option<ValidationWarn> {
             None
         }
         BusEvent::ToolProgress { tool_use_id, .. }
+        | BusEvent::ToolOutputDelta { tool_use_id, .. }
         | BusEvent::ToolUseSummary { tool_use_id, .. } => {
             if tool_use_id.is_empty() {
                 return Some(ValidationWarn {

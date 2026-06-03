@@ -1059,6 +1059,13 @@ export type BusEvent =
       parent_tool_use_id?: string;
     }
   | {
+      type: "tool_output_delta";
+      run_id: string;
+      tool_use_id: string;
+      delta: string;
+      parent_tool_use_id?: string;
+    }
+  | {
       type: "tool_use_summary";
       run_id: string;
       tool_use_id: string;

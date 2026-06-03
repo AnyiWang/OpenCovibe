@@ -190,6 +190,7 @@ fn event_type_name(event: &BusEvent) -> &'static str {
         BusEvent::HookCallback { .. } => "hook_callback",
         BusEvent::TaskNotification { .. } => "task_notification",
         BusEvent::ToolProgress { .. } => "tool_progress",
+        BusEvent::ToolOutputDelta { .. } => "tool_output_delta",
         BusEvent::ToolUseSummary { .. } => "tool_use_summary",
         BusEvent::FilesPersisted { .. } => "files_persisted",
         BusEvent::ControlCancelled { .. } => "control_cancelled",
