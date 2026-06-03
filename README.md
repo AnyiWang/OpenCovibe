@@ -32,7 +32,7 @@ AI coding CLIs like Claude Code are powerful, but they run inside a terminal. Th
 | Agent | Status |
 |-------|--------|
 | [Claude Code](https://github.com/anthropics/claude-code) | Supported |
-| [Codex](https://github.com/openai/codex) | In progress |
+| [Codex](https://github.com/openai/codex) | Supported — `exec` (stable) + `app-server` interactive mode (experimental, opt-in) |
 
 **Platform status**: Currently developed and tested primarily on **macOS**. Windows and Linux builds are functional but have not been thoroughly tested for compatibility — contributions and bug reports are welcome.
 
@@ -205,7 +205,7 @@ You can re-run the wizard anytime from **Settings > General > Setup Wizard**.
 
 **Agent Communication:**
 
-The app communicates with Claude Code CLI via bidirectional stream-JSON protocol (stdin/stdout). Each session is a long-lived, multi-turn process managed by a per-run session actor. Three communication modes are supported: stream-JSON (primary), PTY (interactive terminal), and pipe (Codex).
+Each session is a long-lived, multi-turn process managed by a per-run session actor. **Claude Code** communicates over a bidirectional stream-JSON protocol (stdin/stdout) with an interactive control protocol. **Codex** supports two transports, chosen per run: `codex app-server` (bidirectional JSON-RPC — unlocks interactive approvals, mid-turn steer, fork/rewind/compact/goal, image input, and live command output) or `codex exec` (one-shot NDJSON per turn, the stable default).
 
 **Data Storage:**
 
