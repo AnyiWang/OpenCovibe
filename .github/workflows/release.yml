@@ -65,6 +65,7 @@ jobs:
           path: ${{ matrix.asset_glob }}
           if-no-files-found: error
 
+      # MSI is already produced by bundle.targets="all"; the build step just never collected it.
       - name: Upload MSI artifact
         if: runner.os == 'Windows'
         uses: actions/upload-artifact@v4
