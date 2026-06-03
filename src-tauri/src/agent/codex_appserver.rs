@@ -55,6 +55,11 @@ pub struct CodexAppServer {
     next_client_id: i64,
     /// Pending server→client requests keyed by the request_id we surfaced to the frontend.
     pending: HashMap<String, PendingServerReq>,
+    /// Outgoing data-returning requests we sent (`thread/fork`, `thread/rollback`,
+    /// `thread/goal/get`, …) keyed by their JSON-RPC id → the frontend control `request_id`.
+    /// When the reply arrives (`parse_line` sees a matching id with no `method`) we resolve the
+    /// actor's `control_waiter` for that frontend request_id with the JSON-RPC `result`/`error`.
+    client_waiters: HashMap<i64, String>,
 }
 
 impl Default for CodexAppServer {
@@ -65,6 +70,7 @@ impl Default for CodexAppServer {
             active_turn_id: None,
             next_client_id: 3,
             pending: HashMap::new(),
+            client_waiters: HashMap::new(),
         }
     }
 }
@@ -83,6 +89,87 @@ impl CodexAppServer {
     /// True once the thread is open and `turn/start` can be sent.
     pub fn is_ready(&self) -> bool {
         self.phase == Phase::Ready
+    }
+
+    /// Register a data-returning client→server request: allocate a JSON-RPC id, map it to the
+    /// frontend `request_id` so `parse_line` can route the reply back, and return the wire frame.
+    /// Returns empty when there's no open thread (nothing to address the request to).
+    fn frame_tracked(&mut self, request_id: &str, method: &str, extra: Value) -> Vec<Value> {
+        let thread_id = match &self.thread_id {
+            Some(t) => t.clone(),
+            None => {
+                log::warn!("[codex_appserver] {method} before thread/started — dropping");
+                return vec![];
+            }
+        };
+        let id = self.next_id();
+        self.client_waiters.insert(id, request_id.to_string());
+        let mut params = serde_json::Map::new();
+        params.insert("threadId".into(), json!(thread_id));
+        if let Some(obj) = extra.as_object() {
+            for (k, v) in obj {
+                params.insert(k.clone(), v.clone());
+            }
+        }
+        vec![json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": method,
+            "params": Value::Object(params),
+        })]
+    }
+
+    /// Frame `thread/compact/start` — compacts conversation history. Response is empty (`{}`);
+    /// the actual compaction surfaces later via the `thread/compacted` notification. We still
+    /// register a waiter so the control caller resolves on the (empty) ack.
+    pub fn frame_compact(&mut self, request_id: &str) -> Vec<Value> {
+        self.frame_tracked(request_id, "thread/compact/start", json!({}))
+    }
+
+    /// Frame `thread/rollback` — drop `num_turns` (>=1) turns from the END of history. ⚠️ This
+    /// only edits thread history; it does NOT revert local file changes (client's job).
+    /// Response: `{thread}`.
+    pub fn frame_rollback(&mut self, request_id: &str, num_turns: u64) -> Vec<Value> {
+        let n = num_turns.max(1);
+        self.frame_tracked(request_id, "thread/rollback", json!({ "numTurns": n }))
+    }
+
+    /// Frame `thread/fork` — fork the current thread into a new one. Response carries the new
+    /// thread at `result.thread.id`.
+    pub fn frame_fork(&mut self, request_id: &str) -> Vec<Value> {
+        self.frame_tracked(request_id, "thread/fork", json!({}))
+    }
+
+    /// Frame `thread/goal/set` — set/update the thread goal. Only the provided fields are sent.
+    /// Response: `{goal: ThreadGoal}`.
+    pub fn frame_goal_set(
+        &mut self,
+        request_id: &str,
+        objective: Option<&str>,
+        status: Option<&str>,
+        token_budget: Option<u64>,
+    ) -> Vec<Value> {
+        let mut extra = serde_json::Map::new();
+        if let Some(o) = objective {
+            extra.insert("objective".into(), json!(o));
+        }
+        if let Some(s) = status {
+            extra.insert("status".into(), json!(s));
+        }
+        if let Some(b) = token_budget {
+            extra.insert("tokenBudget".into(), json!(b));
+        }
+        self.frame_tracked(request_id, "thread/goal/set", Value::Object(extra))
+    }
+
+    /// Frame `thread/goal/get` — read the current goal. Response: `{goal: ThreadGoal | null}`.
+    pub fn frame_goal_get(&mut self, request_id: &str) -> Vec<Value> {
+        self.frame_tracked(request_id, "thread/goal/get", json!({}))
+    }
+
+    /// Frame `thread/goal/clear` — clear the goal. Response: `{cleared: bool}`.
+    pub fn frame_goal_clear(&mut self, request_id: &str) -> Vec<Value> {
+        self.frame_tracked(request_id, "thread/goal/clear", json!({}))
     }
 }
 
@@ -287,6 +374,21 @@ impl SessionProtocol for CodexAppServer {
                 &mut out,
             );
             return out;
+        }
+
+        // Reply to one of our data-returning requests (id present in client_waiters, no method):
+        // thread/fork, thread/rollback, thread/goal/get, … Route the JSON-RPC result (or error)
+        // back to the actor's control waiter keyed by the frontend request_id.
+        if let Some(id) = msg.get("id").and_then(|v| v.as_i64()) {
+            if let Some(request_id) = self.client_waiters.remove(&id) {
+                let value = msg
+                    .get("result")
+                    .cloned()
+                    .or_else(|| msg.get("error").cloned())
+                    .unwrap_or(Value::Null);
+                out.control_response = Some((request_id, value));
+                return out;
+            }
         }
 
         // Reply to one of our client→server requests (id, no method). The id:2 reply is the
@@ -542,6 +644,23 @@ impl CodexAppServer {
                 if let Some(ev) = token_usage_event(run_id, params) {
                     out.events.push(ev);
                 }
+            }
+            // Live goal progress: params = {threadId, turnId?, goal: ThreadGoal}. Surface the
+            // ThreadGoal verbatim so the panel can render objective/status/tokensUsed/timeUsed.
+            "thread/goal/updated" => {
+                if let Some(goal) = params.get("goal") {
+                    out.events.push(BusEvent::GoalUpdate {
+                        run_id: run_id.to_string(),
+                        goal: goal.clone(),
+                    });
+                }
+            }
+            // Goal cleared server-side: emit a null goal so the panel collapses.
+            "thread/goal/cleared" => {
+                out.events.push(BusEvent::GoalUpdate {
+                    run_id: run_id.to_string(),
+                    goal: Value::Null,
+                });
             }
             // Plan update → render as a TodoWrite card. A stable tool_use_id derived from the
             // turn id means repeated updates refresh the SAME card instead of stacking.
@@ -1553,6 +1672,146 @@ mod tests {
         let msgs = s.frame_interrupt();
         assert_eq!(msgs[0]["method"], "turn/interrupt");
         assert_eq!(msgs[0]["params"]["threadId"], "th-123");
+    }
+
+    // ── Wave-3: data-returning frame methods + response correlation ──────────────────────
+
+    #[test]
+    fn frame_methods_require_thread_and_shape() {
+        // No thread → every frame method drops.
+        let mut s = CodexAppServer::new();
+        assert!(s.frame_compact("r1").is_empty());
+        assert!(s.frame_rollback("r1", 2).is_empty());
+        assert!(s.frame_fork("r1").is_empty());
+        assert!(s.frame_goal_get("r1").is_empty());
+        assert!(s.frame_goal_clear("r1").is_empty());
+        assert!(s.frame_goal_set("r1", Some("x"), None, None).is_empty());
+
+        let mut s = ready_server(); // thread th-123
+
+        let compact = s.frame_compact("rc");
+        assert_eq!(compact[0]["method"], "thread/compact/start");
+        assert_eq!(compact[0]["params"]["threadId"], "th-123");
+
+        let rollback = s.frame_rollback("rr", 3);
+        assert_eq!(rollback[0]["method"], "thread/rollback");
+        assert_eq!(rollback[0]["params"]["numTurns"], 3);
+        // num_turns is clamped to >= 1.
+        let rb0 = s.frame_rollback("rr0", 0);
+        assert_eq!(rb0[0]["params"]["numTurns"], 1);
+
+        let fork = s.frame_fork("rf");
+        assert_eq!(fork[0]["method"], "thread/fork");
+        assert_eq!(fork[0]["params"]["threadId"], "th-123");
+
+        let gget = s.frame_goal_get("rg");
+        assert_eq!(gget[0]["method"], "thread/goal/get");
+
+        let gclear = s.frame_goal_clear("rgc");
+        assert_eq!(gclear[0]["method"], "thread/goal/clear");
+
+        // goal_set: only the provided fields are present.
+        let gset = s.frame_goal_set("rgs", Some("ship it"), Some("active"), Some(50_000));
+        assert_eq!(gset[0]["method"], "thread/goal/set");
+        assert_eq!(gset[0]["params"]["objective"], "ship it");
+        assert_eq!(gset[0]["params"]["status"], "active");
+        assert_eq!(gset[0]["params"]["tokenBudget"], 50_000);
+        let gset_partial = s.frame_goal_set("rgs2", Some("only obj"), None, None);
+        assert_eq!(gset_partial[0]["params"]["objective"], "only obj");
+        assert!(gset_partial[0]["params"].get("status").is_none());
+        assert!(gset_partial[0]["params"].get("tokenBudget").is_none());
+    }
+
+    #[test]
+    fn response_correlation_round_trip() {
+        let mut s = ready_server();
+        // Frame a fork (jsonrpc id 3) tracked to frontend request_id "ocv-fork".
+        let fork = s.frame_fork("ocv-fork");
+        let id = fork[0]["id"].as_i64().unwrap();
+        // Feed a matching-id reply → control_response set with the right request_id + result.
+        let line =
+            format!(r#"{{"jsonrpc":"2.0","id":{id},"result":{{"thread":{{"id":"th-new"}}}}}}"#);
+        let out = s.parse_line("run1", &line);
+        let (rid, val) = out.control_response.expect("control_response");
+        assert_eq!(rid, "ocv-fork");
+        assert_eq!(val["thread"]["id"], "th-new");
+        // The waiter is consumed — a second reply on the same id is not correlated.
+        let out2 = s.parse_line("run1", &line);
+        assert!(out2.control_response.is_none());
+    }
+
+    #[test]
+    fn response_correlation_routes_error() {
+        let mut s = ready_server();
+        let rb = s.frame_rollback("ocv-rb", 2);
+        let id = rb[0]["id"].as_i64().unwrap();
+        // An error reply (no result) routes the error value back.
+        let line =
+            format!(r#"{{"jsonrpc":"2.0","id":{id},"error":{{"code":-32000,"message":"nope"}}}}"#);
+        let out = s.parse_line("run1", &line);
+        let (rid, val) = out.control_response.expect("control_response");
+        assert_eq!(rid, "ocv-rb");
+        assert_eq!(val["message"], "nope");
+    }
+
+    #[test]
+    fn id_2_ack_still_special_cased_after_correlation() {
+        // Regression: the client_waiters lookup must NOT swallow the id:2 thread/start ack.
+        let mut s = CodexAppServer::new();
+        let out = s.parse_line("r", r#"{"id":2,"result":{"thread":{"id":"th-ack"}}}"#);
+        assert!(
+            out.control_response.is_none(),
+            "id:2 ack is not a tracked reply"
+        );
+        assert!(s.is_ready());
+        assert_eq!(out.thread_id.as_deref(), Some("th-ack"));
+    }
+
+    #[test]
+    fn goal_updated_maps_to_goal_update_event() {
+        let mut s = ready_server();
+        let out = s.parse_line(
+            "run1",
+            r#"{"method":"thread/goal/updated","params":{"threadId":"th-123","turnId":"t-1","goal":{"threadId":"th-123","objective":"ship","status":"active","tokenBudget":1000,"tokensUsed":42,"timeUsedSeconds":7,"createdAt":1,"updatedAt":2}}}"#,
+        );
+        assert_eq!(out.events.len(), 1);
+        match &out.events[0] {
+            BusEvent::GoalUpdate { goal, .. } => {
+                assert_eq!(goal["objective"], "ship");
+                assert_eq!(goal["status"], "active");
+                assert_eq!(goal["tokensUsed"], 42);
+                assert_eq!(goal["tokenBudget"], 1000);
+            }
+            e => panic!("expected GoalUpdate, got {e:?}"),
+        }
+        // thread/goal/cleared → a null-goal GoalUpdate.
+        let out = s.parse_line(
+            "run1",
+            r#"{"method":"thread/goal/cleared","params":{"threadId":"th-123"}}"#,
+        );
+        match &out.events[0] {
+            BusEvent::GoalUpdate { goal, .. } => assert!(goal.is_null()),
+            e => panic!("expected GoalUpdate(null), got {e:?}"),
+        }
+    }
+
+    #[test]
+    fn goal_update_passes_validation() {
+        use crate::agent::claude_protocol::validate_bus_event;
+        let ev = BusEvent::GoalUpdate {
+            run_id: "r".into(),
+            goal: json!({"objective":"x"}),
+        };
+        assert!(
+            validate_bus_event(&ev).is_none(),
+            "GoalUpdate must never be dropped"
+        );
+        // Null goal (cleared) also passes.
+        let ev = BusEvent::GoalUpdate {
+            run_id: "r".into(),
+            goal: Value::Null,
+        };
+        assert!(validate_bus_event(&ev).is_none());
     }
 
     /// LIVE end-to-end test for COMMAND APPROVAL: drives a real `codex app-server`, forces a

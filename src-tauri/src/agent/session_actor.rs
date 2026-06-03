@@ -1407,10 +1407,14 @@ impl SessionActor {
     }
 
     /// Codex-only control handler. Interprets the frontend's `sendSessionControl` subtypes
-    /// against the bidirectional app-server: `set_*` update the stored per-turn overrides;
-    /// `interrupt`/`steer` write a JSON-RPC frame now. Returns the same `(request_id, rx)` shape
-    /// as the Claude path, but the waiter is resolved synchronously (no wire round-trip) so the
-    /// IPC caller resolves immediately with an `{ok:true}` ack.
+    /// against the bidirectional app-server. Two response shapes:
+    ///   - Fire-and-forget (`set_*`, `interrupt`, `steer`, `compact`, `goal_set`, `goal_clear`):
+    ///     the waiter is resolved synchronously with `{ok:true}` after the frame is written.
+    ///   - Data-returning (`rollback`, `fork`, `goal_get`): the waiter is REGISTERED in
+    ///     `control_waiters` keyed by `request_id` and the frame method maps the JSON-RPC id back
+    ///     to that `request_id` (`client_waiters`). `parse_line` later routes the server reply via
+    ///     `control_response`, which `handle_codex_line` forwards to the registered waiter. These
+    ///     subtypes return WITHOUT sending `{ok:true}` — the wire reply is the resolution.
     async fn handle_codex_control(
         &mut self,
         subtype: &str,
@@ -1418,6 +1422,57 @@ impl SessionActor {
         request_id: String,
     ) -> Result<(String, oneshot::Receiver<Value>), String> {
         let (tx, rx) = oneshot::channel();
+
+        // Data-returning subtypes: register the waiter, write the tracked frame, and return the
+        // rx WITHOUT resolving — parse_line routes the server reply back to this waiter.
+        match subtype {
+            "rollback" => {
+                let num_turns = request
+                    .get("num_turns")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(1);
+                let lines = self
+                    .codex
+                    .as_mut()
+                    .unwrap()
+                    .frame_rollback(&request_id, num_turns);
+                if lines.is_empty() {
+                    // No open thread → nothing to roll back; resolve so the caller isn't stuck.
+                    let _ = tx.send(serde_json::json!({ "ok": false, "error": "no thread" }));
+                    return Ok((request_id, rx));
+                }
+                self.control_waiters.insert(request_id.clone(), tx);
+                for line in &lines {
+                    self.write_json_line(line, "codex thread/rollback").await?;
+                }
+                return Ok((request_id, rx));
+            }
+            "fork" => {
+                let lines = self.codex.as_mut().unwrap().frame_fork(&request_id);
+                if lines.is_empty() {
+                    let _ = tx.send(serde_json::json!({ "ok": false, "error": "no thread" }));
+                    return Ok((request_id, rx));
+                }
+                self.control_waiters.insert(request_id.clone(), tx);
+                for line in &lines {
+                    self.write_json_line(line, "codex thread/fork").await?;
+                }
+                return Ok((request_id, rx));
+            }
+            "goal_get" => {
+                let lines = self.codex.as_mut().unwrap().frame_goal_get(&request_id);
+                if lines.is_empty() {
+                    let _ = tx.send(serde_json::json!({ "ok": false, "error": "no thread" }));
+                    return Ok((request_id, rx));
+                }
+                self.control_waiters.insert(request_id.clone(), tx);
+                for line in &lines {
+                    self.write_json_line(line, "codex thread/goal/get").await?;
+                }
+                return Ok((request_id, rx));
+            }
+            _ => {}
+        }
 
         match subtype {
             "interrupt" => {
@@ -1480,6 +1535,56 @@ impl SessionActor {
                     for line in &lines {
                         self.write_json_line(line, "codex turn/steer").await?;
                     }
+                }
+            }
+            "compact" => {
+                // thread/compact/start returns an empty {} ack; the compaction itself surfaces
+                // later via the thread/compacted notification. Fire-and-forget {ok:true}.
+                let lines = self.codex.as_mut().unwrap().frame_compact(&request_id);
+                if lines.is_empty() {
+                    log::debug!(
+                        "[actor] codex compact: no thread, nothing to send (run_id={})",
+                        self.run_id
+                    );
+                }
+                for line in &lines {
+                    self.write_json_line(line, "codex thread/compact/start")
+                        .await?;
+                }
+            }
+            "goal_set" => {
+                // {objective?, status?, token_budget?} → thread/goal/set. The authoritative goal
+                // arrives via thread/goal/updated (→ GoalUpdate), so fire-and-forget {ok:true}.
+                let objective = request.get("objective").and_then(|v| v.as_str());
+                let status = request.get("status").and_then(|v| v.as_str());
+                let token_budget = request.get("token_budget").and_then(|v| v.as_u64());
+                let lines = self.codex.as_mut().unwrap().frame_goal_set(
+                    &request_id,
+                    objective,
+                    status,
+                    token_budget,
+                );
+                if lines.is_empty() {
+                    log::debug!(
+                        "[actor] codex goal_set: no thread, nothing to send (run_id={})",
+                        self.run_id
+                    );
+                }
+                for line in &lines {
+                    self.write_json_line(line, "codex thread/goal/set").await?;
+                }
+            }
+            "goal_clear" => {
+                let lines = self.codex.as_mut().unwrap().frame_goal_clear(&request_id);
+                if lines.is_empty() {
+                    log::debug!(
+                        "[actor] codex goal_clear: no thread, nothing to send (run_id={})",
+                        self.run_id
+                    );
+                }
+                for line in &lines {
+                    self.write_json_line(line, "codex thread/goal/clear")
+                        .await?;
                 }
             }
             other => {
@@ -1650,6 +1755,15 @@ impl SessionActor {
         apply_activity_reset(self.quarantine_until_result, &mut self.active_turn);
 
         let parsed = self.codex.as_mut().unwrap().parse_line(&self.run_id, text);
+
+        // Route a data-returning request reply (thread/fork, thread/rollback, thread/goal/get)
+        // back to the waiting control caller — mirrors the Claude control_response path.
+        if let Some((rid, resp)) = parsed.control_response {
+            log::debug!("[codex] control_response for req_id={}", rid);
+            if let Some(tx) = self.control_waiters.remove(&rid) {
+                let _ = tx.send(resp);
+            }
+        }
 
         // Persist the thread id (resume key) as soon as it's known.
         if let Some(tid) = parsed.thread_id {

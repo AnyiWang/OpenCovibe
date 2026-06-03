@@ -181,6 +181,37 @@ export const VIRTUAL_COMMANDS: CliCommand[] = [
     _excludeAgents: ["codex"], // needs snapshots
   },
   {
+    name: "rewind",
+    // Codex variant: turn-based history rollback (drops N turns), NOT a file
+    // snapshot rewind. Distinct entry so the Claude variant's snapshot copy/
+    // exclusion stays intact. Resolved per-agent by parseVirtualAction.
+    description: "Rewind conversation to an earlier turn (history only)",
+    aliases: ["undo"],
+    _virtual: true,
+    _action: "codex-rewind",
+    _excludeAgents: ["claude"],
+  },
+  {
+    name: "compact",
+    // Codex `thread/compact/start`: summarize + clear history, keep going.
+    // Claude CLI returns its own /compact (passthrough), so Codex-only here.
+    description: "Clear conversation history but keep a summary in context",
+    aliases: [],
+    _virtual: true,
+    _action: "codex-compact",
+    _excludeAgents: ["claude"],
+  },
+  {
+    name: "goal",
+    // Codex `thread/goal/*`: set an objective + token budget and watch live
+    // progress. No Claude equivalent.
+    description: "Set or view the session objective and token budget",
+    aliases: [],
+    _virtual: true,
+    _action: "codex-goal",
+    _excludeAgents: ["claude"],
+  },
+  {
     name: "clear",
     description: "Clear conversation history and free up context",
     // Codex parity: `/new`, `/exit`, `/quit` are aliases — all fall through to the
@@ -506,9 +537,15 @@ export function parseVirtualAction(
   const match = text.match(/^\/(\S+)(?:\s+(.*))?$/);
   if (!match) return null;
   const name = match[1];
-  const virtual = VIRTUAL_COMMANDS.find((v) => v.name === name || (v.aliases ?? []).includes(name));
-  if (!virtual) return null;
-  if (isExcludedForAgent(virtual, agent)) return null; // agent gate
+  // Some names (rewind, compact) have per-agent variants — match the first one
+  // that ISN'T excluded for this agent so e.g. Codex /rewind resolves to the
+  // turn-based variant rather than short-circuiting on the Claude snapshot one.
+  const candidates = VIRTUAL_COMMANDS.filter(
+    (v) => v.name === name || (v.aliases ?? []).includes(name),
+  );
+  if (candidates.length === 0) return null;
+  const virtual = candidates.find((v) => !isExcludedForAgent(v, agent));
+  if (!virtual) return null; // all variants excluded for this agent
   return { name: virtual.name, args: (match[2] ?? "").trim() };
 }
 
@@ -602,7 +639,13 @@ const CLAUDE_QUICK_ACTIONS: readonly string[] = [
   "clear",
 ] as const;
 
-const CODEX_QUICK_ACTIONS: readonly string[] = ["copy", "diff", "status", "stats"] as const;
+const CODEX_QUICK_ACTIONS: readonly string[] = [
+  "compact",
+  "copy",
+  "diff",
+  "status",
+  "stats",
+] as const;
 
 /** @deprecated Use getQuickActions(allCommands, agent) instead. */
 export const QUICK_ACTION_NAMES: readonly string[] = CLAUDE_QUICK_ACTIONS;
@@ -637,6 +680,8 @@ const COMMAND_CATEGORY_MAP: Record<string, SlashCategory> = {
   cost: "session",
   resume: "session",
   fork: "session",
+  rewind: "session",
+  goal: "session",
   btw: "session",
   loop: "session",
   copy: "session",

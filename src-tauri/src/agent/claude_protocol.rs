@@ -88,6 +88,9 @@ pub fn validate_bus_event(ev: &BusEvent) -> Option<ValidationWarn> {
             }
             None // ALWAYS pass through
         }
+        // State-class (Codex thread goal): never drop — the GoalPanel needs every update,
+        // including the null-goal "cleared" signal.
+        BusEvent::GoalUpdate { .. } => None,
         // Everything else: pass through
         _ => None,
     }

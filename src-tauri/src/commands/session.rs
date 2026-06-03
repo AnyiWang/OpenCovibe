@@ -1039,7 +1039,13 @@ pub(crate) async fn fork_session_impl(
     let source =
         storage::runs::get_run(&run_id).ok_or_else(|| format!("Run {} not found", run_id))?;
 
-    // Guard: fork is only supported for Claude sessions (Codex CLI lacks fork/session semantics)
+    // Codex forks through the LIVE app-server (thread/fork returns a new thread id) — no oneshot
+    // process, no session_id. Delegate to the Codex-specific path.
+    if source.agent == "codex" {
+        return fork_session_codex(sessions, &run_id, &source).await;
+    }
+
+    // Guard: the oneshot fork path below is Claude-only (session-id based).
     if source.agent != "claude" {
         return Err(format!(
             "Fork is not supported for {} sessions",
@@ -1168,6 +1174,91 @@ pub(crate) async fn fork_session_impl(
 
     log::debug!(
         "[session] fork_session completed: {} → {} (frontend will start_session to connect)",
+        run_id,
+        new_id
+    );
+    Ok(new_id)
+}
+
+/// Codex fork: unlike Claude (oneshot process + new session_id), Codex forks via the LIVE
+/// app-server — `thread/fork` returns a brand-new thread id at `result.thread.id`. We send the
+/// `fork` control to the running actor, await the new thread id, then create a new run pointing
+/// at that thread (`ConversationRef::CodexThread`) with the source's events copied so the
+/// frontend can switch to it (same contract as Claude: returns the new run id).
+///
+/// The source actor stays ALIVE (no stop) — fork is non-destructive; both threads remain usable.
+/// Requires a live session (the thread must exist server-side to be forked).
+async fn fork_session_codex(
+    sessions: &ActorSessionMap,
+    run_id: &str,
+    source: &RunMeta,
+) -> Result<String, String> {
+    // 1. The thread must be live to fork — get the actor command channel.
+    let cmd_tx = get_cmd_tx(sessions, run_id)
+        .await
+        .map_err(|_| "Fork requires a live Codex session (start it first)".to_string())?;
+
+    // 2. Send the `fork` control through the actor; await the JSON-RPC reply.
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    cmd_tx
+        .send(ActorCommand::SendControl {
+            request: serde_json::json!({ "subtype": "fork" }),
+            reply: reply_tx,
+        })
+        .await
+        .map_err(|_| "Actor dead".to_string())?;
+    let (_, response_rx) = reply_rx
+        .await
+        .map_err(|_| "Actor dropped fork reply".to_string())??;
+    let response = tokio::time::timeout(std::time::Duration::from_secs(10), response_rx)
+        .await
+        .map_err(|_| "Timeout waiting for thread/fork response".to_string())?
+        .map_err(|_| "Fork response channel closed (session may have ended)".to_string())?;
+
+    // 3. Extract the new thread id from `result.thread.id`.
+    let new_thread_id = response
+        .get("thread")
+        .and_then(|t| t.get("id"))
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            format!(
+                "thread/fork response missing thread.id: {}",
+                truncate_str(&response.to_string(), 200)
+            )
+        })?
+        .to_string();
+    log::debug!(
+        "[session] fork_session_codex: source {} → new thread {}",
+        run_id,
+        new_thread_id
+    );
+
+    // 4. Create the new run (inherit prompt/cwd/model/remote/platform; parent = source run).
+    let new_id = uuid::Uuid::new_v4().to_string();
+    let mut meta = storage::runs::create_run(
+        &new_id,
+        &source.prompt,
+        &source.cwd,
+        &source.agent,
+        RunStatus::Pending,
+        source.model.clone(),
+        Some(run_id.to_string()),
+        source.remote_host_name.clone(),
+        source.remote_cwd.clone(),
+        source.remote_host_snapshot.clone(),
+        source.platform_id.clone(),
+    )?;
+
+    // 5. Copy parent events so the forked timeline shows the shared history.
+    storage::events::copy_bus_events(run_id, &new_id)?;
+
+    // 6. Point the new run at the forked thread; inherit execution_path.
+    meta.execution_path = Some(source.resolved_execution_path());
+    meta.conversation_ref = Some(ConversationRef::CodexThread(new_thread_id));
+    storage::runs::save_meta(&meta)?;
+
+    log::debug!(
+        "[session] fork_session_codex completed: {} → {} (frontend will start_session to connect)",
         run_id,
         new_id
     );

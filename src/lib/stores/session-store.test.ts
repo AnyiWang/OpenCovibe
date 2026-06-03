@@ -5720,3 +5720,130 @@ describe("sendMessage routing", () => {
     expect(api.sendSessionMessage).toHaveBeenCalled();
   });
 });
+
+// ── Codex Wave-3: goal_update reducer + turn-based rewind ──
+
+describe("SessionStore — Codex Wave-3 (goal + rewind)", () => {
+  let store: SessionStore;
+
+  beforeEach(() => {
+    store = new SessionStore();
+    store.run = makeRun("codex-w3", { agent: "codex" });
+    store.phase = "running";
+  });
+
+  describe("goal_update reducer", () => {
+    it("stores the goal payload on first update", () => {
+      store.applyEvent({
+        type: "goal_update",
+        run_id: "codex-w3",
+        goal: { objective: "Ship feature", status: "active", tokenBudget: 100000, tokensUsed: 0 },
+      } as BusEvent);
+
+      expect(store.goal).toEqual({
+        objective: "Ship feature",
+        status: "active",
+        tokenBudget: 100000,
+        tokensUsed: 0,
+      });
+    });
+
+    it("merges successive updates (live progress climbs without losing objective)", () => {
+      store.applyEvent({
+        type: "goal_update",
+        run_id: "codex-w3",
+        goal: { objective: "Ship feature", status: "active", tokenBudget: 100000, tokensUsed: 0 },
+      } as BusEvent);
+      store.applyEvent({
+        type: "goal_update",
+        run_id: "codex-w3",
+        goal: { tokensUsed: 4200, timeUsedSeconds: 30 },
+      } as BusEvent);
+
+      expect(store.goal).toEqual({
+        objective: "Ship feature",
+        status: "active",
+        tokenBudget: 100000,
+        tokensUsed: 4200,
+        timeUsedSeconds: 30,
+      });
+    });
+
+    it("resets to null when the goal is cleared (goal: null)", () => {
+      store.applyEvent({
+        type: "goal_update",
+        run_id: "codex-w3",
+        goal: { objective: "x", status: "active", tokensUsed: 10 },
+      } as BusEvent);
+      expect(store.goal).not.toBeNull();
+
+      store.applyEvent({ type: "goal_update", run_id: "codex-w3", goal: null } as BusEvent);
+      expect(store.goal).toBeNull();
+    });
+
+    it("is cleared by reset()", () => {
+      store.applyEvent({
+        type: "goal_update",
+        run_id: "codex-w3",
+        goal: { objective: "x", status: "active" },
+      } as BusEvent);
+      expect(store.goal).not.toBeNull();
+
+      store.reset();
+      expect(store.goal).toBeNull();
+    });
+  });
+
+  describe("truncateToTurn", () => {
+    // Build a 3-turn timeline: each turn = user_message + message_complete.
+    function seedThreeTurns() {
+      store.applyEventBatch([
+        { type: "user_message", run_id: "codex-w3", text: "turn 1" },
+        { type: "message_complete", run_id: "codex-w3", message_id: "m1", text: "reply 1" },
+        { type: "user_message", run_id: "codex-w3", text: "turn 2" },
+        { type: "message_complete", run_id: "codex-w3", message_id: "m2", text: "reply 2" },
+        { type: "user_message", run_id: "codex-w3", text: "turn 3" },
+        { type: "message_complete", run_id: "codex-w3", message_id: "m3", text: "reply 3" },
+      ] as BusEvent[]);
+    }
+
+    it("drops the selected turn and everything after it", () => {
+      seedThreeTurns();
+      expect(store.timeline.filter((e) => e.kind === "user")).toHaveLength(3);
+
+      // Rewind to turn index 1 (the 2nd turn) → drop turns 2 and 3.
+      const dropped = store.truncateToTurn(1);
+
+      expect(dropped).toBe(2);
+      const users = store.timeline.filter((e) => e.kind === "user");
+      expect(users).toHaveLength(1);
+      expect((users[0] as { content: string }).content).toBe("turn 1");
+      // numTurns is recomputed from surviving user messages on a real truncate.
+      expect(store.numTurns).toBe(1);
+    });
+
+    it("keeps everything when index is past the last turn (no-op)", () => {
+      seedThreeTurns();
+      store.numTurns = 3; // as the result event would have set it
+      const before = store.timeline.length;
+
+      const dropped = store.truncateToTurn(3); // only indices 0..2 exist
+
+      expect(dropped).toBe(0);
+      expect(store.timeline).toHaveLength(before);
+      expect(store.numTurns).toBe(3); // untouched on no-op
+    });
+
+    it("clears streaming buffers for the removed latest turn", () => {
+      seedThreeTurns();
+      store.streamingText = "partial";
+      store.thinkingText = "thinking";
+
+      store.truncateToTurn(0); // drop all turns
+
+      expect(store.timeline.filter((e) => e.kind === "user")).toHaveLength(0);
+      expect(store.streamingText).toBe("");
+      expect(store.thinkingText).toBe("");
+    });
+  });
+});

@@ -1359,6 +1359,11 @@ pub enum BusEvent {
         #[serde(skip_serializing_if = "Option::is_none")]
         parent_tool_use_id: Option<String>,
     },
+    /// Codex thread goal update — top-level event type "goal_update". Carries the `ThreadGoal`
+    /// object verbatim (`{threadId, objective, status, tokenBudget?, tokensUsed,
+    /// timeUsedSeconds, createdAt, updatedAt}`) from the `thread/goal/updated` notification, or
+    /// `Value::Null` when the goal was cleared (`thread/goal/cleared`). The GoalPanel renders it.
+    GoalUpdate { run_id: String, goal: Value },
     /// Tool use summary — top-level event type "tool_use_summary".
     ToolUseSummary {
         run_id: String,

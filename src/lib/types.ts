@@ -1117,13 +1117,38 @@ export type BusEvent =
       run_id: string;
       reason: RalphCompleteReason;
       iteration: number;
-    };
+    }
+  // Codex Wave-3: live goal progress from `thread/goal/updated`; goal is null
+  // when the objective was cleared (`thread/goal/cleared`).
+  | { type: "goal_update"; run_id: string; goal: ThreadGoal | null };
 
 export type RalphCompleteReason =
   | "max_iterations"
   | "completion_promise"
   | "cancelled"
   | "fail_stopped";
+
+// ── Codex Wave-3: thread goal ──
+
+/** Goal status values from Codex `thread/goal/*`. */
+export type GoalStatus =
+  | "active"
+  | "paused"
+  | "blocked"
+  | "usageLimited"
+  | "budgetLimited"
+  | "complete";
+
+/** Snapshot of a Codex session objective + live progress. */
+export interface ThreadGoal {
+  objective?: string;
+  status?: GoalStatus;
+  tokenBudget?: number;
+  tokensUsed?: number;
+  timeUsedSeconds?: number;
+  createdAt?: string;
+  updatedAt?: string;
+}
 
 // ── MCP Elicitation types ──
 

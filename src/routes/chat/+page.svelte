@@ -103,6 +103,9 @@
   } from "$lib/utils/codex-review-prompt";
   import CodexReviewModal from "$lib/components/CodexReviewModal.svelte";
   import type { CodexReviewKind } from "$lib/components/CodexReviewModal.svelte";
+  import RewindCodexModal from "$lib/components/RewindCodexModal.svelte";
+  import type { RewindTurn } from "$lib/components/RewindCodexModal.svelte";
+  import GoalPanel from "$lib/components/GoalPanel.svelte";
   import { buildDoctorReport } from "$lib/utils/doctor";
   import type { RewindCandidate, RewindMarker } from "$lib/utils/rewind";
   import { truncate, cwdDisplayLabel, formatTokenCount } from "$lib/utils/format";
@@ -234,6 +237,41 @@
   // ── Rewind modal ──
   let rewindModalOpen = $state(false);
   let codexReviewPickerOpen = $state(false);
+
+  // ── Codex Wave-3: turn-based rewind + goal modals ──
+  let codexRewindOpen = $state(false);
+  let codexRewindBusy = $state(false);
+  let goalPanelOpen = $state(false);
+
+  // Top-level user messages → selectable turns for the Codex rewind modal.
+  let codexRewindTurns = $derived.by<RewindTurn[]>(() => {
+    const turns: RewindTurn[] = [];
+    let idx = 0;
+    for (const e of store.timeline) {
+      if (e.kind === "user") {
+        turns.push({ index: idx, preview: e.content.replace(/\s+/g, " ").trim().slice(0, 80) });
+        idx++;
+      }
+    }
+    return turns;
+  });
+
+  async function runCodexRewind(opts: { dropFromTurnIndex: number; numTurns: number }) {
+    if (!store.run || effectiveAgent !== "codex") return;
+    codexRewindBusy = true;
+    try {
+      await api.rollbackTurns(store.run.id, opts.numTurns);
+      // Backend rolled back history; mirror it locally (files unchanged).
+      const dropped = store.truncateToTurn(opts.dropFromTurnIndex);
+      appendCommandOutput(t("codexRewind_done", { n: String(dropped) }));
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      dbgWarn("chat", "codex rewind failed", err);
+      appendCommandOutput(t("codexRewind_failed", { error: msg }));
+    } finally {
+      codexRewindBusy = false;
+    }
+  }
 
   // Build the review prompt for the picker choice and send it as a Codex turn.
   function runCodexReview(choice: { kind: CodexReviewKind; value: string }) {
@@ -3483,6 +3521,46 @@
         dbgWarn("chat", "codex logout failed", err);
         appendCommandOutput(t("codexLogout_failed", { error: msg }));
       }
+    } else if (action === "codex-compact") {
+      if (effectiveAgent !== "codex") return;
+      if (!store.run || !store.sessionAlive) {
+        appendCommandOutput(t("codexCompact_noSession"));
+        return;
+      }
+      if (store.isRunning) {
+        appendCommandOutput(t("codexCompact_busy"));
+        return;
+      }
+      try {
+        await api.compactSession(store.run.id);
+        appendCommandOutput(t("codexCompact_done"));
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        dbgWarn("chat", "codex compact failed", err);
+        appendCommandOutput(t("codexCompact_failed", { error: msg }));
+      }
+    } else if (action === "codex-rewind") {
+      if (effectiveAgent !== "codex") return;
+      if (!store.run || !store.sessionAlive) {
+        appendCommandOutput(t("codexRewind_noSession"));
+        return;
+      }
+      if (store.isRunning) {
+        appendCommandOutput(t("codexRewind_busy"));
+        return;
+      }
+      if (codexRewindTurns.length === 0) {
+        appendCommandOutput(t("codexRewind_noTurns"));
+        return;
+      }
+      codexRewindOpen = true;
+    } else if (action === "codex-goal") {
+      if (effectiveAgent !== "codex") return;
+      if (!store.run) {
+        appendCommandOutput(t("codexGoal_noSession"));
+        return;
+      }
+      goalPanelOpen = true;
     }
   }
 
@@ -4327,7 +4405,7 @@
       cacheWriteTokens={cumulativeTokens.cacheWrite}
       parentRunId={store.run?.parent_run_id}
       onEndSession={handleStop}
-      onFork={effectiveAgent === "codex" || forkOverlay ? undefined : () => handleResume("fork")}
+      onFork={forkOverlay ? undefined : () => handleResume("fork")}
       onModelChange={handleModelChange}
       effort={store.features.effortSelector ? currentEffort : undefined}
       onEffortChange={store.features.effortSelector ? handleEffortChange : undefined}
@@ -4348,6 +4426,12 @@
       persistedFiles={store.persistedFiles}
       onRewind={store.caps.supportsSnapshots && store.sessionAlive && !store.isRunning
         ? handleRewind
+        : undefined}
+      onCodexRewind={effectiveAgent === "codex" &&
+      store.sessionAlive &&
+      !store.isRunning &&
+      codexRewindTurns.length > 0
+        ? () => (codexRewindOpen = true)
         : undefined}
       contextUtilization={store.contextUtilization}
       contextWarningLevel={store.contextWarningLevel}
@@ -5286,7 +5370,7 @@
                   onclick={() => handleResume("continue")}>{t("common_retry")}</button
                 >
               {/if}
-              {#if classified.canFork && store.run?.session_id && effectiveAgent !== "codex"}
+              {#if classified.canFork && store.run?.session_id}
                 <button
                   class="rounded px-2.5 py-1 text-xs bg-blue-500/20 hover:bg-blue-500/30 text-blue-400 transition-colors"
                   onclick={() => handleResume("fork")}>{t("statusbar_fork")}</button
@@ -5529,6 +5613,15 @@
   />
 
   <CodexReviewModal bind:open={codexReviewPickerOpen} onSubmit={runCodexReview} />
+
+  <RewindCodexModal
+    bind:open={codexRewindOpen}
+    turns={codexRewindTurns}
+    busy={codexRewindBusy}
+    onConfirm={runCodexRewind}
+  />
+
+  <GoalPanel bind:open={goalPanelOpen} runId={store.run?.id} goal={store.goal} />
 
   <ShortcutHelpPanel bind:open={shortcutHelpOpen} />
 

@@ -505,6 +505,29 @@ describe("parseVirtualAction", () => {
     expect(parseVirtualAction("/cancel-ralph", "codex")).toBeNull();
   });
 
+  // ── Codex Wave-3 virtuals ──
+
+  it("activates /compact for Codex but excludes it for Claude (CLI passthrough)", () => {
+    expect(parseVirtualAction("/compact", "codex")).toEqual({ name: "compact", args: "" });
+    expect(parseVirtualAction("/compact", "claude")).toBeNull();
+  });
+
+  it("activates /goal for Codex and excludes it for Claude", () => {
+    expect(parseVirtualAction("/goal", "codex")).toEqual({ name: "goal", args: "" });
+    expect(parseVirtualAction("/goal", "claude")).toBeNull();
+  });
+
+  it("resolves /rewind to the Codex variant for Codex (turn-based, not snapshot)", () => {
+    // Two virtuals share the name "rewind": Claude (snapshot, excludes codex)
+    // and Codex (history rollback, excludes claude). parseVirtualAction must
+    // pick the non-excluded variant per agent rather than short-circuit on the
+    // first match.
+    expect(parseVirtualAction("/rewind", "codex")).toEqual({ name: "rewind", args: "" });
+    expect(parseVirtualAction("/rewind", "claude")).toEqual({ name: "rewind", args: "" });
+    // Alias /undo resolves for both too.
+    expect(parseVirtualAction("/undo", "codex")).toEqual({ name: "rewind", args: "" });
+  });
+
   it("default agent treats request as Claude — guards against regression", () => {
     // If we ever flip the default to "codex" by mistake, Ralph silently breaks
     // for the entire Claude population. Lock the default behaviour.
@@ -682,6 +705,15 @@ describe("getQuickActions", () => {
     }));
     const result = getQuickActions(allCmds);
     expect(result.length).toBe(QUICK_ACTION_NAMES.length);
+  });
+
+  it("surfaces /compact as a Codex quick action", () => {
+    // Codex pills lead with compact (Wave-3). For Codex, mergeWithVirtual
+    // produces the compact virtual since the CLI returns no commands.
+    const merged = mergeWithVirtual([], "codex");
+    const result = getQuickActions(merged, "codex");
+    expect(result.map((c) => c.name)).toContain("compact");
+    expect(result[0].name).toBe("compact");
   });
 });
 

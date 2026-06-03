@@ -303,6 +303,11 @@ export class SessionStore {
     reason: import("$lib/types").RalphCompleteReason | "interrupted" | null;
   } | null>(null);
 
+  /** Codex Wave-3 session goal. Populated by `getGoal` on panel open and
+   *  kept live by the `goal_update` reducer (from `thread/goal/updated`).
+   *  null = no objective set / non-Codex session. */
+  goal = $state<import("$lib/types").ThreadGoal | null>(null);
+
   /** Scheduled tasks created via CronCreate. Updated by tool_end reducer
    *  branches; replayed via snapshot. UI lives in ScheduledTasksChip.svelte. */
   scheduledTasks = $state<ScheduledTask[]>([]);
@@ -1400,6 +1405,7 @@ export class SessionStore {
     this.pendingElicitations = new Map();
     this.persistedFiles = [];
     this.ralphLoop = null;
+    this.goal = null;
     this.scheduledTasks = [];
     this.sessionCommands = [];
     this.mcpServers = [];
@@ -1468,6 +1474,41 @@ export class SessionStore {
     this.run = null;
     this._isLoadingReplay = false;
     this._clearContentState();
+  }
+
+  /**
+   * Codex turn-based rewind: drop the timeline tail starting at the
+   * `dropFromTurnIndex`-th top-level user message (0-based). Keeps turns
+   * [0, dropFromTurnIndex) and removes everything from that user message
+   * onward. Mirrors a successful `thread/rollback` on the backend — history
+   * only; file changes are NOT reverted (caller surfaces that warning).
+   *
+   * Returns the number of turns dropped (0 if the index is out of range).
+   */
+  truncateToTurn(dropFromTurnIndex: number): number {
+    if (dropFromTurnIndex < 0) return 0;
+    let userSeen = 0;
+    let cutAt = -1;
+    for (let i = 0; i < this.timeline.length; i++) {
+      if (this.timeline[i].kind === "user") {
+        if (userSeen === dropFromTurnIndex) {
+          cutAt = i;
+          break;
+        }
+        userSeen++;
+      }
+    }
+    if (cutAt < 0) return 0; // index past the last turn — nothing to drop
+    const droppedTurns = this.timeline.slice(cutAt).filter((e) => e.kind === "user").length;
+    this.timeline = this.timeline.slice(0, cutAt);
+    // Rebuild numTurns from surviving user messages so the status bar/turn list agree.
+    this.numTurns = this.timeline.filter((e) => e.kind === "user").length;
+    this.turnUsages = this.turnUsages.slice(0, dropFromTurnIndex);
+    // Streaming/thinking buffers belong to the (now-removed) latest turn.
+    this.streamingText = "";
+    this.thinkingText = "";
+    dbg("store", "truncateToTurn", { dropFromTurnIndex, droppedTurns, kept: this.numTurns });
+    return droppedTurns;
   }
 
   // ── Snapshot cache helpers ──
@@ -4022,6 +4063,23 @@ export class SessionStore {
           };
         }
         dbg("store", "ralph_complete", { reason: ev.reason, iteration: ev.iteration });
+        break;
+      }
+      case "goal_update": {
+        // Codex `thread/goal/updated`: merge live progress into the goal field
+        // so GoalPanel re-renders tokensUsed/timeUsedSeconds/status without
+        // polling. Backend sends `goal: null` on `thread/goal/cleared` — treat
+        // that as a reset, not a no-op merge.
+        if (ev.goal == null) {
+          this.goal = null;
+          dbg("store", "goal_update (cleared)");
+        } else {
+          this.goal = { ...(this.goal ?? {}), ...ev.goal };
+          dbg("store", "goal_update", {
+            status: ev.goal?.status,
+            tokensUsed: ev.goal?.tokensUsed,
+          });
+        }
         break;
       }
 

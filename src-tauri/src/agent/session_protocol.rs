@@ -86,6 +86,11 @@ pub struct ParsedLine {
     pub lifecycle: Option<LifecycleSignal>,
     /// Set when this line carries the (resume) conversation id to persist.
     pub thread_id: Option<String>,
+    /// Set when this line is a reply to a client→server request we registered a waiter for
+    /// (Codex `thread/fork`, `thread/rollback`, `thread/goal/get`, …). `(request_id, value)`
+    /// where `request_id` is the frontend control request id and `value` is the JSON-RPC
+    /// `result` (or `error`). The actor routes it to the matching `control_waiter`.
+    pub control_response: Option<(String, Value)>,
 }
 
 /// Localizes all wire-format differences between agent transports. The actor calls these at

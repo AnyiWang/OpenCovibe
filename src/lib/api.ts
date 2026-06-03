@@ -45,6 +45,8 @@ import type {
   RunSearchFilters,
   RunSearchResponse,
   CodexAuthResult,
+  ThreadGoal,
+  GoalStatus,
 } from "./types";
 
 // Runs
@@ -740,6 +742,49 @@ export async function rewindFiles(
 export async function cancelControlRequest(runId: string, requestId: string) {
   dbg("api", "cancelControlRequest", { runId, requestId });
   return invoke("cancel_control_request", { runId, requestId });
+}
+
+// ── Codex Wave-3: thread lifecycle (compact / rewind / goal) ──
+
+/** Codex `thread/compact/start`: clears history but keeps a summary in context. */
+export async function compactSession(runId: string) {
+  return sendSessionControl(runId, "compact");
+}
+
+/**
+ * Codex `thread/rollback`: drops the last N turns from conversation HISTORY.
+ * ⚠️ Does NOT revert file changes (unlike Claude's snapshot rewind).
+ */
+export async function rollbackTurns(runId: string, numTurns: number) {
+  return sendSessionControl(runId, "rollback", { num_turns: numTurns });
+}
+
+/** Codex `thread/goal/set`: set or update the session objective + budget. */
+export async function setGoal(
+  runId: string,
+  goal: { objective?: string; status?: GoalStatus; tokenBudget?: number },
+) {
+  return sendSessionControl(runId, "goal_set", {
+    ...(goal.objective !== undefined ? { objective: goal.objective } : {}),
+    ...(goal.status !== undefined ? { status: goal.status } : {}),
+    ...(goal.tokenBudget !== undefined ? { token_budget: goal.tokenBudget } : {}),
+  });
+}
+
+/**
+ * Codex `thread/goal/get`: read the current goal.
+ * Backend forwards the JSON-RPC result verbatim — `{ goal: ThreadGoal | null }`
+ * — so we unwrap the `goal` key here. Returns null when no objective is set.
+ */
+export async function getGoal(runId: string): Promise<ThreadGoal | null> {
+  const res = await sendSessionControl(runId, "goal_get");
+  const goal = (res as { goal?: ThreadGoal | null }).goal;
+  return goal ?? null;
+}
+
+/** Codex `thread/goal/clear`: remove the current objective. */
+export async function clearGoal(runId: string) {
+  return sendSessionControl(runId, "goal_clear");
 }
 
 export async function respondElicitation(
