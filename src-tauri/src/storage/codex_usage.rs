@@ -15,6 +15,7 @@
 
 use crate::models::{DailyAggregate, ModelAggregate, UsageOverview};
 use crate::pricing;
+use crate::storage::cli_sessions_common::{cache_key, scan_cache_path, CachedFile, DiskScanCache};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -36,20 +37,6 @@ struct FileData {
     daily: HashMap<String, HashMap<String, TokenCounts>>,
     /// dates that had at least one session turn (for activity/streaks)
     dates: Vec<String>,
-}
-
-#[derive(Serialize, Deserialize)]
-struct DiskCache {
-    version: u32,
-    /// path → (mtime_ns, size, FileData)
-    manifest: HashMap<String, CachedFile>,
-}
-
-#[derive(Serialize, Deserialize)]
-struct CachedFile {
-    mtime_ns: u128,
-    size: u64,
-    data: FileData,
 }
 
 fn sessions_dir() -> Option<PathBuf> {
@@ -193,31 +180,7 @@ fn scan_single_rollout(path: &Path) -> FileData {
 }
 
 fn disk_cache_path() -> PathBuf {
-    super::data_dir().join("codex-usage-scan-cache.json")
-}
-
-fn read_disk_cache() -> Option<DiskCache> {
-    let raw = std::fs::read_to_string(disk_cache_path()).ok()?;
-    let cache: DiskCache = serde_json::from_str(&raw).ok()?;
-    if cache.version != DISK_CACHE_VERSION {
-        return None;
-    }
-    Some(cache)
-}
-
-fn write_disk_cache(cache: &DiskCache) {
-    let path = disk_cache_path();
-    if let Some(parent) = path.parent() {
-        let _ = super::ensure_dir(parent);
-    }
-    let json = match serde_json::to_string(cache) {
-        Ok(j) => j,
-        Err(_) => return,
-    };
-    let tmp = path.with_extension("json.tmp");
-    if std::fs::write(&tmp, &json).is_ok() {
-        let _ = std::fs::rename(&tmp, &path);
-    }
+    scan_cache_path("codex-usage-scan-cache.json")
 }
 
 /// Read aggregated global Codex usage. `days` filters the daily window (None = all time).
@@ -229,20 +192,22 @@ pub fn read_global_codex_usage(days: Option<u32>) -> Result<UsageOverview, Strin
     let files = list_rollout_files(&dir);
     log::debug!("[codex_usage] {} rollout files", files.len());
 
-    let mut old_cache = read_disk_cache().map(|c| c.manifest).unwrap_or_default();
-    let mut new_manifest: HashMap<String, CachedFile> = HashMap::new();
+    let mut old_cache = DiskScanCache::<FileData>::read(&disk_cache_path(), DISK_CACHE_VERSION)
+        .unwrap_or_else(|| {
+            crate::storage::cli_sessions_common::empty_scan_cache(DISK_CACHE_VERSION)
+        });
+    let mut new_manifest: HashMap<String, CachedFile<FileData>> = HashMap::new();
 
     // date → model → TokenCounts (merged across all files)
     let mut merged: HashMap<String, HashMap<String, TokenCounts>> = HashMap::new();
     let mut all_dates: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     for (path, mtime_ns, size) in files {
-        let key = path.to_string_lossy().to_string();
+        let key = cache_key(&path);
         // Reuse cached scan if unchanged.
-        let data = match old_cache.remove(&key) {
-            Some(cf) if cf.mtime_ns == mtime_ns && cf.size == size => cf.data,
-            _ => scan_single_rollout(&path),
-        };
+        let data = old_cache
+            .take_if_fresh(&key, mtime_ns, size)
+            .unwrap_or_else(|| scan_single_rollout(&path));
         for (date, models) in &data.daily {
             let day = merged.entry(date.clone()).or_default();
             for (model, tc) in models {
@@ -265,10 +230,11 @@ pub fn read_global_codex_usage(days: Option<u32>) -> Result<UsageOverview, Strin
         );
     }
 
-    write_disk_cache(&DiskCache {
+    DiskScanCache {
         version: DISK_CACHE_VERSION,
         manifest: new_manifest,
-    });
+    }
+    .write(&disk_cache_path());
 
     Ok(build_overview(merged, all_dates, days))
 }

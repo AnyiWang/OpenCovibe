@@ -16,11 +16,12 @@ use crate::storage::cli_sessions::{
     build_imported_index, build_imported_index_cached, invalidate_imported_cache,
 };
 use crate::storage::cli_sessions_common::{
-    event_key, load_import_skip_set, sha256_short, CliSessionSummary, DiscoverResult, ImportResult,
-    SyncResult,
+    cache_key, event_key, load_import_skip_set, scan_cache_path, sha256_short, CachedFile,
+    CliSessionSummary, DiscoverResult, DiskScanCache, ImportResult, SyncResult,
 };
 use crate::storage::events::{is_replayable, EventWriter};
 use rayon::prelude::*;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
@@ -33,6 +34,26 @@ use std::time::{Duration, SystemTime};
 
 const MAX_DISCOVER_CANDIDATES: usize = 500;
 const SCAN_HEAD_LINES_FOR_FIRST_PROMPT: usize = 100;
+const SUMMARY_CACHE_VERSION: u32 = 1;
+
+fn summary_cache_path() -> PathBuf {
+    scan_cache_path("codex-summary-scan-cache.json")
+}
+
+/// Cacheable per-rollout-file scan used to build discovery summaries. Aggregating
+/// these across a thread's files (mtime asc) reproduces the old single-pass
+/// `build_summary` result, but unchanged files are skipped via the disk cache.
+#[derive(Clone, Default, Serialize, Deserialize)]
+struct SummaryFileScan {
+    /// Count of `event_msg/task_complete` records in this file.
+    task_complete_count: u32,
+    /// Last `timestamp` field seen in the file (for last_activity_at).
+    last_ts: Option<String>,
+    /// First `user_message` text within the head window (truncated for the prompt preview).
+    first_user_message: Option<String>,
+    /// Last `turn_context.payload.model` seen in the file (real model name).
+    last_model: Option<String>,
+}
 
 // ── Paths ────────────────────────────────────────────────────────────
 
@@ -223,14 +244,17 @@ pub fn discover_sessions(target_cwd: &str) -> Result<DiscoverResult, String> {
         }
     };
     let imported = build_imported_index_cached(Duration::from_secs(30));
-    discover_sessions_in_root(&root, target_cwd, &imported)
+    discover_sessions_in_root(&root, target_cwd, &imported, &summary_cache_path())
 }
 
-/// Testable inner: discovery against an explicit root + imported-index.
+/// Testable inner: discovery against an explicit root + imported-index. The
+/// summary scan cache lives at `cache_path` (a parameter so tests give each run
+/// its own file — no shared global cache state).
 fn discover_sessions_in_root(
     root: &Path,
     target_cwd: &str,
     imported: &crate::storage::cli_sessions::ImportedIndex,
+    cache_path: &Path,
 ) -> Result<DiscoverResult, String> {
     let start = std::time::Instant::now();
     if !root.exists() {
@@ -270,6 +294,11 @@ fn discover_sessions_in_root(
         })
         .collect();
 
+    // Scan each rollout's body once, reusing unchanged files from the disk cache
+    // (key = path + mtime_ns + size). This is the expensive part of discovery —
+    // it used to be a single-threaded per-thread re-parse on every call.
+    let scans = scan_summary_files(&parsed, cache_path);
+
     // Group by thread_id
     let mut groups: HashMap<String, Vec<RolloutFileInfo>> = HashMap::new();
     for fi in parsed {
@@ -289,7 +318,7 @@ fn discover_sessions_in_root(
             if !show_all && latest.meta.cwd != target_cwd {
                 return None;
             }
-            build_summary(&thread_id, &files, imported)
+            build_summary(&thread_id, &files, &scans, imported)
         })
         .collect();
 
@@ -309,9 +338,129 @@ fn discover_sessions_in_root(
     })
 }
 
+/// Scan one rollout's body into a cacheable `SummaryFileScan`.
+///
+/// Mirrors the per-file pass the old `build_summary` did inline: counts
+/// `task_complete`, tracks the last timestamp, the first head-window
+/// `user_message`, and the last `turn_context` model.
+fn scan_summary_file(path: &Path) -> SummaryFileScan {
+    let mut scan = SummaryFileScan::default();
+    let Ok(file) = File::open(path) else {
+        return scan;
+    };
+    let mut head_seen = 0usize;
+    for line in BufReader::new(file).lines().map_while(Result::ok) {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let Ok(json) = serde_json::from_str::<Value>(trimmed) else {
+            continue;
+        };
+        if let Some(ts) = json.get("timestamp").and_then(|v| v.as_str()) {
+            scan.last_ts = Some(ts.to_string());
+        }
+        let outer_type = json.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        if outer_type == "event_msg" {
+            let inner = json
+                .get("payload")
+                .and_then(|p| p.get("type"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if inner == "task_complete" {
+                scan.task_complete_count = scan.task_complete_count.saturating_add(1);
+            }
+            if scan.first_user_message.is_none()
+                && inner == "user_message"
+                && head_seen < SCAN_HEAD_LINES_FOR_FIRST_PROMPT
+            {
+                if let Some(text) = json
+                    .get("payload")
+                    .and_then(|p| p.get("message"))
+                    .and_then(|v| v.as_str())
+                {
+                    scan.first_user_message = Some(truncate_prompt(text));
+                }
+            }
+        } else if outer_type == "turn_context" {
+            if let Some(m) = json
+                .get("payload")
+                .and_then(|p| p.get("model"))
+                .and_then(|v| v.as_str())
+            {
+                scan.last_model = Some(m.to_string());
+            }
+        }
+        head_seen += 1;
+    }
+    scan
+}
+
+/// Scan all discovered rollout files into a `path → SummaryFileScan` map, reusing
+/// unchanged files from the disk cache at `cache_path` and re-scanning only
+/// new/modified ones in parallel. The refreshed cache is written back
+/// (best-effort). `cache_path` is a parameter (not a global) so tests can point
+/// each invocation at its own file with no shared mutable state.
+fn scan_summary_files(
+    files: &[RolloutFileInfo],
+    cache_path: &Path,
+) -> HashMap<String, SummaryFileScan> {
+    let mut old_cache = DiskScanCache::<SummaryFileScan>::read(cache_path, SUMMARY_CACHE_VERSION)
+        .unwrap_or_else(|| {
+            crate::storage::cli_sessions_common::empty_scan_cache(SUMMARY_CACHE_VERSION)
+        });
+
+    // Split into cache hits (reused as-is) and misses (need a fresh scan). Pull
+    // hits out of the old cache first so the parallel scan only touches misses.
+    let mut result: HashMap<String, SummaryFileScan> = HashMap::new();
+    let mut misses: Vec<&RolloutFileInfo> = Vec::new();
+    for f in files {
+        let key = cache_key(&f.path);
+        match old_cache.take_if_fresh(&key, f.mtime_ns, f.size) {
+            Some(data) => {
+                result.insert(key, data);
+            }
+            None => misses.push(f),
+        }
+    }
+
+    let scanned: Vec<(String, SummaryFileScan)> = misses
+        .par_iter()
+        .map(|f| (cache_key(&f.path), scan_summary_file(&f.path)))
+        .collect();
+    result.extend(scanned);
+
+    // Rebuild the manifest from exactly the files we just discovered so stale
+    // entries (deleted rollouts) are dropped, then persist.
+    let manifest: HashMap<String, CachedFile<SummaryFileScan>> = files
+        .iter()
+        .filter_map(|f| {
+            let key = cache_key(&f.path);
+            result.get(&key).map(|data| {
+                (
+                    key,
+                    CachedFile {
+                        mtime_ns: f.mtime_ns,
+                        size: f.size,
+                        data: data.clone(),
+                    },
+                )
+            })
+        })
+        .collect();
+    DiskScanCache {
+        version: SUMMARY_CACHE_VERSION,
+        manifest,
+    }
+    .write(cache_path);
+
+    result
+}
+
 fn build_summary(
     thread_id: &str,
     files_asc: &[RolloutFileInfo],
+    scans: &HashMap<String, SummaryFileScan>,
     imported: &crate::storage::cli_sessions::ImportedIndex,
 ) -> Option<CliSessionSummary> {
     let earliest = files_asc.first()?;
@@ -326,62 +475,23 @@ fn build_summary(
     // the latest-rollout-authoritative rule used for cwd/cli_version/provider below.
     let mut model: Option<String> = None;
 
+    // Merge per-file scans (files in mtime-asc order) to reproduce the old
+    // single-pass result: sum task_complete; first head-window prompt wins;
+    // latest non-empty last_ts and model win.
     for f in files_asc {
         total_size = total_size.saturating_add(f.size);
-        // Scan file for task_complete count + last_ts + first_prompt
-        if let Ok(file) = File::open(&f.path) {
-            let mut head_seen = 0usize;
-            for line in BufReader::new(file).lines().map_while(Result::ok) {
-                let trimmed = line.trim();
-                if trimmed.is_empty() {
-                    continue;
-                }
-                let Ok(json) = serde_json::from_str::<Value>(trimmed) else {
-                    continue;
-                };
-                if let Some(ts) = json.get("timestamp").and_then(|v| v.as_str()) {
-                    last_activity_ts = Some(ts.to_string());
-                }
-                let outer_type = json.get("type").and_then(|v| v.as_str()).unwrap_or("");
-                if outer_type == "event_msg" {
-                    let inner = json
-                        .get("payload")
-                        .and_then(|p| p.get("type"))
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
-                    if inner == "task_complete" {
-                        message_count = message_count.saturating_add(1);
-                    }
-                    if first_prompt.is_none()
-                        && inner == "user_message"
-                        && head_seen < SCAN_HEAD_LINES_FOR_FIRST_PROMPT
-                    {
-                        if let Some(text) = json
-                            .get("payload")
-                            .and_then(|p| p.get("message"))
-                            .and_then(|v| v.as_str())
-                        {
-                            first_prompt = Some(truncate_prompt(text));
-                        }
-                    }
-                } else if outer_type == "turn_context" {
-                    if let Some(m) = json
-                        .get("payload")
-                        .and_then(|p| p.get("model"))
-                        .and_then(|v| v.as_str())
-                    {
-                        model = Some(m.to_string());
-                    }
-                }
-                head_seen += 1;
-                if head_seen > SCAN_HEAD_LINES_FOR_FIRST_PROMPT
-                    && first_prompt.is_some()
-                    && message_count > 0
-                {
-                    // Done with head; keep streaming for last_activity_ts
-                    // (cheap: just keeps iterating)
-                }
-            }
+        let Some(scan) = scans.get(&cache_key(&f.path)) else {
+            continue;
+        };
+        message_count = message_count.saturating_add(scan.task_complete_count);
+        if scan.last_ts.is_some() {
+            last_activity_ts = scan.last_ts.clone();
+        }
+        if first_prompt.is_none() {
+            first_prompt = scan.first_user_message.clone();
+        }
+        if scan.last_model.is_some() {
+            model = scan.last_model.clone();
         }
     }
 
@@ -1462,6 +1572,13 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// A summary-scan cache path inside a test's own temp dir. Each test owns its
+    /// own file, so there is zero shared mutable cache state across parallel tests
+    /// (no process-global env var, no shared OnceLock).
+    fn test_cache_path(tmp: &std::path::Path) -> std::path::PathBuf {
+        tmp.join("summary-scan-cache.json")
+    }
+
     fn writer() -> Arc<EventWriter> {
         Arc::new(EventWriter::new())
     }
@@ -1931,7 +2048,13 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         // Don't create the sessions/ subdir at all — fully nonexistent root path
         let nonexistent = tmp.path().join("does-not-exist");
-        let result = discover_sessions_in_root(&nonexistent, "/", &empty_imported()).unwrap();
+        let result = discover_sessions_in_root(
+            &nonexistent,
+            "/",
+            &empty_imported(),
+            &test_cache_path(tmp.path()),
+        )
+        .unwrap();
         assert_eq!(result.sessions.len(), 0);
         assert!(!result.truncated);
     }
@@ -1979,7 +2102,9 @@ mod tests {
             ],
         );
 
-        let result = discover_sessions_in_root(root, "/", &empty_imported()).unwrap();
+        let result =
+            discover_sessions_in_root(root, "/", &empty_imported(), &test_cache_path(root))
+                .unwrap();
         assert_eq!(result.sessions.len(), 2, "two distinct threads");
         let t1 = result
             .sessions
@@ -2015,7 +2140,9 @@ mod tests {
                 r#"{"timestamp":"2026-02-10T00:03:00Z","type":"event_msg","payload":{"type":"task_complete"}}"#,
             ],
         );
-        let result = discover_sessions_in_root(root, "/", &empty_imported()).unwrap();
+        let result =
+            discover_sessions_in_root(root, "/", &empty_imported(), &test_cache_path(root))
+                .unwrap();
         let s = result
             .sessions
             .iter()
@@ -2040,7 +2167,9 @@ mod tests {
             "\n",
         );
         std::fs::write(&path, content).unwrap();
-        let result = discover_sessions_in_root(root, "/", &empty_imported()).unwrap();
+        let result =
+            discover_sessions_in_root(root, "/", &empty_imported(), &test_cache_path(root))
+                .unwrap();
         let s = result
             .sessions
             .iter()
@@ -2086,7 +2215,9 @@ mod tests {
 
         // Discovery truncates to 500 (mtime desc keeps the 505 "new" files;
         // first 500 of them are kept; "old" files are evicted).
-        let result = discover_sessions_in_root(root, "/", &empty_imported()).unwrap();
+        let result =
+            discover_sessions_in_root(root, "/", &empty_imported(), &test_cache_path(root))
+                .unwrap();
         assert!(result.truncated);
         assert_eq!(result.total, 510, "truncated total = candidate file count");
         assert!(
@@ -2127,7 +2258,9 @@ mod tests {
             "/proj-b",
             &[],
         );
-        let result = discover_sessions_in_root(root, "/proj-a", &empty_imported()).unwrap();
+        let result =
+            discover_sessions_in_root(root, "/proj-a", &empty_imported(), &test_cache_path(root))
+                .unwrap();
         assert_eq!(result.sessions.len(), 1);
         assert_eq!(result.sessions[0].session_id, "thread-a");
     }
@@ -2158,7 +2291,9 @@ mod tests {
             "/proj-new",
             &[],
         );
-        let result = discover_sessions_in_root(root, "/", &empty_imported()).unwrap();
+        let result =
+            discover_sessions_in_root(root, "/", &empty_imported(), &test_cache_path(root))
+                .unwrap();
         assert_eq!(result.sessions.len(), 1, "single thread despite two cwds");
         assert_eq!(
             result.sessions[0].cwd, "/proj-new",
@@ -2339,12 +2474,81 @@ mod tests {
             "run-existing".to_string(),
         );
 
-        let result = discover_sessions_in_root(root, "/", &imported).unwrap();
+        let result =
+            discover_sessions_in_root(root, "/", &imported, &test_cache_path(root)).unwrap();
         assert_eq!(result.sessions.len(), 1);
         assert!(result.sessions[0].already_imported);
         assert_eq!(
             result.sessions[0].existing_run_id.as_deref(),
             Some("run-existing")
+        );
+    }
+
+    // ── Summary scan cache: hit + invalidation ──
+
+    /// Build a `RolloutFileInfo` from an on-disk path, reading current metadata.
+    fn rollout_info(path: &std::path::Path) -> RolloutFileInfo {
+        let md = std::fs::metadata(path).unwrap();
+        let mtime = md.modified().unwrap();
+        RolloutFileInfo {
+            path: path.to_path_buf(),
+            size: md.len(),
+            mtime,
+            mtime_ns: mtime_ns(&md),
+            meta: RolloutMeta::default(),
+        }
+    }
+
+    #[test]
+    fn summary_scan_cache_serves_hit_and_invalidates_on_change() {
+        let tmp = tempfile::tempdir().unwrap();
+        // This test's own cache file — no shared global state with other tests.
+        let cache = test_cache_path(tmp.path());
+        let path = write_rollout(
+            tmp.path(),
+            "2026",
+            "03",
+            "01",
+            "rollout-cache.jsonl",
+            "thread-cache",
+            "/p",
+            &[
+                r#"{"timestamp":"2026-03-01T00:01:00Z","type":"event_msg","payload":{"type":"task_complete"}}"#,
+            ],
+        );
+
+        // First pass: scans the file, count = 1, and populates the disk cache.
+        let info = rollout_info(&path);
+        let first = scan_summary_files(std::slice::from_ref(&info), &cache);
+        assert_eq!(first[&cache_key(&path)].task_complete_count, 1);
+
+        // Append a second task_complete on disk, but call with the STALE
+        // (mtime_ns,size). The cache key still matches → cached scan reused,
+        // so the new line is NOT seen (count stays 1). Proves a cache hit.
+        let mut content = std::fs::read_to_string(&path).unwrap();
+        content.push_str(
+            "{\"timestamp\":\"2026-03-01T00:02:00Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\"}}\n",
+        );
+        std::fs::write(&path, &content).unwrap();
+        let stale_hit = scan_summary_files(std::slice::from_ref(&info), &cache);
+        assert_eq!(
+            stale_hit[&cache_key(&path)].task_complete_count,
+            1,
+            "unchanged (mtime,size) key must reuse cached scan"
+        );
+
+        // Now pass the real updated metadata → key differs → re-scan picks up
+        // both task_complete lines. Proves invalidation on file change.
+        let updated = rollout_info(&path);
+        assert!(
+            updated.size != info.size || updated.mtime_ns != info.mtime_ns,
+            "appended bytes should change size/mtime"
+        );
+        let refreshed = scan_summary_files(std::slice::from_ref(&updated), &cache);
+        assert_eq!(
+            refreshed[&cache_key(&path)].task_complete_count,
+            2,
+            "changed file must be re-scanned"
         );
     }
 }
