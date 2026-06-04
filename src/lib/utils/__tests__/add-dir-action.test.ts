@@ -27,7 +27,11 @@ describe("executeAddDir", () => {
 
   // ── Codex-specific tests ──
 
-  it("codex + sessionAlive saves to settings (does not sendMessage)", async () => {
+  it("codex + sessionAlive saves to settings (does not sendMessage), reports next-session", async () => {
+    // Codex lacks supportsLiveAddDir: it consumes writableRoots once at spawn
+    // (first turn/start), so a mid-session add-dir is persisted and only takes
+    // effect on the next session / new thread — never the current thread. With a
+    // live session we surface the "next session" wording.
     const deps = makeDeps({
       getAgentSettings: vi.fn().mockResolvedValue({ add_dirs: [] }),
     });
@@ -38,10 +42,10 @@ describe("executeAddDir", () => {
       add_dirs: ["/tmp/codex-dir"],
     });
     const call = (deps.appendOutput as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
-    expect(call).toContain("chat_addDirNextTurn");
+    expect(call).toContain("chat_addDirNextSession");
   });
 
-  it("codex + sessionAlive=false saves to settings", async () => {
+  it("codex + sessionAlive=false is a plain pre-session save", async () => {
     const deps = makeDeps({
       getAgentSettings: vi.fn().mockResolvedValue({ add_dirs: [] }),
     });
@@ -52,7 +56,7 @@ describe("executeAddDir", () => {
       add_dirs: ["/tmp/codex-dir"],
     });
     const call = (deps.appendOutput as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
-    expect(call).toContain("chat_addDirNextTurn");
+    expect(call).toContain("chat_addDirSaved");
   });
 
   it("user cancels dialog — no further action", async () => {

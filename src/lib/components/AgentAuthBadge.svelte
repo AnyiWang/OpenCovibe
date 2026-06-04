@@ -5,6 +5,7 @@
   import { t } from "$lib/i18n/index.svelte";
   import * as api from "$lib/api";
   import { CODEX_PROVIDER_PRESETS } from "$lib/utils/codex-provider-presets";
+  import { computeDropdownStyle, attachDismissHandlers } from "$lib/utils/dropdown";
   import { dbgWarn } from "$lib/utils/debug";
 
   // Unified hero auth badge for both agents. Auth is a simple two-way choice — OAuth (the
@@ -113,13 +114,7 @@
 
   function updateDropdownPosition() {
     if (!buttonEl) return;
-    const rect = buttonEl.getBoundingClientRect();
-    const spaceBelow = window.innerHeight - rect.bottom;
-    if (spaceBelow < 240) {
-      dropdownStyle = `position:fixed; bottom:${window.innerHeight - rect.top + 4}px; left:${rect.left}px; z-index:50;`;
-    } else {
-      dropdownStyle = `position:fixed; top:${rect.bottom + 4}px; left:${rect.left}px; z-index:50;`;
-    }
+    dropdownStyle = computeDropdownStyle(buttonEl, 240);
   }
 
   async function selectOAuth() {
@@ -153,21 +148,17 @@
   onMount(() => {
     // Codex status is loaded by the $effect above (reactive to isCodex); here we only
     // wire the dropdown's outside-click/Escape handlers + the auth-changed refresh.
-    function onDocClick(e: MouseEvent) {
-      if (dropdownOpen && wrapperEl && !wrapperEl.contains(e.target as Node)) dropdownOpen = false;
-    }
-    function onDocKeydown(e: KeyboardEvent) {
-      if (dropdownOpen && e.key === "Escape") dropdownOpen = false;
-    }
+    const detach = attachDismissHandlers({
+      getWrapper: () => wrapperEl,
+      isOpen: () => dropdownOpen,
+      close: () => (dropdownOpen = false),
+    });
     function onCodexAuthChanged() {
       void loadCodexStatus();
     }
-    document.addEventListener("mousedown", onDocClick, true);
-    document.addEventListener("keydown", onDocKeydown);
     window.addEventListener("ocv:codex-auth-changed", onCodexAuthChanged);
     return () => {
-      document.removeEventListener("mousedown", onDocClick, true);
-      document.removeEventListener("keydown", onDocKeydown);
+      detach();
       window.removeEventListener("ocv:codex-auth-changed", onCodexAuthChanged);
     };
   });

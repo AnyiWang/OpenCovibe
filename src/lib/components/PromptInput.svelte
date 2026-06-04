@@ -21,6 +21,7 @@
     filterSlashCommands,
     mergeWithVirtual,
     parseVirtualAction,
+    resolveVirtualCommand,
     getCommandInteraction,
     getArgumentHint,
     shouldBackFromSubView,
@@ -29,7 +30,6 @@
     classifyCloseReason,
     groupSlashCommands,
     extractSlashQuery,
-    VIRTUAL_COMMANDS,
   } from "$lib/utils/slash-commands";
   import type { SlashCommandGroups } from "$lib/utils/slash-commands";
   import type { MessageKey } from "$lib/i18n/types";
@@ -740,8 +740,9 @@
       return;
     }
 
-    // immediate: execute directly without touching inputText/pastedBlocks/attachments
-    const vDef = VIRTUAL_COMMANDS.find((v) => v.name === cmd.name);
+    // immediate: execute directly without touching inputText/pastedBlocks/attachments.
+    // Resolve agent-aware so per-agent variants pick the correct _action.
+    const vDef = resolveVirtualCommand(cmd.name, agent) ?? cmd;
     if (vDef) {
       if (typeof vDef["_action"] === "string" && onVirtualCommand) {
         onVirtualCommand(vDef["_action"] as string, "");
@@ -1140,8 +1141,10 @@
           }
           return; // Always consume /model command, even without handler
         }
-        // Navigation virtual commands (e.g. /config → /settings?tab=cli-config)
-        const vDef = VIRTUAL_COMMANDS.find((v) => v.name === virtual.name);
+        // Navigation virtual commands (e.g. /config → /settings?tab=cli-config).
+        // Resolve agent-aware so per-agent variants (Codex /rewind → "codex-rewind")
+        // dispatch the right _action instead of the first same-named entry.
+        const vDef = resolveVirtualCommand(virtual.name, agent);
         if (vDef && typeof vDef["_navigate"] === "string") {
           inputText = "";
           if (textareaEl) textareaEl.style.height = "auto";

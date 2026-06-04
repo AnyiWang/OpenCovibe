@@ -217,11 +217,22 @@ export const VIRTUAL_COMMANDS: CliCommand[] = [
   },
   {
     name: "clear",
-    description: "Clear conversation history and free up context",
     // Codex parity: `/new`, `/exit`, `/quit` are aliases — all fall through to the
     // same clear-context action. In a GUI app "exit"/"quit" mean leave the current
-    // chat (not quit the app), which matches clear semantics.
+    // chat (not quit the app), which matches clear semantics. Gated to Codex so we
+    // don't silently intercept these names on Claude, whose CLI owns /exit and /quit
+    // (and has no /new) — there they fall through to CLI passthrough.
+    // Listed before the agent-neutral entry so Codex's merged menu surfaces the aliases.
+    description: "Clear conversation history and free up context",
     aliases: ["new", "exit", "quit"],
+    _virtual: true,
+    _action: "clear-context",
+    _excludeAgents: ["claude"],
+  },
+  {
+    name: "clear",
+    description: "Clear conversation history and free up context",
+    aliases: [],
     _virtual: true,
     _action: "clear-context",
     // Codex: navigates to fresh chat (new thread on next message)
@@ -327,9 +338,21 @@ export const VIRTUAL_COMMANDS: CliCommand[] = [
   },
   {
     name: "btw",
+    // Codex parity: Codex CLI names this `/side`. Gated to Codex so the `/side`
+    // alias isn't intercepted on Claude (where it has no native meaning and would
+    // otherwise shadow CLI passthrough). The canonical `/btw` stays on both agents.
+    // Listed before the agent-neutral entry so Codex's merged menu surfaces the alias.
     description: "Ask a side question without interrupting the current task",
-    // Codex CLI names this `/side`; we accept both.
     aliases: ["side"],
+    _virtual: true,
+    _action: "side-question",
+    argumentHint: "<question>",
+    _excludeAgents: ["claude"],
+  },
+  {
+    name: "btw",
+    description: "Ask a side question without interrupting the current task",
+    aliases: [],
     _virtual: true,
     _action: "side-question",
     argumentHint: "<question>",
@@ -419,6 +442,24 @@ export const VIRTUAL_COMMANDS: CliCommand[] = [
 function isExcludedForAgent(cmd: CliCommand, agent: string): boolean {
   const excluded = cmd["_excludeAgents"];
   return Array.isArray(excluded) && excluded.includes(agent);
+}
+
+/**
+ * Resolve a virtual command name/alias to the agent-correct variant.
+ * Some names (rewind, compact, …) have per-agent variants distinguished only by
+ * `_excludeAgents`; this returns the first one NOT excluded for `agent` so callers
+ * dispatch the right `_action` (e.g. Codex /rewind → "codex-rewind", not "rewind").
+ */
+export function resolveVirtualCommand(
+  name: string,
+  agent: string = "claude",
+): CliCommand | undefined {
+  const lname = name.toLowerCase();
+  const candidates = VIRTUAL_COMMANDS.filter(
+    (v) =>
+      v.name.toLowerCase() === lname || (v.aliases ?? []).some((a) => a.toLowerCase() === lname),
+  );
+  return candidates.find((v) => !isExcludedForAgent(v, agent));
 }
 
 /** Known virtual command names+aliases for an agent (for isKnownSlashCommand). */
@@ -519,9 +560,15 @@ export function mergeWithVirtual(
     }
     return merged;
   });
-  // Append virtuals not present in CLI
+  // Append virtuals not present in CLI. Some names have multiple applicable
+  // variants for one agent (e.g. Codex's base `clear` + the alias-carrying
+  // `clear`); append only the first so the menu shows no duplicate entries.
+  const appended = new Set<string>();
   for (const v of applicableVirtuals) {
-    if (!cliMap.has(v.name)) result.push(v);
+    if (!cliMap.has(v.name) && !appended.has(v.name)) {
+      result.push(v);
+      appended.add(v.name);
+    }
   }
   return result;
 }
@@ -541,15 +588,11 @@ export function parseVirtualAction(
   const match = text.match(/^\/(\S+)(?:\s+(.*))?$/);
   if (!match) return null;
   const name = match[1];
-  // Some names (rewind, compact) have per-agent variants — match the first one
+  // Some names (rewind, compact) have per-agent variants — resolve to the variant
   // that ISN'T excluded for this agent so e.g. Codex /rewind resolves to the
   // turn-based variant rather than short-circuiting on the Claude snapshot one.
-  const candidates = VIRTUAL_COMMANDS.filter(
-    (v) => v.name === name || (v.aliases ?? []).includes(name),
-  );
-  if (candidates.length === 0) return null;
-  const virtual = candidates.find((v) => !isExcludedForAgent(v, agent));
-  if (!virtual) return null; // all variants excluded for this agent
+  const virtual = resolveVirtualCommand(name, agent);
+  if (!virtual) return null; // unknown, or all variants excluded for this agent
   return { name: virtual.name, args: (match[2] ?? "").trim() };
 }
 

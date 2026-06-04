@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { getCliModels, getCodexModels } from "$lib/stores/cli-info.svelte";
+  import { getModelsForAgent } from "$lib/stores/cli-info.svelte";
   import { t } from "$lib/i18n/index.svelte";
 
   let {
@@ -16,7 +16,7 @@
   let showCustom = $state(false);
   let customModel = $state("");
 
-  let models = $derived(agent === "codex" ? getCodexModels() : getCliModels());
+  let models = $derived(getModelsForAgent(agent));
 
   let displayValue = $derived.by(() => {
     const found = models.find((mdl) => mdl.value === value);

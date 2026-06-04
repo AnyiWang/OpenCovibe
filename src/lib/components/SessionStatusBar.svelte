@@ -4,7 +4,7 @@
   import type { TaskRun, McpServerInfo, CliModelInfo } from "$lib/types";
   import type { TurnUsage } from "$lib/stores/types";
   import { dbg } from "$lib/utils/debug";
-  import { getCliModels, getCodexModels } from "$lib/stores/cli-info.svelte";
+  import { getModelsForAgent } from "$lib/stores/cli-info.svelte";
   import { t } from "$lib/i18n/index.svelte";
   import { fmtNumber } from "$lib/i18n/format";
   import { truncate, formatTokenCount, formatDuration, formatCostDisplay } from "$lib/utils/format";
@@ -213,13 +213,7 @@
 
   // ── Model selector dropdown ──
   // Use platform-specific models when a third-party provider is active
-  let models = $derived(
-    agent === "codex"
-      ? getCodexModels()
-      : platformModels.length > 0
-        ? platformModels
-        : getCliModels(),
-  );
+  let models = $derived(getModelsForAgent(agent, { platformModels }));
   let dropdownOpen = $state(false);
   let focusedModelIdx = $state(-1);
   let modelBtnEl: HTMLButtonElement | undefined = $state();
@@ -372,8 +366,7 @@
 
   let modelLabel = $derived.by(() => {
     // Check agent-specific models first, then platform/CLI models
-    const all =
-      agent === "codex" ? getCodexModels() : [...(platformModels ?? []), ...getCliModels()];
+    const all = getModelsForAgent(agent, { platformModels, merge: true });
     const found = all.find((m) => m.value === model);
     if (found) return found.displayName;
     const fuzzy = all.find((m) => model.includes(m.value) && m.value !== "default");

@@ -8,6 +8,8 @@
     PRESET_CATEGORIES,
   } from "$lib/utils/platform-presets";
   import { dbg } from "$lib/utils/debug";
+  import { computeDropdownStyle, attachDismissHandlers } from "$lib/utils/dropdown";
+  import { onMount } from "svelte";
 
   let {
     authOverview = null,
@@ -112,13 +114,7 @@
 
   function updateDropdownPosition() {
     if (!buttonEl) return;
-    const rect = buttonEl.getBoundingClientRect();
-    const spaceBelow = window.innerHeight - rect.bottom;
-    if (spaceBelow < 300) {
-      dropdownStyle = `position:fixed; bottom:${window.innerHeight - rect.top + 4}px; left:${rect.left}px; z-index:50;`;
-    } else {
-      dropdownStyle = `position:fixed; top:${rect.bottom + 4}px; left:${rect.left}px; z-index:50;`;
-    }
+    dropdownStyle = computeDropdownStyle(buttonEl, 300);
   }
 
   function selectMode(mode: string) {
@@ -138,26 +134,13 @@
     }
   }
 
-  import { onMount } from "svelte";
-
-  onMount(() => {
-    function onDocClick(e: MouseEvent) {
-      if (dropdownOpen && wrapperEl && !wrapperEl.contains(e.target as Node)) {
-        dropdownOpen = false;
-      }
-    }
-    function onDocKeydown(e: KeyboardEvent) {
-      if (dropdownOpen && e.key === "Escape") {
-        dropdownOpen = false;
-      }
-    }
-    document.addEventListener("mousedown", onDocClick, true);
-    document.addEventListener("keydown", onDocKeydown);
-    return () => {
-      document.removeEventListener("mousedown", onDocClick, true);
-      document.removeEventListener("keydown", onDocKeydown);
-    };
-  });
+  onMount(() =>
+    attachDismissHandlers({
+      getWrapper: () => wrapperEl,
+      isOpen: () => dropdownOpen,
+      close: () => (dropdownOpen = false),
+    }),
+  );
 </script>
 
 {#if hasRun && authSourceLabel}

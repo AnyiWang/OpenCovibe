@@ -657,20 +657,38 @@ describe("parseVirtualAction", () => {
     });
   });
 
-  it("/side resolves to /btw via alias, preserving args", () => {
-    // Codex CLI's `/side` is OpenCovibe's `/btw` (ephemeral side question).
-    expect(parseVirtualAction("/side what is X")).toEqual({
+  it("/new, /exit, /quit resolve to /clear on Codex only (Codex CLI alias parity)", () => {
+    // GUI parity for Codex: /new starts a new chat (same as /clear); /exit and
+    // /quit don't quit the app — they leave the current chat back to the welcome
+    // page, again identical to /clear semantics. These aliases were added for
+    // Codex CLI parity, so they only fire for Codex.
+    expect(parseVirtualAction("/new", "codex")).toEqual({ name: "clear", args: "" });
+    expect(parseVirtualAction("/exit", "codex")).toEqual({ name: "clear", args: "" });
+    expect(parseVirtualAction("/quit", "codex")).toEqual({ name: "clear", args: "" });
+  });
+
+  it("/new, /exit, /quit fall through on Claude (no silent clear-context override)", () => {
+    // Claude CLI owns /exit and /quit (and has no /new). OpenCovibe must not
+    // intercept these as clear-context — they fall through to CLI passthrough.
+    expect(parseVirtualAction("/new", "claude")).toBeNull();
+    expect(parseVirtualAction("/exit", "claude")).toBeNull();
+    expect(parseVirtualAction("/quit", "claude")).toBeNull();
+    // Default agent is Claude — same fall-through behaviour.
+    expect(parseVirtualAction("/new")).toBeNull();
+    expect(parseVirtualAction("/exit")).toBeNull();
+  });
+
+  it("/side resolves to /btw on Codex only (Codex CLI alias parity)", () => {
+    // Codex CLI's `/side` is OpenCovibe's `/btw`. The alias is Codex-only.
+    expect(parseVirtualAction("/side what is X", "codex")).toEqual({
       name: "btw",
       args: "what is X",
     });
   });
 
-  it("/new and /exit both resolve to /clear via alias", () => {
-    // GUI parity: /new starts a new chat (same as /clear). /exit doesn't
-    // quit the app — it leaves the current chat back to the welcome page,
-    // again identical to /clear semantics.
-    expect(parseVirtualAction("/new")).toEqual({ name: "clear", args: "" });
-    expect(parseVirtualAction("/exit")).toEqual({ name: "clear", args: "" });
+  it("/side falls through on Claude (no silent /btw override)", () => {
+    expect(parseVirtualAction("/side what is X", "claude")).toBeNull();
+    expect(parseVirtualAction("/side what is X")).toBeNull();
   });
 });
 

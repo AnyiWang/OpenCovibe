@@ -12,7 +12,7 @@
     getCliCurrentModel,
     getCliCommands,
     getCliModels,
-    getCodexModels,
+    getModelsForAgent,
     getCodexDefaultModel,
     loadCodexModels,
     canResumeNow,
@@ -246,7 +246,11 @@
   let goalPanelOpen = $state(false);
 
   // Top-level user messages → selectable turns for the Codex rewind modal.
-  let codexRewindTurns = $derived.by<RewindTurn[]>(() => {
+  // Built lazily (only when the modal opens) rather than on every stream event:
+  // it's the only consumer, and the per-turn regex/slice work is O(turns). The
+  // cheap `store.userTurnCount` gates whether the entry point is shown/enabled.
+  let codexRewindTurns = $state<RewindTurn[]>([]);
+  function buildCodexRewindTurns(): RewindTurn[] {
     const turns: RewindTurn[] = [];
     let idx = 0;
     for (const e of store.timeline) {
@@ -256,7 +260,11 @@
       }
     }
     return turns;
-  });
+  }
+  function openCodexRewind() {
+    codexRewindTurns = buildCodexRewindTurns();
+    codexRewindOpen = true;
+  }
 
   async function runCodexRewind(opts: { dropFromTurnIndex: number; numTurns: number }) {
     if (!store.run || effectiveAgent !== "codex") return;
@@ -724,13 +732,7 @@
     }));
   });
 
-  let effectiveModels = $derived(
-    effectiveAgent === "codex"
-      ? getCodexModels()
-      : platformModels.length > 0
-        ? platformModels
-        : getCliModels(),
-  );
+  let effectiveModels = $derived(getModelsForAgent(effectiveAgent, { platformModels }));
   let currentEffort = $state("");
   let isCodexAgent = $derived(store.agent === "codex");
   let assistantDisplayName = $derived(isCodexAgent ? "Codex" : t("chat_claude"));
@@ -3561,11 +3563,11 @@
         appendCommandOutput(t("codexRewind_busy"));
         return;
       }
-      if (codexRewindTurns.length === 0) {
+      if (store.userTurnCount === 0) {
         appendCommandOutput(t("codexRewind_noTurns"));
         return;
       }
-      codexRewindOpen = true;
+      openCodexRewind();
     } else if (action === "codex-goal") {
       if (effectiveAgent !== "codex") return;
       if (!store.run) {
@@ -4466,8 +4468,8 @@
       onCodexRewind={effectiveAgent === "codex" &&
       store.sessionAlive &&
       !store.isRunning &&
-      codexRewindTurns.length > 0
-        ? () => (codexRewindOpen = true)
+      store.userTurnCount > 0
+        ? openCodexRewind
         : undefined}
       contextUtilization={store.contextUtilization}
       contextWarningLevel={store.contextWarningLevel}
