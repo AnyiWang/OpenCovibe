@@ -59,6 +59,23 @@ function normalizePermissionMode(mode: string): string {
   return CLI_PERM_MODE_ALIASES[mode] ?? mode;
 }
 
+/** Extract `hookSpecificOutput.sessionTitle` from a SessionStart hook's raw stdout.
+ *  The CLI delivers the hook's stdout verbatim as a JSON string (verified over stream-json,
+ *  CLI 2.1.x). Returns the trimmed title, or null if absent/unparseable. */
+function extractSessionTitle(stdout: string | undefined): string | null {
+  if (!stdout) return null;
+  try {
+    const parsed = JSON.parse(stdout) as {
+      hookSpecificOutput?: { sessionTitle?: unknown };
+    };
+    const title = parsed.hookSpecificOutput?.sessionTitle;
+    if (typeof title === "string" && title.trim()) return title.trim();
+  } catch {
+    // Hook stdout is not always JSON (plain-text additionalContext etc.) — not an error.
+  }
+  return null;
+}
+
 // ── OpGuard: async operation guard with mounted check ──
 
 class OpGuard {
@@ -4026,7 +4043,7 @@ export class SessionStore {
         ];
         break;
 
-      case "hook_response":
+      case "hook_response": {
         this.hookEvents = [
           ...this.hookEvents,
           {
@@ -4039,7 +4056,21 @@ export class SessionStore {
             exit_code: ev.exit_code,
           },
         ];
+        // SessionStart hooks can set the session title via hookSpecificOutput.sessionTitle.
+        // Apply only when the run has no name yet — a user /rename always wins and must not be
+        // clobbered when the same SessionStart hook fires again on resume.
+        if (ev.hook_event === "SessionStart" && this.run && !this.run.name) {
+          const title = extractSessionTitle(ev.stdout);
+          if (title) {
+            const runId = this.run.id;
+            this.run = { ...this.run, name: title };
+            void import("$lib/api")
+              .then((m) => m.renameRun(runId, title))
+              .catch((e) => dbgWarn("store", "renameRun from sessionTitle failed", e));
+          }
+        }
         break;
+      }
 
       case "hook_callback":
         // Hook callback from CLI — PreToolUse hooks are actionable (allow/deny)
