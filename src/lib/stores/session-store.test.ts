@@ -22,6 +22,7 @@ vi.mock("$lib/api", () => ({
   sendSessionControl: vi.fn(),
   steerSession: vi.fn(),
   syncCliSession: vi.fn().mockResolvedValue({ newEvents: 0 }),
+  renameRun: vi.fn().mockResolvedValue(undefined),
 }));
 
 // Mock debug utils — they access localStorage which doesn't exist in node
@@ -6501,5 +6502,63 @@ describe("SessionStore — Codex Wave-4 (turn diff live)", () => {
       } as BusEvent),
     ).not.toThrow();
     expect(strict.unknownEventCount).toBe(0);
+  });
+});
+
+describe("SessionStart sessionTitle auto-naming", () => {
+  function sessionStartHook(runId: string, title: string | null): BusEvent {
+    return {
+      type: "hook_response",
+      run_id: runId,
+      hook_id: "h-sessiontitle",
+      hook_event: "SessionStart",
+      outcome: "success",
+      data: {},
+      stdout:
+        title === null
+          ? '{"hookSpecificOutput":{"hookEventName":"SessionStart"}}'
+          : `{"hookSpecificOutput":{"hookEventName":"SessionStart","sessionTitle":${JSON.stringify(title)}}}`,
+    } as BusEvent;
+  }
+
+  beforeEach(() => {
+    vi.mocked(api.renameRun).mockClear();
+  });
+
+  it("sets run.name from sessionTitle when the run has no name", async () => {
+    const store = new SessionStore();
+    store.run = makeRun("run-st1");
+    store.applyEvent(sessionStartHook("run-st1", "Refactor auth flow"));
+    expect(store.run?.name).toBe("Refactor auth flow");
+    await vi.waitFor(() =>
+      expect(api.renameRun).toHaveBeenCalledWith("run-st1", "Refactor auth flow"),
+    );
+  });
+
+  it("does NOT overwrite a user-assigned name (resume case)", () => {
+    const store = new SessionStore();
+    store.run = makeRun("run-st2", { name: "My Custom Name" });
+    store.applyEvent(sessionStartHook("run-st2", "Hook Title"));
+    expect(store.run?.name).toBe("My Custom Name");
+    expect(api.renameRun).not.toHaveBeenCalled();
+  });
+
+  it("ignores a SessionStart hook with no sessionTitle", () => {
+    const store = new SessionStore();
+    store.run = makeRun("run-st3");
+    store.applyEvent(sessionStartHook("run-st3", null));
+    expect(store.run?.name).toBeUndefined();
+    expect(api.renameRun).not.toHaveBeenCalled();
+  });
+
+  it("ignores sessionTitle from non-SessionStart hooks", () => {
+    const store = new SessionStore();
+    store.run = makeRun("run-st4");
+    store.applyEvent({
+      ...sessionStartHook("run-st4", "Should Be Ignored"),
+      hook_event: "PreToolUse",
+    } as BusEvent);
+    expect(store.run?.name).toBeUndefined();
+    expect(api.renameRun).not.toHaveBeenCalled();
   });
 });
