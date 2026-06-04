@@ -5,9 +5,11 @@
 //! the two implementations stay in sync.
 
 use crate::models::ImportWatermark;
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 // ── Shared types ────────────────────────────────────────────────────
 
@@ -90,6 +92,85 @@ pub fn sha256_short(s: &str) -> String {
 /// Generate an event-level key from line_key + event type + index.
 pub fn event_key(lk: &str, event_type: &str, n: usize) -> String {
     format!("v1:{}#{}#{}", lk, event_type, n)
+}
+
+// ── Generic per-file scan cache ─────────────────────────────────────
+
+/// Disk-backed scan cache keyed by file path + (mtime_ns, size). A cached entry
+/// is reused only when both the modification time and size match, so any edit to
+/// a rollout file invalidates its entry. `T` is the per-file scan result.
+///
+/// Shared by `codex_usage` (token aggregation) and `codex_sessions` (discovery
+/// summaries) so unchanged rollout files are never re-parsed.
+#[derive(Serialize, Deserialize)]
+pub struct DiskScanCache<T> {
+    pub version: u32,
+    /// path → cached scan of that file.
+    pub manifest: HashMap<String, CachedFile<T>>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct CachedFile<T> {
+    pub mtime_ns: u128,
+    pub size: u64,
+    pub data: T,
+}
+
+impl<T> DiskScanCache<T>
+where
+    T: Serialize + DeserializeOwned,
+{
+    /// Read and validate a cache file; `None` on missing/corrupt/version mismatch.
+    pub fn read(path: &Path, version: u32) -> Option<Self> {
+        let raw = std::fs::read_to_string(path).ok()?;
+        let cache: Self = serde_json::from_str(&raw).ok()?;
+        if cache.version != version {
+            return None;
+        }
+        Some(cache)
+    }
+
+    /// Atomically write the cache (write tmp + rename). Best-effort: errors ignored.
+    pub fn write(&self, path: &Path) {
+        if let Some(parent) = path.parent() {
+            let _ = crate::storage::ensure_dir(parent);
+        }
+        let Ok(json) = serde_json::to_string(self) else {
+            return;
+        };
+        let tmp = path.with_extension("json.tmp");
+        if std::fs::write(&tmp, &json).is_ok() {
+            let _ = std::fs::rename(&tmp, path);
+        }
+    }
+
+    /// Take the cached scan for `key` if its (mtime_ns, size) still match, removing
+    /// it from the old manifest. `None` means the file is new or changed and must
+    /// be re-scanned.
+    pub fn take_if_fresh(&mut self, key: &str, mtime_ns: u128, size: u64) -> Option<T> {
+        match self.manifest.remove(key) {
+            Some(cf) if cf.mtime_ns == mtime_ns && cf.size == size => Some(cf.data),
+            _ => None,
+        }
+    }
+}
+
+/// Convenience: a fresh empty manifest of the given version.
+pub fn empty_scan_cache<T>(version: u32) -> DiskScanCache<T> {
+    DiskScanCache {
+        version,
+        manifest: HashMap::new(),
+    }
+}
+
+/// Stable string key for a path, used as the cache manifest key.
+pub fn cache_key(path: &Path) -> String {
+    path.to_string_lossy().to_string()
+}
+
+/// Where per-scan caches live (under the app data dir).
+pub fn scan_cache_path(filename: &str) -> PathBuf {
+    crate::storage::data_dir().join(filename)
 }
 
 /// Load `source_key` set from an import-index file for crash-recovery dedup.
