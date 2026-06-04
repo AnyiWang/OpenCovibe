@@ -286,9 +286,70 @@ pub async fn install_community_skill(
 
 // ── Codex plugins commands ──
 
+/// Map one entry of `codex plugin list --json`'s `installed[]` to InstalledPlugin.
+fn codex_json_plugin(v: &serde_json::Value) -> Option<InstalledPlugin> {
+    let name = v.get("name").and_then(|x| x.as_str())?.to_string();
+    Some(InstalledPlugin {
+        name,
+        description: String::new(),
+        version: v.get("version").and_then(|x| x.as_str()).map(String::from),
+        scope: v
+            .get("source")
+            .and_then(|s| s.get("source"))
+            .and_then(|x| x.as_str())
+            .map(String::from),
+        enabled: v.get("enabled").and_then(|x| x.as_bool()),
+        marketplace: v
+            .get("marketplaceName")
+            .and_then(|x| x.as_str())
+            .map(String::from),
+        plugin_id: v.get("pluginId").and_then(|x| x.as_str()).map(String::from),
+        agent: Some("codex".to_string()),
+        ..Default::default()
+    })
+}
+
+/// Authoritative installed-plugin list via `codex plugin list --json` (handles `.tmp` plugins +
+/// install/auth policy that the cache-dir walk misses). Returns None on any failure so the caller
+/// falls back to the filesystem scan. 12s timeout.
+async fn list_codex_plugins_via_cli() -> Option<Vec<InstalledPlugin>> {
+    let path = crate::agent::claude_stream::which_binary("codex")?;
+    let aug_path = crate::agent::claude_stream::augmented_path();
+    use crate::process_ext::HideConsole;
+    use tokio::process::Command as TokioCommand;
+    let mut cmd = TokioCommand::new(&path);
+    cmd.args(["plugin", "list", "--json"])
+        .env("PATH", &aug_path)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .hide_console()
+        .kill_on_drop(true);
+    let output = tokio::time::timeout(std::time::Duration::from_secs(12), cmd.output())
+        .await
+        .ok()?
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let parsed: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
+    let installed = parsed.get("installed")?.as_array()?;
+    let plugins: Vec<InstalledPlugin> = installed.iter().filter_map(codex_json_plugin).collect();
+    log::debug!(
+        "[plugins] list_codex_installed_plugins via CLI: {} plugin(s)",
+        plugins.len()
+    );
+    Some(plugins)
+}
+
 #[tauri::command]
-pub fn list_codex_installed_plugins() -> Result<Vec<InstalledPlugin>, String> {
+pub async fn list_codex_installed_plugins() -> Result<Vec<InstalledPlugin>, String> {
     log::debug!("[plugins] list_codex_installed_plugins");
+    // Prefer the authoritative CLI list; fall back to the filesystem cache-dir scan when the CLI
+    // is absent / errors / times out (keeps the panel working offline or on older codex).
+    if let Some(plugins) = list_codex_plugins_via_cli().await {
+        return Ok(plugins);
+    }
+    log::debug!("[plugins] list_codex_installed_plugins: CLI path unavailable, using dir scan");
     Ok(crate::storage::plugins::list_codex_installed_plugins())
 }
 
@@ -351,6 +412,32 @@ pub fn toggle_codex_skill(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn codex_json_plugin_maps_cli_entry() {
+        // Real `codex plugin list --json` installed[] entry shape.
+        let v = serde_json::json!({
+            "pluginId": "github@openai-curated",
+            "name": "github",
+            "marketplaceName": "openai-curated",
+            "version": "2abb1c44",
+            "installed": true,
+            "enabled": true,
+            "source": { "source": "local", "path": "/x/.codex/.tmp/plugins/plugins/github" },
+            "installPolicy": "AVAILABLE",
+            "authPolicy": "ON_INSTALL"
+        });
+        let p = codex_json_plugin(&v).expect("maps");
+        assert_eq!(p.name, "github");
+        assert_eq!(p.plugin_id.as_deref(), Some("github@openai-curated"));
+        assert_eq!(p.marketplace.as_deref(), Some("openai-curated"));
+        assert_eq!(p.version.as_deref(), Some("2abb1c44"));
+        assert_eq!(p.enabled, Some(true));
+        assert_eq!(p.scope.as_deref(), Some("local"));
+        assert_eq!(p.agent.as_deref(), Some("codex"));
+        // Missing name → None (skipped).
+        assert!(codex_json_plugin(&serde_json::json!({ "version": "x" })).is_none());
+    }
 
     #[test]
     fn validate_plugin_cwd_requires_cwd_for_project_scope() {

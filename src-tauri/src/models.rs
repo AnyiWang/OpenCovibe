@@ -1714,7 +1714,7 @@ impl Default for StandaloneSkill {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct InstalledPlugin {
     #[serde(default, alias = "id")]
     pub name: String,

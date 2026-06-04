@@ -756,6 +756,34 @@ impl CodexAppServer {
                     });
                 }
             }
+            // NEW in 0.137: concise guardian safety warning — surface like a plain warning notice.
+            "guardianWarning" => {
+                if let Some(msg) = params.get("message").and_then(|v| v.as_str()) {
+                    out.events.push(BusEvent::CommandOutput {
+                        run_id: run_id.to_string(),
+                        content: format!("[guardian] {msg}"),
+                    });
+                }
+            }
+            // NEW in 0.137: model verification results (ModelVerification enum strings, e.g.
+            // "trustedAccessForCyber"). Surface a concise notice listing them.
+            "model/verification" => {
+                let names: Vec<String> = params
+                    .get("verifications")
+                    .and_then(|v| v.as_array())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if !names.is_empty() {
+                    out.events.push(BusEvent::CommandOutput {
+                        run_id: run_id.to_string(),
+                        content: format!("[notice] model verification: {}", names.join(", ")),
+                    });
+                }
+            }
             "deprecationNotice" | "configWarning" => {
                 // Both carry {summary, details?}.
                 if let Some(summary) = params.get("summary").and_then(|v| v.as_str()) {
@@ -2296,6 +2324,41 @@ mod tests {
             BusEvent::CommandOutput { content, .. } => assert_eq!(content, "[notice] bad config"),
             e => panic!("expected CommandOutput, got {e:?}"),
         }
+    }
+
+    // ── Batch E: guardian + model verification notices (NEW in 0.137) ────────────────────
+    #[test]
+    fn guardian_warning_and_model_verification_to_notice() {
+        let mut s = ready_server();
+        let out = s.parse_line(
+            "r",
+            r#"{"method":"guardianWarning","params":{"threadId":"t","message":"high-risk action detected"}}"#,
+        );
+        match &out.events[0] {
+            BusEvent::CommandOutput { content, .. } => {
+                assert_eq!(content, "[guardian] high-risk action detected")
+            }
+            e => panic!("expected CommandOutput, got {e:?}"),
+        }
+        let out = s.parse_line(
+            "r",
+            r#"{"method":"model/verification","params":{"threadId":"t","turnId":"u","verifications":["trustedAccessForCyber"]}}"#,
+        );
+        match &out.events[0] {
+            BusEvent::CommandOutput { content, .. } => {
+                assert_eq!(
+                    content,
+                    "[notice] model verification: trustedAccessForCyber"
+                )
+            }
+            e => panic!("expected CommandOutput, got {e:?}"),
+        }
+        // Empty verifications → no event.
+        let out = s.parse_line(
+            "r",
+            r#"{"method":"model/verification","params":{"threadId":"t","turnId":"u","verifications":[]}}"#,
+        );
+        assert!(out.events.is_empty());
     }
 
     // ── G5: context compaction completes via a `contextCompaction` item/completed ────────
