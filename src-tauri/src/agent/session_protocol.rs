@@ -25,6 +25,12 @@ pub struct StartupCtx {
     pub approval_policy: Option<String>,
     /// Codex `sandbox` mode (e.g. "read-only", "workspace-write", "danger-full-access").
     pub sandbox: Option<String>,
+    /// Codex `ReasoningEffort` ("minimal" | "low" | "medium" | "high"). `thread/start` has no
+    /// effort field, so this is applied on the first `turn/start` (and persists server-side).
+    pub effort: Option<String>,
+    /// Extra directories the workspace-write sandbox may write to, beyond `cwd`. Mapped into
+    /// the `workspaceWrite` policy's `writableRoots` at `thread/start` (empty = cwd-only).
+    pub add_dirs: Vec<String>,
 }
 
 /// Live per-turn overrides for a Codex `app-server` session. These are injected into the next

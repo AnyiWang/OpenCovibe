@@ -1,4 +1,47 @@
 use crate::agent::adapter::{self, AdapterSettings};
+use crate::models::CodexProviderCredential;
+
+/// Build the `-c model_providers.*` config overrides for a Codex third-party provider
+/// (OpenAI Responses API gateway). Accepted on `codex exec`, `codex exec resume`, and
+/// `codex app-server`. The API key is supplied separately via [`codex_provider_env`].
+/// `requires_openai_auth=false` is required for non-OpenAI gateways, otherwise Codex ignores
+/// `env_key` and falls back to ChatGPT login. `wire_api` is always "responses" (no "chat").
+/// Does NOT include `--model` — callers handle the model arg differently (the exec path lets the
+/// provider model win over the generic model, the side-question path inherits the run's model).
+pub fn codex_provider_config_args(p: &CodexProviderCredential) -> Vec<String> {
+    let id = &p.id;
+    let mut args = vec![
+        "-c".to_string(),
+        format!("model_provider=\"{}\"", id),
+        "-c".to_string(),
+        format!("model_providers.{}.name=\"{}\"", id, p.name),
+        "-c".to_string(),
+        format!("model_providers.{}.base_url=\"{}\"", id, p.base_url),
+    ];
+    if !p.env_key.is_empty() {
+        args.push("-c".to_string());
+        args.push(format!("model_providers.{}.env_key=\"{}\"", id, p.env_key));
+    }
+    args.push("-c".to_string());
+    args.push(format!(
+        "model_providers.{}.wire_api=\"{}\"",
+        id, p.wire_api
+    ));
+    args.push("-c".to_string());
+    args.push(format!("model_providers.{}.requires_openai_auth=false", id));
+    args
+}
+
+/// The env var entry (`env_key` → `api_key`) Codex reads the provider API key from, if both are
+/// set. Returned as `(name, value)` so callers can inject it onto the child process. `None` when
+/// the provider has no key or no `env_key` (e.g. a ChatGPT-login provider).
+pub fn codex_provider_env(p: &CodexProviderCredential) -> Option<(String, String)> {
+    let key = p.api_key.as_ref().filter(|k| !k.is_empty())?;
+    if p.env_key.is_empty() {
+        return None;
+    }
+    Some((p.env_key.clone(), key.clone()))
+}
 
 /// Build the command + args for a given agent (pipe-exec mode, not stream session)
 pub fn build_agent_command(
@@ -47,33 +90,12 @@ pub fn build_agent_command(
             args.push("--skip-git-repo-check".to_string());
 
             // Codex third-party provider (OpenAI Responses API) → inject as `-c model_providers.*`
-            // overrides. Accepted on both `codex exec` and `exec resume` (no resume gating). The
-            // API key is supplied separately via the env var named by `env_key`, set on the child
-            // process at spawn time (see run_agent extra_env). `requires_openai_auth=false` is
-            // required for non-OpenAI gateways, otherwise Codex ignores env_key and falls back to
-            // ChatGPT login. `wire_api` is always "responses" (Codex removed "chat").
+            // overrides (shared with the app-server + side-question paths). Accepted on both
+            // `codex exec` and `exec resume` (no resume gating). The API key is supplied separately
+            // via the env var named by `env_key`, set on the child process at spawn time (see
+            // run_agent extra_env). Here we additionally pin the provider-side `--model`.
             if let Some(p) = &settings.codex_provider {
-                let id = &p.id;
-                args.push("-c".to_string());
-                args.push(format!("model_provider=\"{}\"", id));
-                args.push("-c".to_string());
-                args.push(format!("model_providers.{}.name=\"{}\"", id, p.name));
-                args.push("-c".to_string());
-                args.push(format!(
-                    "model_providers.{}.base_url=\"{}\"",
-                    id, p.base_url
-                ));
-                if !p.env_key.is_empty() {
-                    args.push("-c".to_string());
-                    args.push(format!("model_providers.{}.env_key=\"{}\"", id, p.env_key));
-                }
-                args.push("-c".to_string());
-                args.push(format!(
-                    "model_providers.{}.wire_api=\"{}\"",
-                    id, p.wire_api
-                ));
-                args.push("-c".to_string());
-                args.push(format!("model_providers.{}.requires_openai_auth=false", id));
+                args.extend(codex_provider_config_args(p));
                 if !p.model.is_empty() {
                     args.push("--model".to_string());
                     args.push(p.model.clone());
@@ -445,6 +467,48 @@ mod tests {
         s.codex_provider = None;
         let (_, na) = build_agent_command("codex", "q", &s, false, None, &[]).unwrap();
         assert!(!na.join(" ").contains("model_provider="));
+    }
+
+    #[test]
+    fn codex_provider_helper_shapes() {
+        use crate::models::CodexProviderCredential;
+        let p = CodexProviderCredential {
+            id: "vercel".into(),
+            name: "Vercel AI Gateway".into(),
+            base_url: "https://ai-gateway.vercel.sh/v1".into(),
+            env_key: "AI_GATEWAY_API_KEY".into(),
+            wire_api: "responses".into(),
+            model: "openai/gpt-5.5".into(),
+            api_key: Some("sk-secret".into()),
+        };
+        // Config args: the -c overrides, NOT --model, and never the api key.
+        let args = codex_provider_config_args(&p);
+        let joined = args.join(" ");
+        assert!(joined.contains("model_provider=\"vercel\""));
+        assert!(
+            joined.contains("model_providers.vercel.base_url=\"https://ai-gateway.vercel.sh/v1\"")
+        );
+        assert!(joined.contains("model_providers.vercel.env_key=\"AI_GATEWAY_API_KEY\""));
+        assert!(joined.contains("model_providers.vercel.wire_api=\"responses\""));
+        assert!(joined.contains("model_providers.vercel.requires_openai_auth=false"));
+        assert!(!args.iter().any(|a| a == "--model"));
+        assert!(!joined.contains("sk-secret"));
+        // Env: env_key → api_key.
+        assert_eq!(
+            codex_provider_env(&p),
+            Some(("AI_GATEWAY_API_KEY".into(), "sk-secret".into()))
+        );
+        // No api key → no env entry.
+        let mut no_key = p.clone();
+        no_key.api_key = None;
+        assert_eq!(codex_provider_env(&no_key), None);
+        // No env_key → no env entry (ChatGPT-login style provider).
+        let mut no_env = p.clone();
+        no_env.env_key = String::new();
+        assert_eq!(codex_provider_env(&no_env), None);
+        // env_key with empty config still omits the env_key override line.
+        let args2 = codex_provider_config_args(&no_env);
+        assert!(!args2.join(" ").contains(".env_key="));
     }
 
     #[test]

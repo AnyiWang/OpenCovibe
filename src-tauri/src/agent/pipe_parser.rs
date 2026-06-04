@@ -1,3 +1,4 @@
+use crate::agent::codex_parser::{codex_normalize_status, CodexToolKind};
 use crate::models::BusEvent;
 use serde_json::Value;
 
@@ -48,8 +49,8 @@ impl CodexStdoutParser {
         let item_id = item.get("id").and_then(|v| v.as_str()).unwrap_or("unknown");
         let tool_use_id = self.scoped_id(item_id);
 
-        match item_type {
-            "command_execution" => {
+        match CodexToolKind::from_item_type(item_type) {
+            Some(CodexToolKind::Command) => {
                 let command = item
                     .get("command")
                     .and_then(|v| v.as_str())
@@ -63,7 +64,7 @@ impl CodexStdoutParser {
                     parent_tool_use_id: None,
                 }]
             }
-            "file_change" => {
+            Some(CodexToolKind::FileChange) => {
                 vec![BusEvent::ToolStart {
                     run_id: run_id.to_string(),
                     tool_use_id,
@@ -72,16 +73,11 @@ impl CodexStdoutParser {
                     parent_tool_use_id: None,
                 }]
             }
-            "mcp_tool_call" => {
-                let server = item.get("server").and_then(|v| v.as_str()).unwrap_or("mcp");
-                let tool = item
-                    .get("tool")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("unknown");
+            Some(CodexToolKind::McpToolCall) => {
                 vec![BusEvent::ToolStart {
                     run_id: run_id.to_string(),
                     tool_use_id,
-                    tool_name: format!("{}:{}", server, tool),
+                    tool_name: mcp_tool_name(item),
                     input: item
                         .get("arguments")
                         .cloned()
@@ -89,7 +85,7 @@ impl CodexStdoutParser {
                     parent_tool_use_id: None,
                 }]
             }
-            "web_search" => {
+            Some(CodexToolKind::WebSearch) => {
                 let query = item
                     .get("query")
                     .and_then(|v| v.as_str())
@@ -108,7 +104,7 @@ impl CodexStdoutParser {
                     parent_tool_use_id: None,
                 }]
             }
-            "collab_tool_call" => {
+            Some(CodexToolKind::CollabToolCall) => {
                 let tool = item
                     .get("tool")
                     .and_then(|v| v.as_str())
@@ -128,18 +124,7 @@ impl CodexStdoutParser {
                 }]
             }
             // agent_message, reasoning: wait for completed
-            _ => vec![],
-        }
-    }
-
-    /// Map Codex item status to app convention: "success" or "error".
-    /// Codex uses: completed/failed/declined/in_progress (see exec_events.rs).
-    fn normalize_status(raw_status: &str) -> String {
-        match raw_status {
-            "completed" => "success".to_string(),
-            "failed" | "declined" => "error".to_string(),
-            // Treat unknown / missing as success (same as "completed")
-            _ => "success".to_string(),
+            None => vec![],
         }
     }
 
@@ -155,7 +140,7 @@ impl CodexStdoutParser {
             .get("status")
             .and_then(|v| v.as_str())
             .unwrap_or("completed");
-        let status = Self::normalize_status(raw_status);
+        let status = codex_normalize_status(raw_status).to_string();
 
         match item_type {
             "agent_message" => {
@@ -210,15 +195,10 @@ impl CodexStdoutParser {
                 }]
             }
             "mcp_tool_call" => {
-                let server = item.get("server").and_then(|v| v.as_str()).unwrap_or("mcp");
-                let tool = item
-                    .get("tool")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("unknown");
                 vec![BusEvent::ToolEnd {
                     run_id: run_id.to_string(),
                     tool_use_id,
-                    tool_name: format!("{}:{}", server, tool),
+                    tool_name: mcp_tool_name(item),
                     output: item.get("result").cloned().unwrap_or(serde_json::json!({})),
                     status,
                     duration_ms: None,
@@ -411,6 +391,17 @@ fn human_error_message(raw: &str) -> String {
         }
     }
     current
+}
+
+/// `"{server}:{tool}"` name for an exec `mcp_tool_call` item. Defaults: server "mcp", tool
+/// "unknown" (the app-server transport defaults tool to "tool" — kept distinct intentionally).
+fn mcp_tool_name(item: &Value) -> String {
+    let server = item.get("server").and_then(|v| v.as_str()).unwrap_or("mcp");
+    let tool = item
+        .get("tool")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    format!("{}:{}", server, tool)
 }
 
 /// Build Edit ToolStart input from a Codex `file_change` item. Live shape is
@@ -622,6 +613,23 @@ mod tests {
         assert_eq!(events.len(), 1);
         match &events[0] {
             BusEvent::ToolStart { tool_name, .. } => assert_eq!(tool_name, "fs:read"),
+            other => panic!("expected ToolStart, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn mcp_tool_call_missing_tool_defaults_to_unknown() {
+        // Exec parser defaults a missing `tool` field to "unknown" — INTENTIONALLY different from
+        // the app-server transport, which defaults to "tool". Lock it so a future "cleanup" can't
+        // silently unify them. (Pair: codex_appserver::tests covers the app-server "tool" default.)
+        let mut p = parser();
+        let raw = json!({
+            "type": "item.started",
+            "item": {"id": "mcp_1", "type": "mcp_tool_call", "server": "fs"}
+        });
+        let events = p.parse_line("run-1", &raw);
+        match &events[0] {
+            BusEvent::ToolStart { tool_name, .. } => assert_eq!(tool_name, "fs:unknown"),
             other => panic!("expected ToolStart, got {:?}", other),
         }
     }

@@ -14,6 +14,7 @@
 //! mode` even over app-server. The spawn (in the actor wiring) MUST pass
 //! `--enable default_mode_request_user_input` to unlock it in normal sessions.
 
+use crate::agent::codex_parser::{codex_normalize_status, CodexToolKind};
 use crate::agent::session_protocol::{
     CodexTurnOverrides, LifecycleSignal, ParsedLine, PendingInteractive, PendingKind,
     SessionProtocol, StartupCtx,
@@ -60,6 +61,18 @@ pub struct CodexAppServer {
     /// When the reply arrives (`parse_line` sees a matching id with no `method`) we resolve the
     /// actor's `control_waiter` for that frontend request_id with the JSON-RPC `result`/`error`.
     client_waiters: HashMap<i64, String>,
+    /// Extra writable directories from settings (`StartupCtx.add_dirs`). `thread/start`'s
+    /// `sandbox` is a bare mode string and can't carry writable roots, so these are injected
+    /// into the `workspaceWrite` `sandboxPolicy` on `turn/start` (persists server-side).
+    add_dirs: Vec<String>,
+    /// Spawn-time model/effort/approval/sandbox defaults. `thread/start` carries model/approval/
+    /// sandbox but NOT effort, and on RESUME `thread/resume` carries none of them — so these are
+    /// (re-)applied on the first `turn/start` after spawn, where Codex persists them for the
+    /// thread. Live `set_model`/`set_effort`/`set_permission_mode` overrides from the actor take
+    /// precedence per turn.
+    startup_overrides: CodexTurnOverrides,
+    /// Cleared after the first `turn/start` — gates the one-shot replay of `startup_overrides`.
+    pending_startup_replay: bool,
 }
 
 impl Default for CodexAppServer {
@@ -71,6 +84,9 @@ impl Default for CodexAppServer {
             next_client_id: 3,
             pending: HashMap::new(),
             client_waiters: HashMap::new(),
+            add_dirs: Vec::new(),
+            startup_overrides: CodexTurnOverrides::default(),
+            pending_startup_replay: true,
         }
     }
 }
@@ -185,14 +201,16 @@ fn req_id_str(raw_id: &Value) -> String {
 /// per-turn override expects (distinct from `thread/start`'s `sandbox: SandboxMode` STRING).
 /// Mode strings come from `codex_sandbox_for` (commands/session.rs): "read-only",
 /// "workspace-write", "danger-full-access". Unknown values fall back to workspace-write.
-fn sandbox_policy_value(mode: &str) -> Value {
+/// `writable_roots` populates the `workspaceWrite` policy's writable dirs (ignored by the other
+/// modes, which have no such field).
+fn sandbox_policy_value(mode: &str, writable_roots: &[String]) -> Value {
     match mode {
         "read-only" => json!({ "type": "readOnly", "networkAccess": false }),
         "danger-full-access" => json!({ "type": "dangerFullAccess" }),
         // "workspace-write" (and any unknown mode) → the standard writable-workspace policy.
         _ => json!({
             "type": "workspaceWrite",
-            "writableRoots": [],
+            "writableRoots": writable_roots,
             "networkAccess": false,
             "excludeTmpdirEnvVar": false,
             "excludeSlashTmp": false,
@@ -202,6 +220,19 @@ fn sandbox_policy_value(mode: &str) -> Value {
 
 impl SessionProtocol for CodexAppServer {
     fn startup_messages(&mut self, ctx: &StartupCtx) -> Vec<Value> {
+        // Remember the writable dirs + spawn-time turn defaults so the first turn/start can
+        // (re-)apply them. `thread/resume` carries none of model/effort/approval/sandbox, and
+        // `thread/start` carries no effort — so this is the only way those reach a resumed
+        // thread or pick up the effort setting.
+        self.add_dirs = ctx.add_dirs.clone();
+        self.startup_overrides = CodexTurnOverrides {
+            approval_policy: ctx.approval_policy.clone(),
+            sandbox: ctx.sandbox.clone(),
+            model: ctx.model.clone(),
+            effort: ctx.effort.clone(),
+        };
+        self.pending_startup_replay = true;
+
         let initialize = json!({
             "jsonrpc": "2.0",
             "id": 1,
@@ -275,19 +306,56 @@ impl SessionProtocol for CodexAppServer {
         // turn/start overrides apply "for this turn AND subsequent turns" — they persist
         // server-side, so we only need to inject a given override on the first turn after it
         // changes, but emitting it every turn is harmless and keeps the actor stateless here.
+        //
+        // On the FIRST turn we fall back to the spawn-time defaults (`startup_overrides`) for
+        // any field the actor hasn't overridden. This carries model/effort/approval/sandbox onto
+        // a resumed thread (`thread/resume` sends none of them) and applies the effort setting
+        // (`thread/start` has no effort field). Live actor overrides always win.
+        let first_turn = self.pending_startup_replay;
+        self.pending_startup_replay = false;
+        let pick = |actor: &Option<String>, startup: &Option<String>| -> Option<String> {
+            actor
+                .clone()
+                .or_else(|| if first_turn { startup.clone() } else { None })
+        };
+        let approval_policy = pick(
+            &overrides.approval_policy,
+            &self.startup_overrides.approval_policy,
+        );
+        let sandbox = pick(&overrides.sandbox, &self.startup_overrides.sandbox);
+        let model = pick(&overrides.model, &self.startup_overrides.model);
+        let effort = pick(&overrides.effort, &self.startup_overrides.effort);
+
         let mut params = serde_json::Map::new();
         params.insert("threadId".into(), json!(thread_id));
         params.insert("input".into(), Value::Array(input));
-        if let Some(p) = &overrides.approval_policy {
+        if let Some(p) = &approval_policy {
             params.insert("approvalPolicy".into(), json!(p));
         }
-        if let Some(s) = &overrides.sandbox {
-            params.insert("sandboxPolicy".into(), sandbox_policy_value(s));
+        // Emit a sandboxPolicy when the sandbox is explicitly set, OR (first turn only) when we
+        // have writable dirs to inject — `thread/start`'s bare `sandbox` string can't carry
+        // `writableRoots`, so the workspace-write policy object is the only channel for add_dirs.
+        match &sandbox {
+            Some(s) => {
+                params.insert(
+                    "sandboxPolicy".into(),
+                    sandbox_policy_value(s, &self.add_dirs),
+                );
+            }
+            None if first_turn && !self.add_dirs.is_empty() => {
+                // No explicit mode → the server default is workspace-write; build that policy so
+                // the writable roots take effect.
+                params.insert(
+                    "sandboxPolicy".into(),
+                    sandbox_policy_value("workspace-write", &self.add_dirs),
+                );
+            }
+            None => {}
         }
-        if let Some(m) = &overrides.model {
+        if let Some(m) = &model {
             params.insert("model".into(), json!(m));
         }
-        if let Some(e) = &overrides.effort {
+        if let Some(e) = &effort {
             params.insert("effort".into(), json!(e));
         }
         vec![json!({
@@ -584,13 +652,12 @@ impl CodexAppServer {
                 out.lifecycle = Some(LifecycleSignal::TurnFailed(err));
             }
             "error" => {
-                // A top-level error ends/aborts the active turn — drop the stale turn id so a
-                // later steer doesn't target a turn that's no longer running.
-                self.active_turn_id = None;
                 // ErrorNotification = { error: TurnError, willRetry: bool, threadId, turnId }.
                 // The message lives in `error.message` (a TurnError) — NOT a top-level `message`.
                 // `willRetry: true` is a transient failure Codex auto-retries (e.g. a flaky
-                // upstream connection); the turn recovers, so don't alarm the user — log only.
+                // upstream connection); the SAME turn keeps running, so don't alarm the user
+                // and — crucially — keep `active_turn_id` so a steer issued during the retry
+                // window still targets the live turn.
                 let err = params.get("error");
                 let m = err
                     .and_then(|e| e.get("message"))
@@ -604,6 +671,9 @@ impl CodexAppServer {
                 if will_retry {
                     log::debug!("[codex] transient error (will retry): {m}");
                 } else {
+                    // Terminal error — the turn is over; drop the stale id so a later
+                    // steer doesn't target a turn that's no longer running.
+                    self.active_turn_id = None;
                     out.events.push(BusEvent::CommandOutput {
                         run_id: run_id.to_string(),
                         content: format!("[error] {m}"),
@@ -876,18 +946,24 @@ fn elicitation_prompt(run_id: &str, request_id: &str, params: &Value) -> BusEven
 
 // ── item.* → tool/message BusEvents ──────────────────────────────────────────────────
 
-/// Map an app-server item to (tool_name) for the camelCase item types.
+/// Map an app-server item to its tool name. Classification is shared with the exec parser via
+/// `CodexToolKind`; the `mcpToolCall` name uses this transport's own field defaults (server "mcp",
+/// tool "tool" — the exec transport defaults tool to "unknown").
 fn item_tool_name(item: &Value) -> Option<String> {
-    match item.get("type").and_then(|v| v.as_str())? {
-        "commandExecution" => Some("Bash".to_string()),
-        "fileChange" => Some("Edit".to_string()),
-        "webSearch" => Some("WebSearch".to_string()),
-        "mcpToolCall" => {
+    let item_type = item.get("type").and_then(|v| v.as_str())?;
+    match CodexToolKind::from_item_type(item_type)? {
+        CodexToolKind::McpToolCall => {
             let server = item.get("server").and_then(|v| v.as_str()).unwrap_or("mcp");
             let tool = item.get("tool").and_then(|v| v.as_str()).unwrap_or("tool");
             Some(format!("{server}:{tool}"))
         }
-        _ => None,
+        // `collabToolCall` IS reachable over app-server (multi-agent / spawn_agent sessions), but
+        // this transport's `item_started_event` only copies a `command` field — it has none of the
+        // collab fields (tool/prompt/agents_states), so rendering it would yield an empty Agent
+        // card. The app-server path has never rendered collab items; preserve that (return None)
+        // until the collab fields are properly extracted. The exec parser DOES render them.
+        CodexToolKind::CollabToolCall => None,
+        kind => kind.fixed_tool_name().map(|s| s.to_string()),
     }
 }
 
@@ -947,10 +1023,8 @@ fn item_completed_events(run_id: &str, item: &Value, out: &mut Vec<BusEvent>) {
             .or_else(|| item.get("changes"))
             .cloned()
             .unwrap_or(Value::Null);
-        let status = match item.get("status").and_then(|v| v.as_str()) {
-            Some("failed") | Some("declined") => "error",
-            _ => "success",
-        };
+        let status =
+            codex_normalize_status(item.get("status").and_then(|v| v.as_str()).unwrap_or(""));
         out.push(BusEvent::ToolEnd {
             run_id: run_id.to_string(),
             tool_use_id: id,
@@ -1199,21 +1273,119 @@ mod tests {
     }
 
     #[test]
+    fn first_turn_replays_startup_defaults_only_once() {
+        // A resumed thread (thread/resume carries no model/effort/approval/sandbox) must have
+        // the spawn-time defaults re-applied on the first turn — then NOT re-sent afterwards.
+        let mut s = CodexAppServer::new();
+        s.startup_messages(&StartupCtx {
+            resume_thread_id: Some("th-r".into()),
+            model: Some("gpt-5-codex".into()),
+            approval_policy: Some("on-request".into()),
+            sandbox: Some("workspace-write".into()),
+            effort: Some("high".into()),
+            ..Default::default()
+        });
+        // thread/resume ack readies the session.
+        s.parse_line("r", r#"{"id":2,"result":{}}"#);
+
+        let first = s.frame_user_turn("hi", &[], &no_overrides());
+        let p = &first[0]["params"];
+        assert_eq!(p["model"], "gpt-5-codex");
+        assert_eq!(p["approvalPolicy"], "on-request");
+        assert_eq!(p["effort"], "high");
+        assert_eq!(p["sandboxPolicy"]["type"], "workspaceWrite");
+
+        // Second turn: defaults already persisted server-side → not re-sent.
+        let second = s.frame_user_turn("again", &[], &no_overrides());
+        let p2 = &second[0]["params"];
+        assert!(p2.get("model").is_none());
+        assert!(p2.get("approvalPolicy").is_none());
+        assert!(p2.get("effort").is_none());
+        assert!(p2.get("sandboxPolicy").is_none());
+    }
+
+    #[test]
+    fn actor_override_wins_over_startup_default_on_first_turn() {
+        let mut s = CodexAppServer::new();
+        s.startup_messages(&StartupCtx {
+            resume_thread_id: Some("th-r".into()),
+            model: Some("gpt-5-codex".into()),
+            ..Default::default()
+        });
+        s.parse_line("r", r#"{"id":2,"result":{}}"#);
+        let overrides = CodexTurnOverrides {
+            model: Some("o3".into()),
+            ..Default::default()
+        };
+        let msgs = s.frame_user_turn("hi", &[], &overrides);
+        assert_eq!(msgs[0]["params"]["model"], "o3");
+    }
+
+    #[test]
+    fn add_dirs_populate_writable_roots_on_first_turn() {
+        let mut s = CodexAppServer::new();
+        s.startup_messages(&StartupCtx {
+            cwd: "/work".into(),
+            sandbox: Some("workspace-write".into()),
+            add_dirs: vec!["/extra/a".into(), "/extra/b".into()],
+            ..Default::default()
+        });
+        s.parse_line("r", r#"{"id":2,"result":{"thread":{"id":"th-1"}}}"#);
+        let msgs = s.frame_user_turn("go", &[], &no_overrides());
+        let policy = &msgs[0]["params"]["sandboxPolicy"];
+        assert_eq!(policy["type"], "workspaceWrite");
+        assert_eq!(policy["writableRoots"][0], "/extra/a");
+        assert_eq!(policy["writableRoots"][1], "/extra/b");
+    }
+
+    #[test]
+    fn add_dirs_emit_workspace_policy_when_sandbox_unset() {
+        // No explicit sandbox at spawn → server default is workspace-write. The writable dirs
+        // still need a policy object (the bare thread/start `sandbox` string can't carry them).
+        let mut s = CodexAppServer::new();
+        s.startup_messages(&StartupCtx {
+            cwd: "/work".into(),
+            add_dirs: vec!["/extra".into()],
+            ..Default::default()
+        });
+        s.parse_line("r", r#"{"id":2,"result":{"thread":{"id":"th-1"}}}"#);
+        let msgs = s.frame_user_turn("go", &[], &no_overrides());
+        let policy = &msgs[0]["params"]["sandboxPolicy"];
+        assert_eq!(policy["type"], "workspaceWrite");
+        assert_eq!(policy["writableRoots"][0], "/extra");
+        // No add_dirs and no sandbox → no policy at all.
+        let mut s2 = ready_server();
+        let m2 = s2.frame_user_turn("go", &[], &no_overrides());
+        assert!(m2[0]["params"].get("sandboxPolicy").is_none());
+    }
+
+    #[test]
     fn sandbox_policy_value_mapping() {
-        assert_eq!(sandbox_policy_value("read-only")["type"], "readOnly");
-        assert_eq!(sandbox_policy_value("read-only")["networkAccess"], false);
+        assert_eq!(sandbox_policy_value("read-only", &[])["type"], "readOnly");
         assert_eq!(
-            sandbox_policy_value("danger-full-access")["type"],
+            sandbox_policy_value("read-only", &[])["networkAccess"],
+            false
+        );
+        assert_eq!(
+            sandbox_policy_value("danger-full-access", &[])["type"],
             "dangerFullAccess"
         );
-        let ws = sandbox_policy_value("workspace-write");
+        let ws = sandbox_policy_value("workspace-write", &[]);
         assert_eq!(ws["type"], "workspaceWrite");
         assert_eq!(ws["writableRoots"], json!([]));
         assert_eq!(ws["networkAccess"], false);
         assert_eq!(ws["excludeTmpdirEnvVar"], false);
         assert_eq!(ws["excludeSlashTmp"], false);
         // Unknown mode falls back to workspace-write.
-        assert_eq!(sandbox_policy_value("bogus")["type"], "workspaceWrite");
+        assert_eq!(sandbox_policy_value("bogus", &[])["type"], "workspaceWrite");
+        // Writable roots populate the workspace-write policy (and are ignored elsewhere).
+        let roots = vec!["/extra/a".to_string(), "/extra/b".to_string()];
+        let ws2 = sandbox_policy_value("workspace-write", &roots);
+        assert_eq!(ws2["writableRoots"][0], "/extra/a");
+        assert_eq!(ws2["writableRoots"][1], "/extra/b");
+        assert!(sandbox_policy_value("read-only", &roots)
+            .get("writableRoots")
+            .is_none());
     }
 
     #[test]
@@ -1419,6 +1591,58 @@ mod tests {
                 assert_eq!(status, "success");
             }
             e => panic!("expected ToolEnd, got {e:?}"),
+        }
+    }
+
+    #[test]
+    fn collab_tool_call_emits_no_card_over_app_server() {
+        // Regression: app-server has never rendered collabToolCall items (item_started only copies
+        // a `command` field, which collab lacks → an empty Agent card). The shared CodexToolKind
+        // classifier knows collab → Agent, but this transport must keep emitting NOTHING for it
+        // until the collab fields are extracted. (The exec parser DOES render collab — separate.)
+        let mut s = ready_server();
+        let started = s.parse_line(
+            "r",
+            r#"{"method":"item/started","params":{"item":{"id":"col_1","type":"collabToolCall","tool":"code_review","prompt":"review"}}}"#,
+        );
+        assert!(
+            started.events.is_empty(),
+            "collabToolCall must emit no ToolStart over app-server, got {:?}",
+            started.events
+        );
+        let completed = s.parse_line(
+            "r",
+            r#"{"method":"item/completed","params":{"item":{"id":"col_1","type":"collabToolCall","status":"completed","agents_states":{}}}}"#,
+        );
+        assert!(
+            completed.events.is_empty(),
+            "collabToolCall must emit no ToolEnd over app-server, got {:?}",
+            completed.events
+        );
+    }
+
+    #[test]
+    fn mcp_tool_name_default_diverges_from_exec_intentionally() {
+        // The two transports use DIFFERENT defaults for a missing `tool` field on an MCP item:
+        // app-server → "tool", exec (pipe_parser) → "unknown". This is intentional; lock it so a
+        // future "cleanup" can't silently unify them. (Pair: pipe_parser::tests covers the exec side.)
+        let mut s = ready_server();
+        let out = s.parse_line(
+            "r",
+            r#"{"method":"item/started","params":{"item":{"id":"m_1","type":"mcpToolCall","server":"fs"}}}"#,
+        );
+        match &out.events[0] {
+            BusEvent::ToolStart { tool_name, .. } => assert_eq!(tool_name, "fs:tool"),
+            e => panic!("expected ToolStart, got {e:?}"),
+        }
+        // Both fields present → "{server}:{tool}".
+        let out2 = s.parse_line(
+            "r",
+            r#"{"method":"item/started","params":{"item":{"id":"m_2","type":"mcpToolCall","server":"fs","tool":"read"}}}"#,
+        );
+        match &out2.events[0] {
+            BusEvent::ToolStart { tool_name, .. } => assert_eq!(tool_name, "fs:read"),
+            e => panic!("expected ToolStart, got {e:?}"),
         }
     }
 
