@@ -594,6 +594,41 @@
     }
   }
 
+  // ── codex doctor (richer install/config/auth/runtime diagnostics) ──
+  let codexDoctor = $state<api.CodexDoctorReport | null>(null);
+  let codexDoctorLoading = $state(false);
+  let codexDoctorError = $state("");
+
+  async function runCodexDoctor() {
+    codexDoctorLoading = true;
+    codexDoctorError = "";
+    try {
+      codexDoctor = await api.runCodexDoctor();
+      dbg("settings", "codex doctor", { overall: codexDoctor.overallStatus });
+    } catch (e) {
+      codexDoctorError = String(e);
+      codexDoctor = null;
+    } finally {
+      codexDoctorLoading = false;
+    }
+  }
+
+  // Sort doctor checks: problems first (fail → warn → ok), then by id.
+  let codexDoctorChecks = $derived.by(() => {
+    if (!codexDoctor) return [];
+    const rank = (s: string) => (s === "fail" ? 0 : s === "warn" ? 1 : 2);
+    return Object.values(codexDoctor.checks).sort(
+      (a, b) => rank(a.status) - rank(b.status) || a.id.localeCompare(b.id),
+    );
+  });
+
+  function doctorStatusClass(status: string): string {
+    if (status === "ok") return "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400";
+    if (status === "warn") return "bg-amber-500/10 text-amber-600 dark:text-amber-400";
+    if (status === "fail") return "bg-red-500/10 text-red-600 dark:text-red-400";
+    return "bg-muted text-muted-foreground";
+  }
+
   // ── Codex per-session flags (AgentSettings on codex agent) ──
   let codexAgentSettings = $state<AgentSettings | null>(null);
 
@@ -3060,6 +3095,55 @@
                   {/if}
                 </div>
               </div>
+
+              <!-- codex doctor: richer install/config/auth/runtime/app-server diagnostics -->
+              <div class="rounded-lg border border-border/60 bg-card/40 p-3">
+                <div class="flex items-center justify-between gap-2">
+                  <div class="min-w-0">
+                    <p class="text-sm font-medium">{t("settings_codex_doctorTitle")}</p>
+                    <p class="text-xs text-muted-foreground">{t("settings_codex_doctorDesc")}</p>
+                  </div>
+                  <button
+                    class="shrink-0 rounded-md border border-border/60 px-2.5 py-1 text-xs font-medium hover:bg-accent disabled:opacity-50 transition-colors"
+                    disabled={codexDoctorLoading}
+                    onclick={runCodexDoctor}
+                  >
+                    {codexDoctorLoading ? t("common_loading") : t("settings_codex_doctorRun")}
+                  </button>
+                </div>
+                {#if codexDoctorError}
+                  <p class="mt-2 text-xs text-red-600 dark:text-red-400">{codexDoctorError}</p>
+                {/if}
+                {#if codexDoctor}
+                  <div class="mt-3 flex items-center gap-2 text-xs">
+                    <span
+                      class="rounded px-1.5 py-0.5 font-medium {doctorStatusClass(
+                        codexDoctor.overallStatus,
+                      )}">{codexDoctor.overallStatus}</span
+                    >
+                    <span class="text-muted-foreground">codex v{codexDoctor.codexVersion}</span>
+                  </div>
+                  <ul class="mt-2 space-y-1.5">
+                    {#each codexDoctorChecks as check (check.id)}
+                      <li class="flex items-start gap-2 text-xs">
+                        <span
+                          class="shrink-0 rounded px-1 py-0.5 text-[10px] font-medium {doctorStatusClass(
+                            check.status,
+                          )}">{check.status}</span
+                        >
+                        <div class="min-w-0">
+                          <span class="font-medium">{check.id}</span>
+                          <span class="text-muted-foreground"> — {check.summary}</span>
+                          {#if check.remediation}
+                            <p class="text-amber-600 dark:text-amber-400">{check.remediation}</p>
+                          {/if}
+                        </div>
+                      </li>
+                    {/each}
+                  </ul>
+                {/if}
+              </div>
+
               <!-- Auth Mode selector: 2-way radio, mirroring Claude -->
               <div>
                 <span class="text-sm font-medium mb-2 block">{t("settings_auth_modeLabel")}</span>

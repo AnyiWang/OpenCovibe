@@ -176,6 +176,52 @@ pub async fn check_codex_auth() -> Result<CodexAuthResult, String> {
     })
 }
 
+/// Run `codex doctor --json` and return its structured report verbatim for the diagnostics UI.
+/// Shape: `{schemaVersion, generatedAt, overallStatus, codexVersion, checks:{<id>:{id,category,
+/// status,summary,details,remediation,durationMs}}}`. Richer than `codex login status` —
+/// covers install/config/auth/runtime/app-server health. 25s timeout (doctor probes more,
+/// incl. network). Returns Err only when codex is absent / the run can't start / output isn't JSON.
+#[tauri::command]
+pub async fn run_codex_doctor() -> Result<serde_json::Value, String> {
+    log::debug!("[diagnostics] run_codex_doctor: starting");
+    let cli_check = check_agent_cli("codex".to_string()).await?;
+    if !cli_check.found {
+        return Err("Codex CLI not installed".to_string());
+    }
+    let aug_path = augmented_path();
+    let codex_exe = cli_check.path.as_deref().unwrap_or("codex");
+
+    use tokio::process::Command as TokioCommand;
+    let mut cmd = TokioCommand::new(codex_exe);
+    // --no-color: keep JSON clean of ANSI; --json: machine-readable.
+    cmd.args(["doctor", "--json", "--no-color"])
+        .env("PATH", &aug_path)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .hide_console()
+        .kill_on_drop(true);
+
+    let output = match tokio::time::timeout(std::time::Duration::from_secs(25), cmd.output()).await
+    {
+        Ok(Ok(o)) => o,
+        Ok(Err(e)) => return Err(format!("failed to run codex doctor: {}", e)),
+        Err(_) => return Err("codex doctor timed out (25s)".to_string()),
+    };
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // doctor exits non-zero when overallStatus is fail/warn — that's a valid report, not an error.
+    // Only treat unparseable output as a failure.
+    serde_json::from_str::<serde_json::Value>(stdout.trim()).map_err(|e| {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        log::warn!("[diagnostics] run_codex_doctor: non-JSON output: {}", e);
+        format!(
+            "codex doctor produced no JSON ({}). stderr: {}",
+            e,
+            stderr.trim()
+        )
+    })
+}
+
 // ── Local proxy detection ──
 
 async fn detect_proxy_inner(proxy_id: &str, base_url: &str) -> LocalProxyStatus {

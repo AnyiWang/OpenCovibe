@@ -407,6 +407,33 @@ export async function checkCodexAuth(): Promise<CodexAuthResult> {
   return invoke<CodexAuthResult>("check_codex_auth");
 }
 
+/** One `codex doctor` check (install/config/auth/runtime/app-server health). */
+export interface CodexDoctorCheck {
+  id: string;
+  category: string;
+  status: string; // "ok" | "warn" | "fail" | ...
+  summary: string;
+  details?: Record<string, unknown>;
+  remediation?: string | null;
+  durationMs?: number;
+}
+
+/** Structured `codex doctor --json` report. */
+export interface CodexDoctorReport {
+  schemaVersion: number;
+  generatedAt: string;
+  overallStatus: string; // "ok" | "warn" | "fail"
+  codexVersion: string;
+  checks: Record<string, CodexDoctorCheck>;
+}
+
+/** Run `codex doctor --json` — richer than checkCodexAuth (install/config/auth/runtime/app-server).
+ *  Rejects when codex is absent / can't run / output isn't JSON. */
+export async function runCodexDoctor(): Promise<CodexDoctorReport> {
+  dbg("api", "runCodexDoctor");
+  return invoke<CodexDoctorReport>("run_codex_doctor");
+}
+
 export async function checkAgentCli(agent: string): Promise<CliCheckResult> {
   dbg("api", "checkAgentCli", agent);
   return invoke<CliCheckResult>("check_agent_cli", { agent });

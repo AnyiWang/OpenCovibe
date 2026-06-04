@@ -192,6 +192,7 @@ pub fn run() {
             commands::stats::get_changelog,
             commands::diagnostics::check_agent_cli,
             commands::diagnostics::check_codex_auth,
+            commands::diagnostics::run_codex_doctor,
             commands::diagnostics::test_remote_host,
             commands::diagnostics::get_cli_dist_tags,
             commands::diagnostics::check_project_init,
