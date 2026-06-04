@@ -1506,6 +1506,35 @@ impl SessionActor {
                 }
                 return Ok((request_id, rx));
             }
+            "experimental_feature_list" => {
+                let lines = self
+                    .codex
+                    .as_mut()
+                    .unwrap()
+                    .frame_experimental_feature_list(&request_id);
+                if lines.is_empty() {
+                    let _ = tx.send(serde_json::json!({ "ok": false, "error": "no thread" }));
+                    return Ok((request_id, rx));
+                }
+                self.control_waiters.insert(request_id.clone(), tx);
+                for line in &lines {
+                    self.write_json_line(line, "codex experimentalFeature/list")
+                        .await?;
+                }
+                return Ok((request_id, rx));
+            }
+            "model_list" => {
+                let lines = self.codex.as_mut().unwrap().frame_model_list(&request_id);
+                if lines.is_empty() {
+                    let _ = tx.send(serde_json::json!({ "ok": false, "error": "no thread" }));
+                    return Ok((request_id, rx));
+                }
+                self.control_waiters.insert(request_id.clone(), tx);
+                for line in &lines {
+                    self.write_json_line(line, "codex model/list").await?;
+                }
+                return Ok((request_id, rx));
+            }
             _ => {}
         }
 

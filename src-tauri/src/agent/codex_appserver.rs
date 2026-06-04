@@ -186,6 +186,20 @@ impl CodexAppServer {
     pub fn frame_skills_list(&mut self, request_id: &str) -> Vec<Value> {
         self.frame_tracked(request_id, "skills/list", json!({}))
     }
+
+    /// Frame `experimentalFeature/list` — the feature flags + their current enablement for this
+    /// session's config (incl. project-local). Response: `{data: ExperimentalFeature[]}` where each
+    /// is `{name, stage, displayName, description, enabled, defaultEnabled}`.
+    pub fn frame_experimental_feature_list(&mut self, request_id: &str) -> Vec<Value> {
+        self.frame_tracked(request_id, "experimentalFeature/list", json!({}))
+    }
+
+    /// Frame `model/list` — the authoritative model catalog for the installed CLI. Response:
+    /// `{data: Model[]}` (`{id, displayName, supportedReasoningEfforts, defaultReasoningEffort,
+    /// hidden, isDefault, …}`). The picker caches this so it stays accurate across CLI versions.
+    pub fn frame_model_list(&mut self, request_id: &str) -> Vec<Value> {
+        self.frame_tracked(request_id, "model/list", json!({}))
+    }
 }
 
 /// The request_id we surface for a server request = its stringified json-rpc id.
@@ -2275,6 +2289,49 @@ mod tests {
         assert_eq!(gset_partial[0]["params"]["objective"], "only obj");
         assert!(gset_partial[0]["params"].get("status").is_none());
         assert!(gset_partial[0]["params"].get("tokenBudget").is_none());
+    }
+
+    // ── Wave-4: ecosystem data-returning frames (experimentalFeature/list, model/list) ─────
+
+    #[test]
+    fn frame_experimental_feature_list_shape() {
+        // No thread → drops (mirrors frame_skills_list / frame_goal_get).
+        let mut s = CodexAppServer::new();
+        assert!(s.frame_experimental_feature_list("r1").is_empty());
+
+        let mut s = ready_server(); // thread th-123
+        let frame = s.frame_experimental_feature_list("ocv-feat");
+        assert_eq!(frame[0]["method"], "experimentalFeature/list");
+        assert_eq!(frame[0]["params"]["threadId"], "th-123");
+        // Tracked: a jsonrpc id is allocated so the reply correlates back to "ocv-feat".
+        let id = frame[0]["id"].as_i64().unwrap();
+        let line = format!(
+            r#"{{"jsonrpc":"2.0","id":{id},"result":{{"data":[{{"name":"hooks","enabled":true}}]}}}}"#
+        );
+        let out = s.parse_line("run1", &line);
+        let (rid, val) = out.control_response.expect("control_response");
+        assert_eq!(rid, "ocv-feat");
+        assert_eq!(val["data"][0]["name"], "hooks");
+    }
+
+    #[test]
+    fn frame_model_list_shape() {
+        // No thread → drops.
+        let mut s = CodexAppServer::new();
+        assert!(s.frame_model_list("r1").is_empty());
+
+        let mut s = ready_server(); // thread th-123
+        let frame = s.frame_model_list("ocv-models");
+        assert_eq!(frame[0]["method"], "model/list");
+        assert_eq!(frame[0]["params"]["threadId"], "th-123");
+        let id = frame[0]["id"].as_i64().unwrap();
+        let line = format!(
+            r#"{{"jsonrpc":"2.0","id":{id},"result":{{"data":[{{"id":"gpt-5","isDefault":true}}]}}}}"#
+        );
+        let out = s.parse_line("run1", &line);
+        let (rid, val) = out.control_response.expect("control_response");
+        assert_eq!(rid, "ocv-models");
+        assert_eq!(val["data"][0]["id"], "gpt-5");
     }
 
     #[test]

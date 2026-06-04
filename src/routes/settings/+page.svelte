@@ -978,6 +978,19 @@
       ],
     },
     {
+      key: "model_verbosity",
+      label: t("settings_codexConfig_verbosityLabel"),
+      description: t("settings_codexConfig_verbosityDesc"),
+      group: "behavior",
+      type: "enum",
+      default: "medium",
+      options: [
+        { value: "low", label: t("settings_codexConfig_optLow") },
+        { value: "medium", label: t("settings_codexConfig_optMedium") },
+        { value: "high", label: t("settings_codexConfig_optHigh") },
+      ],
+    },
+    {
       key: "personality",
       label: t("settings_codexConfig_personalityLabel"),
       description: t("settings_codexConfig_personalityDesc"),
@@ -1010,6 +1023,22 @@
         { value: "read-only", label: t("settings_codexConfig_optReadOnly") },
         { value: "workspace-write", label: t("settings_codexConfig_optWorkspaceWrite") },
         { value: "danger-full-access", label: t("settings_codexConfig_optFullAccess") },
+      ],
+    },
+    {
+      key: "web_search",
+      label: t("settings_codexConfig_webSearchLabel"),
+      description: t("settings_codexConfig_webSearchDesc"),
+      group: "behavior",
+      type: "enum",
+      // Durable tri-state web search mode. The `cached` value is currently
+      // unreachable via the per-session --search boolean (which maps to live);
+      // this config key is the only way to select it.
+      default: "disabled",
+      options: [
+        { value: "disabled", label: t("settings_codexConfig_optDisabled") },
+        { value: "cached", label: t("settings_codexConfig_optCached") },
+        { value: "live", label: t("settings_codexConfig_optLive") },
       ],
     },
   ];

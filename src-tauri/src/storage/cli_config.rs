@@ -166,6 +166,66 @@ pub fn load_project_codex_config(cwd: &str) -> Value {
     Value::Object(merged)
 }
 
+/// Toggle a single Codex feature flag durably: `[features].<name> = enabled` (or remove the key
+/// when `enabled` is None). A nested write — unlike `update_codex_config`'s top-level shallow merge,
+/// this preserves the other keys in the `[features]` table instead of replacing the whole table.
+/// Takes effect on the next spawned session. Returns the full reloaded config.
+pub fn set_codex_feature(name: &str, enabled: Option<bool>) -> Result<Value, String> {
+    if name.is_empty() {
+        return Err("feature name must not be empty".to_string());
+    }
+    let config_path = codex_config_path()?;
+    let mut doc: toml_edit::DocumentMut = match std::fs::read_to_string(&config_path) {
+        Ok(s) => s
+            .parse::<toml_edit::DocumentMut>()
+            .map_err(|e| format!("TOML parse error: {}", e))?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => toml_edit::DocumentMut::new(),
+        Err(e) => return Err(format!("Read error: {}", e)),
+    };
+
+    // Ensure `[features]` is a STANDARD table. `doc["features"][k] = v` would create an INLINE
+    // table (`features = { … }`), which reads worse and — crucially — cannot be mutated via
+    // `as_table_mut()` (it's an Item::Value), so the removal branch would silently no-op. Normalize
+    // any existing inline/missing form to a standard table before editing.
+    let features = doc
+        .entry("features")
+        .or_insert(toml_edit::Item::Table(toml_edit::Table::new()));
+    if let Some(inline) = features.as_inline_table().cloned() {
+        let mut table = toml_edit::Table::new();
+        for (k, v) in inline.iter() {
+            table.insert(k, toml_edit::Item::Value(v.clone()));
+        }
+        *features = toml_edit::Item::Table(table);
+    }
+    let table = features
+        .as_table_mut()
+        .ok_or_else(|| "config key `features` is not a table".to_string())?;
+    match enabled {
+        Some(value) => {
+            log::debug!("[codex_config] set feature {} = {}", name, value);
+            table[name] = toml_edit::value(value);
+        }
+        None => {
+            log::debug!("[codex_config] clearing feature override {}", name);
+            table.remove(name);
+        }
+    }
+
+    if let Some(parent) = config_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create directory: {}", e))?;
+    }
+    std::fs::write(&config_path, doc.to_string()).map_err(|e| format!("Failed to write: {}", e))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&config_path, std::fs::Permissions::from_mode(0o600));
+    }
+
+    let (config, _) = load_codex_config();
+    Ok(config)
+}
+
 /// Apply a shallow merge patch to the user-level Codex config.
 /// Uses toml_edit to preserve comments and formatting.
 /// - null values delete the key.
@@ -505,4 +565,78 @@ pub fn update_cli_config(patch: Value) -> Result<Value, String> {
         config.as_object().unwrap().len()
     );
     Ok(config)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    // CODEX_HOME is process-global; serialize the env-mutating tests so cargo's parallel
+    // runner can't interleave a set/remove from another test in this module.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Run `f` with CODEX_HOME pointed at a fresh temp dir, restoring the prior value after.
+    fn with_codex_home<F: FnOnce(&std::path::Path)>(f: F) {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let orig = std::env::var("CODEX_HOME").ok();
+        std::env::set_var("CODEX_HOME", dir.path());
+        f(dir.path());
+        match orig {
+            Some(v) => std::env::set_var("CODEX_HOME", v),
+            None => std::env::remove_var("CODEX_HOME"),
+        }
+    }
+
+    #[test]
+    fn set_codex_feature_nested_write_preserves_siblings() {
+        with_codex_home(|home| {
+            // First write creates [features].hooks = true.
+            set_codex_feature("hooks", Some(true)).unwrap();
+            // Second write must NOT clobber the [features] table — this is the whole point of
+            // the nested write vs update_codex_config's top-level shallow merge.
+            let cfg = set_codex_feature("plugins", Some(true)).unwrap();
+            assert_eq!(cfg["features"]["hooks"], json!(true));
+            assert_eq!(cfg["features"]["plugins"], json!(true));
+
+            // Verify it actually landed on disk as a single nested table, not two clobbering writes.
+            // Must be a STANDARD `[features]` table — an inline `features = {…}` can't be mutated
+            // via as_table_mut(), which is exactly what broke the removal path before the fix.
+            let on_disk = std::fs::read_to_string(home.join("config.toml")).unwrap();
+            assert!(
+                on_disk.contains("[features]"),
+                "expected standard table: {on_disk}"
+            );
+            assert!(
+                !on_disk.contains("features = {"),
+                "must not be inline: {on_disk}"
+            );
+            assert!(on_disk.contains("hooks = true"), "disk: {on_disk}");
+            assert!(on_disk.contains("plugins = true"), "disk: {on_disk}");
+
+            // enabled=None removes only the named key; the sibling survives.
+            let cleared = set_codex_feature("hooks", None).unwrap();
+            assert!(
+                cleared["features"].get("hooks").is_none(),
+                "hooks should be removed: {cleared}"
+            );
+            assert_eq!(cleared["features"]["plugins"], json!(true));
+        });
+    }
+
+    #[test]
+    fn set_codex_feature_can_disable() {
+        with_codex_home(|_home| {
+            // Some(false) writes an explicit false (an override), distinct from None (remove).
+            let cfg = set_codex_feature("hooks", Some(false)).unwrap();
+            assert_eq!(cfg["features"]["hooks"], json!(false));
+        });
+    }
+
+    #[test]
+    fn set_codex_feature_rejects_empty_name() {
+        // No CODEX_HOME needed — the guard rejects before any path resolution.
+        assert!(set_codex_feature("", Some(true)).is_err());
+    }
 }

@@ -277,6 +277,7 @@ pub fn run() {
             commands::cli_config::get_codex_config,
             commands::cli_config::get_project_codex_config,
             commands::cli_config::update_codex_config,
+            commands::cli_config::set_codex_feature,
             commands::cli_config::get_codex_hooks,
             commands::cli_config::update_codex_hooks,
             commands::cli_settings::get_cli_permissions,

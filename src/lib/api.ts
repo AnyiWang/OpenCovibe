@@ -729,6 +729,53 @@ export async function listCodexSkillsRuntime(
   return result as unknown as { data: CodexRuntimeSkillsEntry[] };
 }
 
+/** A Codex feature flag + its current enablement, from `experimentalFeature/list`. `stage` is the
+ *  lifecycle (ExperimentalFeatureStage): "beta" | "underDevelopment" | "stable" | "deprecated" |
+ *  "removed". displayName/description/announcement are null for non-beta features. */
+export interface CodexFeature {
+  name: string;
+  stage: string;
+  displayName: string | null;
+  description: string | null;
+  announcement: string | null;
+  enabled: boolean;
+  defaultEnabled: boolean;
+}
+
+/** List Codex feature flags for the live session's config (incl. project-local). Needs a live
+ *  Codex session (app-server request). */
+export async function listCodexFeatures(runId: string): Promise<{ data: CodexFeature[] }> {
+  const result = await sendSessionControl(runId, "experimental_feature_list");
+  return result as unknown as { data: CodexFeature[] };
+}
+
+/** Durably toggle one `[features].<name>` flag (nested config write; preserves the rest of the
+ *  table). `enabled=null` clears the override back to Codex's default. Effective next session. */
+export async function setCodexFeature(name: string, enabled: boolean | null): Promise<unknown> {
+  dbg("api", "setCodexFeature", { name, enabled });
+  return invoke("set_codex_feature", { name, enabled });
+}
+
+/** One model from Codex's authoritative `model/list` catalog (only the fields we render). */
+export interface CodexModel {
+  id: string;
+  model: string;
+  displayName: string;
+  description: string;
+  hidden: boolean;
+  supportedReasoningEfforts: { reasoningEffort: string; description: string }[];
+  defaultReasoningEffort: string;
+  supportsPersonality: boolean;
+  isDefault: boolean;
+}
+
+/** Authoritative model catalog from the live Codex CLI (`model/list`). Needs a live session;
+ *  callers cache the result so the (sessionless) picker stays accurate across CLI versions. */
+export async function listCodexModels(runId: string): Promise<{ data: CodexModel[] }> {
+  const result = await sendSessionControl(runId, "model_list");
+  return result as unknown as { data: CodexModel[] };
+}
+
 export async function setMcpServers(runId: string, servers: Record<string, unknown>) {
   return sendSessionControl(runId, "mcp_set_servers", { servers });
 }

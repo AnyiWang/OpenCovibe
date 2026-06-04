@@ -46,6 +46,14 @@ pub fn update_codex_config(patch: Value) -> Result<Value, String> {
     cli_config::update_codex_config(patch)
 }
 
+/// Durably toggle one `[features].<name>` flag (nested write, preserves the rest of the table).
+/// `enabled=None` clears the override (back to Codex's default). Effective next session.
+#[tauri::command]
+pub fn set_codex_feature(name: String, enabled: Option<bool>) -> Result<Value, String> {
+    log::debug!("[cli_config] set_codex_feature {} = {:?}", name, enabled);
+    cli_config::set_codex_feature(&name, enabled)
+}
+
 // ── Codex hooks commands ──
 
 /// Returns { hooks: {}, warning?: string }

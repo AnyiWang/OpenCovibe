@@ -15,6 +15,7 @@
     getCodexModels,
     getCodexDefaultModel,
     loadCodexModels,
+    loadCodexModelsLive,
     canResumeNow,
     TERMINAL_PHASES,
     getResumeWarning,
@@ -54,6 +55,7 @@
   import ToolBurstHeader from "$lib/components/ToolBurstHeader.svelte";
   import SessionStatusBar from "$lib/components/SessionStatusBar.svelte";
   import McpStatusPanel from "$lib/components/McpStatusPanel.svelte";
+  import FeaturesPanel from "$lib/components/FeaturesPanel.svelte";
   import DiffModal from "$lib/components/DiffModal.svelte";
   import PromptInput from "$lib/components/PromptInput.svelte";
   import ScheduledTasksChip from "$lib/components/ScheduledTasksChip.svelte";
@@ -467,6 +469,9 @@
 
   // ── MCP panel ──
   let mcpPanelOpen = $state(false);
+
+  // ── Codex features panel (experimentalFeature/list, live session only) ──
+  let featuresPanelOpen = $state(false);
 
   // ── Codex turn diff (live aggregated diff for the current turn) ──
   let turnDiffOpen = $state(false);
@@ -1059,6 +1064,17 @@
         dbg("skills", "runtime skills loaded", { count: flat.length });
       })
       .catch((e) => dbgWarn("skills", "listCodexSkillsRuntime failed", e));
+  });
+
+  /** Upgrade the Codex model catalog from the live app-server session (control `model_list`),
+   *  which is authoritative for the running CLI. Falls back to the pre-session catalog
+   *  (loadCodexModels) when no live session. Runs once per (runId, sessionAlive) transition. */
+  $effect(() => {
+    const runId = store.run?.id;
+    const live = effectiveAgent === "codex" && store.sessionAlive && !!runId;
+    if (!live) return;
+    dbg("models", "live session up, refreshing codex catalog", { runId });
+    void loadCodexModelsLive(runId!);
   });
 
   // ── Per-turn usage annotations in timeline ──
@@ -4599,6 +4615,49 @@
           Turn diff
         </button>
       </div>
+    {/if}
+
+    <!-- Codex features pill + panel (floating below status bar). Live Codex session only —
+         experimentalFeature/list needs an app-server connection. Offset left of the turn-diff
+         pill (right-3) so the two affordances don't collide. -->
+    {#if effectiveAgent === "codex" && store.sessionAlive && store.run}
+      {@const featuresRight = store.turnDiff.trim() ? "right-28" : "right-3"}
+      <div class="absolute {statusBarExpanded ? 'top-16' : 'top-9'} {featuresRight} z-30">
+        <button
+          type="button"
+          class="flex items-center gap-1.5 rounded-full border border-border bg-background/90 px-2.5 py-1 text-xs font-medium text-foreground shadow-sm backdrop-blur hover:bg-muted/60 transition-colors {featuresPanelOpen
+            ? 'bg-muted/60'
+            : ''}"
+          onclick={() => {
+            featuresPanelOpen = !featuresPanelOpen;
+            dbg("features", "toggle panel", { open: featuresPanelOpen });
+          }}
+          title={t("features_title")}
+        >
+          <svg
+            class="h-3.5 w-3.5 text-muted-foreground"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.5"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1" />
+            <circle cx="12" cy="12" r="3.5" />
+          </svg>
+          {t("features_title")}
+        </button>
+      </div>
+      {#if featuresPanelOpen}
+        <div class="absolute {statusBarExpanded ? 'top-24' : 'top-16'} right-3 z-40">
+          <FeaturesPanel
+            runId={store.run.id}
+            sessionAlive={store.sessionAlive}
+            onClose={() => (featuresPanelOpen = false)}
+          />
+        </div>
+      {/if}
     {/if}
 
     <!-- Preview URL input bar -->
