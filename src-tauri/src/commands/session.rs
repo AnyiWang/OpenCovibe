@@ -663,13 +663,18 @@ pub(crate) async fn start_session_impl(
                 .codex_provider
                 .as_ref()
                 .map(|p| p.id.clone()),
-            // `on-request`: the recommended interactive-approval policy (what Codex's own TUI
-            // uses); Codex surfaces an approval card when a command needs to escape the sandbox.
-            // (Previously `on-failure`, but Codex 0.136 deprecated it and warned on every turn.)
-            approval_policy: Some("on-request".to_string()),
+            // Approval policy derived from permission_mode (mirrors the sandbox mapping):
+            // bypassPermissions/dontAsk → "never" (no prompts, matches danger-full-access),
+            // everything else → "on-request" (the interactive policy Codex's own TUI uses;
+            // surfaces an approval card when a command needs to escape the sandbox).
+            approval_policy: Some(codex_approval_for(
+                adapter_settings.permission_mode.as_deref(),
+            )),
             sandbox: Some(codex_sandbox_for(
                 adapter_settings.permission_mode.as_deref(),
             )),
+            effort: adapter_settings.effort.clone().filter(|e| !e.is_empty()),
+            add_dirs: adapter_settings.add_dirs.clone(),
         };
         let startup = driver.startup_messages(&ctx);
         (c, si, so, se, Some(driver), startup)
@@ -1955,29 +1960,10 @@ async fn spawn_codex_appserver_process(
         "suppress_unstable_features_warning=true".into(),
     ];
 
-    // Third-party provider overrides (mirror spawn.rs exec path).
+    // Third-party provider overrides (shared with the exec + side-question paths). The provider
+    // API key is injected as an env var (env_key=api_key) below, mirroring chat.rs's run_agent.
     if let Some(p) = &settings.codex_provider {
-        let id = &p.id;
-        args.push("-c".into());
-        args.push(format!("model_provider=\"{}\"", id));
-        args.push("-c".into());
-        args.push(format!("model_providers.{}.name=\"{}\"", id, p.name));
-        args.push("-c".into());
-        args.push(format!(
-            "model_providers.{}.base_url=\"{}\"",
-            id, p.base_url
-        ));
-        if !p.env_key.is_empty() {
-            args.push("-c".into());
-            args.push(format!("model_providers.{}.env_key=\"{}\"", id, p.env_key));
-        }
-        args.push("-c".into());
-        args.push(format!(
-            "model_providers.{}.wire_api=\"{}\"",
-            id, p.wire_api
-        ));
-        args.push("-c".into());
-        args.push(format!("model_providers.{}.requires_openai_auth=false", id));
+        args.extend(crate::agent::spawn::codex_provider_config_args(p));
     }
 
     let mut cmd = Command::new(&codex_bin);
@@ -1997,6 +1983,13 @@ async fn spawn_codex_appserver_process(
         .kill_on_drop(true);
     if let Some(env) = extra_env {
         for (k, v) in env {
+            cmd.env(k, v);
+        }
+    }
+    // Provider API key (env_key=api_key) — the exec path sets this in chat.rs's run_agent, but
+    // the app-server actor path has no such hook, so inject it here.
+    if let Some(p) = &settings.codex_provider {
+        if let Some((k, v)) = crate::agent::spawn::codex_provider_env(p) {
             cmd.env(k, v);
         }
     }
@@ -2607,13 +2600,33 @@ async fn codex_side_question(
         "--skip-git-repo-check".into(),
     ];
 
-    // Inherit model from source run (skip Claude model names that Codex rejects)
-    if let Some(ref m) = source.model {
-        let is_claude_model = m.is_empty()
-            || m.contains("claude")
-            || m.contains("opus")
-            || m.contains("sonnet")
-            || m.contains("haiku");
+    // Resolve the configured Codex provider so the side question routes to the same gateway as
+    // the main run (otherwise a custom/gateway provider would be ignored → wrong provider or an
+    // auth error). Mirrors the normal run path: `-c model_providers.*` overrides + env_key=api_key.
+    let user_settings = storage::settings::get_user_settings();
+    let agent_settings = storage::settings::get_agent_settings(&source.agent);
+    let adapter = adapter::build_adapter_settings(&agent_settings, &user_settings, None);
+    let codex_provider = adapter.codex_provider.clone();
+    if let Some(ref p) = codex_provider {
+        codex_args.extend(crate::agent::spawn::codex_provider_config_args(p));
+    }
+
+    // Model: a provider-pinned model wins; otherwise inherit the source run's model (skipping
+    // Claude model names that Codex rejects).
+    let provider_model = codex_provider
+        .as_ref()
+        .map(|p| p.model.clone())
+        .filter(|m| !m.is_empty());
+    if let Some(m) = provider_model {
+        codex_args.push("--model".into());
+        codex_args.push(m);
+    } else if let Some(ref m) = source.model {
+        let lm = m.to_lowercase();
+        let is_claude_model = lm.is_empty()
+            || lm.contains("claude")
+            || lm.contains("opus")
+            || lm.contains("sonnet")
+            || lm.contains("haiku");
         if !is_claude_model {
             codex_args.push("--model".into());
             codex_args.push(m.clone());
@@ -2626,10 +2639,11 @@ async fn codex_side_question(
     let effective_cwd = &source.cwd;
 
     log::debug!(
-        "[btw] codex_side_question: btw_id={}, cwd={}, args_len={}",
+        "[btw] codex_side_question: btw_id={}, cwd={}, args_len={}, provider={:?}",
         btw_id,
         effective_cwd,
-        codex_args.len()
+        codex_args.len(),
+        codex_provider.as_ref().map(|p| &p.id)
     );
 
     let mut cmd = Command::new(&codex_bin);
@@ -2643,6 +2657,12 @@ async fn codex_side_question(
         .stderr(std::process::Stdio::piped())
         .hide_console()
         .kill_on_drop(true);
+    // Provider API key (env_key=api_key), same as the main run path.
+    if let Some(ref p) = codex_provider {
+        if let Some((k, v)) = crate::agent::spawn::codex_provider_env(p) {
+            cmd.env(k, v);
+        }
+    }
 
     let mut child = cmd
         .spawn()
