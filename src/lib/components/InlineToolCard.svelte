@@ -146,7 +146,7 @@
     submitting = false;
   });
 
-  let isAgentLike = $derived(tool.tool_name === "Agent" || tool.tool_name === "Task");
+  let isAgentLike = $derived(isSubagentTool(tool.tool_name));
   let isAsk = $derived(tool.tool_name === "AskUserQuestion");
 
   // Auto-expand when input is streaming in (running + has input data)
