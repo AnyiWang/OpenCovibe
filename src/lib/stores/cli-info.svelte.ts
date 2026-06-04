@@ -57,6 +57,27 @@ export function getCodexDefaultModel(): string | undefined {
   return _codex?.defaultModel ?? undefined;
 }
 
+/**
+ * Resolve the model list to show for an agent, folding in third-party platform models.
+ * Centralizes the `agent === "codex" ? getCodexModels() : …CLI/platform…` branch that
+ * was copy-pasted across ModelSelector, SessionStatusBar, and the chat page.
+ *
+ * - Codex → the live Codex catalog (platform models don't apply).
+ * - Other agents → platform models when present (see `merge`), else the CLI catalog.
+ *   - `merge: false` (default): platform models REPLACE the CLI list when non-empty.
+ *   - `merge: true`: platform models are PREPENDED to the CLI list (used where label
+ *     lookups need to resolve both platform and CLI model values).
+ */
+export function getModelsForAgent(
+  agent: string,
+  opts: { platformModels?: CliModelInfo[]; merge?: boolean } = {},
+): CliModelInfo[] {
+  if (agent === "codex") return getCodexModels();
+  const platform = opts.platformModels ?? [];
+  if (opts.merge) return [...platform, ...getCliModels()];
+  return platform.length > 0 ? platform : getCliModels();
+}
+
 export async function loadCodexModels(force = false): Promise<CodexModelList | null> {
   if (_codexLoaded && !force) return _codex;
   if (_codexLoading) return _codex; // dedupe concurrent calls

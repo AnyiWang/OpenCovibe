@@ -1620,7 +1620,7 @@
   "chat_addDirFailed": "添加目录失败：{error}",
   "chat_addDirTitle": "添加目录到工作区",
   "chat_addDirUnsupported": "add-dir 仅支持 Claude agent",
-  "chat_addDirNextTurn": "已添加 {path} — 下条消息生效",
+  "chat_addDirNextSession": "已添加 {path} — 将在下个会话 / 新线程中生效（仅限可写模式）",
   "chat_addDirInvalidPath": "路径包含无效字符",
 
   "skillSelector_label": "技能",

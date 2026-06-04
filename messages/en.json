@@ -1620,7 +1620,7 @@
   "chat_addDirFailed": "Failed to add directory: {error}",
   "chat_addDirTitle": "Add directory to workspace",
   "chat_addDirUnsupported": "add-dir is only supported for Claude agent",
-  "chat_addDirNextTurn": "Added {path} — takes effect next message",
+  "chat_addDirNextSession": "Added {path} — takes effect on the next session / new thread (write-enabled modes only)",
   "chat_addDirInvalidPath": "Path contains invalid characters",
 
   "skillSelector_label": "Skills",
