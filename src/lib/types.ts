@@ -1120,7 +1120,23 @@ export type BusEvent =
     }
   // Codex Wave-3: live goal progress from `thread/goal/updated`; goal is null
   // when the objective was cleared (`thread/goal/cleared`).
-  | { type: "goal_update"; run_id: string; goal: ThreadGoal | null };
+  | { type: "goal_update"; run_id: string; goal: ThreadGoal | null }
+  // Codex Wave-4: hook lifecycle. status is "running" on hook/started, then a terminal
+  // HookRunStatus ("completed"|"failed"|"blocked"|"stopped") on hook/completed. hook_id is
+  // stable across the pair so the reducer upserts one card. event_name is camelCase HookEventName.
+  | {
+      type: "codex_hook_run";
+      run_id: string;
+      hook_id: string;
+      event_name: string;
+      status: string;
+      status_message?: string;
+      duration_ms?: number;
+    }
+  // Codex Wave-4: live MCP server startup-state change (`mcpServer/startupStatus/updated`).
+  // status is the raw Codex McpServerStartupState ("starting"|"ready"|"failed"|"cancelled");
+  // the store reducer maps it to the panel vocab and upserts store.mcpServers by name.
+  | { type: "codex_mcp_status"; run_id: string; name: string; status: string; error?: string };
 
 export type RalphCompleteReason =
   | "max_iterations"
@@ -1225,7 +1241,21 @@ export type TimelineEntry =
       subTimeline?: TimelineEntry[];
     }
   | { kind: "separator"; id: string; anchorId: string; content: string; ts: string }
-  | { kind: "command_output"; id: string; anchorId: string; content: string; ts: string };
+  | { kind: "command_output"; id: string; anchorId: string; content: string; ts: string }
+  // Codex Wave-4: a hook execution timeline entry. Upserted by the `codex_hook_run`
+  // reducer — keyed by `hookId` (= Codex run.id), stable across the started→completed
+  // pair so the running card updates in place instead of stacking a second entry.
+  | {
+      kind: "hook";
+      id: string;
+      anchorId: string;
+      hookId: string;
+      eventName: string;
+      status: string;
+      statusMessage?: string;
+      durationMs?: number;
+      ts: string;
+    };
 
 /** One row of a TodoWrite checklist (lives in a tool's `tool_use_result.newTodos`). */
 export interface TodoItem {

@@ -103,6 +103,7 @@
     localProxyStatuses = {} as Record<string, { running: boolean; needsAuth: boolean }>,
     availableSkills = [],
     skillItems = [],
+    codexSkillItems = [],
     agents = [],
     showAuthBadge = true,
     pendingPermission = false,
@@ -126,7 +127,11 @@
     models?: CliModelInfo[];
     currentModel?: string;
     permissionMode?: string;
-    onSend: (text: string, attachments: Attachment[]) => void;
+    onSend: (
+      text: string,
+      attachments: Attachment[],
+      skills?: { name: string; path: string }[],
+    ) => void;
     onAgentChange?: (agent: string) => void;
     onInterrupt?: () => void;
     onModelSwitch?: (model: string) => void;
@@ -147,6 +152,9 @@
     localProxyStatuses?: Record<string, { running: boolean; needsAuth: boolean }>;
     availableSkills?: string[];
     skillItems?: { name: string; description: string }[];
+    // Live Codex runtime skills (name + path + description). `path` lets us send a picked skill
+    // as a structured {type:"skill"} UserInput. Non-empty only for a live Codex session.
+    codexSkillItems?: { name: string; path: string; description: string }[];
     agents?: { name: string; description: string }[];
     showAuthBadge?: boolean; // TODO: remove unused auth props after hero migration
     pendingPermission?: boolean;
@@ -346,6 +354,9 @@
   >([]);
   let pastedBlocks = $state<PastedBlock[]>([]);
   let pendingPathRefs = $state<PathRef[]>([]);
+  /** Codex skills the user picked for THIS message (sent as structured {type:"skill"} refs, not
+   *  text). Rendered as removable chips; cleared on send. Codex-only — Claude uses slash text. */
+  let pendingSkills = $state<{ name: string; path: string }[]>([]);
 
   let fileInput: HTMLInputElement | undefined = $state();
   let textareaEl: HTMLTextAreaElement | undefined = $state();
@@ -400,6 +411,16 @@
   let allCommands = $derived(mergeWithVirtual(cliCommands ?? [], agent));
   let quickActions = $derived(getQuickActions(allCommands, agent));
   let skillNameSet = $derived(new Set(availableSkills));
+
+  // Skill picker source: Codex draws from the live runtime list (carries the path needed to send
+  // a structured skill ref); Claude keeps the file-scan/session list. Codex picker is shown only
+  // when that runtime list is non-empty — never offer a skill we can't actually send.
+  let selectorSkills = $derived(
+    agent === "codex"
+      ? codexSkillItems.map((s) => ({ name: s.name, description: s.description }))
+      : skillItems,
+  );
+  let showSkillSelector = $derived(agent !== "codex" || codexSkillItems.length > 0);
 
   let slashQuery = $derived.by(() => {
     if (!slashMenuOpen || slashPhase !== "commands") return null;
@@ -1184,14 +1205,17 @@
 
     if (typed) parts.push(typed);
     const text = parts.join("\n\n");
-    if (!text || disabled) return;
+    // Allow a skill-only send (a picked skill with no typed text is a valid skill turn).
+    if ((!text && pendingSkills.length === 0) || disabled) return;
 
+    const skills = pendingSkills.length > 0 ? pendingSkills : undefined;
     dbg("prompt", "send", {
       len: text.length,
       pasteBlocks: pastedBlocks.length,
       attachments: regularAtts.length,
       pathRefs: pathRefAtts.length,
       dragPathRefs: pendingPathRefs.length,
+      skills: pendingSkills.length,
       agent,
     });
 
@@ -1206,8 +1230,9 @@
     pendingAttachments = [];
     pastedBlocks = [];
     pendingPathRefs = [];
+    pendingSkills = [];
     resetHistory(histState);
-    onSend(text, attachments);
+    onSend(text, attachments, skills);
 
     // Reset textarea height
     if (textareaEl) textareaEl.style.height = "auto";
@@ -1637,12 +1662,33 @@
   }
 
   function handleSkillSelect(skillName: string) {
+    // Codex: plain "/name" text does NOT trigger a skill — it must be sent as a structured
+    // {type:"skill", name, path} UserInput. So record the picked ref (with path from the runtime
+    // list) as a chip and send it via onSend's skills arg, rather than filling the textarea.
+    if (agent === "codex") {
+      const ref = codexSkillItems.find((s) => s.name === skillName);
+      if (!ref) {
+        dbgWarn("skills", "picked codex skill not in runtime list", { skillName });
+        return; // never attach a skill we lack a path for — it couldn't be sent
+      }
+      if (pendingSkills.some((s) => s.name === ref.name)) return; // already attached
+      pendingSkills = [...pendingSkills, { name: ref.name, path: ref.path }];
+      dbg("skills", "codex skill picked", { name: ref.name });
+      requestAnimationFrame(() => textareaEl?.focus());
+      return;
+    }
+    // Claude: slash-command model — fill "/name " and let the user send it as text.
     dbg("prompt", "skill-select fill", { skillName });
     inputText = `/${skillName} `;
     requestAnimationFrame(() => {
       autoResize();
       textareaEl?.focus();
     });
+  }
+
+  function removeSkill(name: string) {
+    pendingSkills = pendingSkills.filter((s) => s.name !== name);
+    dbg("skills", "codex skill removed", { name });
   }
 
   function autoResize() {
@@ -1841,8 +1887,47 @@
   {/if}
 
   <!-- Attachment & paste block previews -->
-  {#if pendingAttachments.length > 0 || pastedBlocks.length > 0 || pendingPathRefs.length > 0}
+  {#if pendingAttachments.length > 0 || pastedBlocks.length > 0 || pendingPathRefs.length > 0 || pendingSkills.length > 0}
     <div class="mb-2 flex flex-wrap gap-1.5">
+      {#each pendingSkills as skill (skill.name)}
+        <!-- Picked Codex skill — sent as a structured {type:"skill"} ref, not text. -->
+        <span
+          class="inline-flex items-center gap-1.5 rounded-md border border-violet-200 dark:border-violet-800 bg-violet-50 dark:bg-violet-950/50 text-violet-700 dark:text-violet-300 px-2 py-1 text-xs"
+        >
+          <!-- Sparkles icon (matches SkillSelector) -->
+          <svg
+            class="h-3.5 w-3.5 shrink-0"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <path
+              d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"
+            />
+          </svg>
+          <span class="font-medium">{skill.name}</span>
+          <button
+            onclick={() => removeSkill(skill.name)}
+            class="ml-0.5 rounded p-0.5 transition-colors hover:bg-violet-200/50 dark:hover:bg-violet-800/50"
+            title={t("prompt_removeSkill")}
+          >
+            <svg
+              class="h-3 w-3"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path d="M18 6 6 18" /><path d="m6 6 12 12" />
+            </svg>
+          </button>
+        </span>
+      {/each}
       {#each pendingAttachments as att (att.id)}
         <FileAttachment
           name={att.name}
@@ -2135,10 +2220,10 @@
             {localProxyStatuses}
           />
         {/if}
-        {#if agent !== "codex"}
+        {#if showSkillSelector}
           <SkillSelector
-            skills={skillItems}
-            {agents}
+            skills={selectorSkills}
+            agents={agent === "codex" ? [] : agents}
             disabled={disabled || running}
             onSelect={handleSkillSelect}
           />

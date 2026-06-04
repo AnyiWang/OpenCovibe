@@ -11,7 +11,7 @@ use crate::agent::claude_protocol::{validate_bus_event, ProtocolState};
 use crate::agent::codex_appserver::CodexAppServer;
 use crate::agent::notify::notify_if_background;
 use crate::agent::session_protocol::{
-    CodexTurnOverrides, LifecycleSignal, PendingKind, SessionProtocol,
+    CodexSkillRef, CodexTurnOverrides, LifecycleSignal, PendingKind, SessionProtocol,
 };
 use crate::agent::turn_engine::{
     apply_activity_reset, ActiveTurn, ContextExtractor, InternalExtractor, InternalJob, TurnOrigin,
@@ -158,6 +158,9 @@ pub enum ActorCommand {
     SendMessage {
         text: String,
         attachments: Vec<AttachmentData>,
+        /// Codex skill picks → structured `{type:"skill"}` input items. Empty for Claude and for
+        /// Codex turns with no skill selected (no behavior change).
+        skills: Vec<CodexSkillRef>,
         reply: oneshot::Sender<Result<(), String>>,
     },
     /// Two-phase control: actor writes stdin + registers waiter → returns (request_id, response_rx).
@@ -435,8 +438,8 @@ impl SessionActor {
                 // 1. Commands from IPC layer
                 cmd = cmd_rx.recv() => {
                     match cmd {
-                        Some(ActorCommand::SendMessage { text, attachments, reply }) => {
-                            self.handle_send_message(text, attachments, reply).await;
+                        Some(ActorCommand::SendMessage { text, attachments, skills, reply }) => {
+                            self.handle_send_message(text, attachments, skills, reply).await;
                         }
                         Some(ActorCommand::Stop { reply }) => {
                             let r = self.handle_stop().await;
@@ -599,6 +602,7 @@ impl SessionActor {
         &mut self,
         text: String,
         attachments: Vec<AttachmentData>,
+        skills: Vec<CodexSkillRef>,
         reply: oneshot::Sender<Result<(), String>>,
     ) {
         if self.terminated {
@@ -642,6 +646,7 @@ impl SessionActor {
             ticket_seq: seq,
             text,
             attachments,
+            skills,
             kind,
             turn_index,
             reply,
@@ -751,7 +756,7 @@ impl SessionActor {
 
         // Write to stdin
         let user_uuid = match self
-            .write_user_to_stdin(&ticket.text, &ticket.attachments)
+            .write_user_to_stdin(&ticket.text, &ticket.attachments, &ticket.skills)
             .await
         {
             Ok(uuid) => uuid,
@@ -802,7 +807,7 @@ impl SessionActor {
         self.protocol
             .set_pending_slash_command(Some("/context".to_string()));
 
-        if let Err(e) = self.write_user_to_stdin("/context", &[]).await {
+        if let Err(e) = self.write_user_to_stdin("/context", &[], &[]).await {
             log::warn!("[turn] start_internal: stdin write failed: {}", e);
             self.must_run_internal_for_turn = None;
             self.protocol.set_pending_slash_command(None);
@@ -903,7 +908,7 @@ impl SessionActor {
             ralph.turn_toplevel_texts.clear();
         }
 
-        let user_uuid = match self.write_user_to_stdin(&prompt, &[]).await {
+        let user_uuid = match self.write_user_to_stdin(&prompt, &[], &[]).await {
             Ok(uuid) => uuid,
             Err(e) => {
                 log::error!("[ralph] stdin write failed: {}", e);
@@ -1220,6 +1225,7 @@ impl SessionActor {
         &mut self,
         text: &str,
         attachments: &[AttachmentData],
+        skills: &[CodexSkillRef],
     ) -> Result<String, String> {
         // Codex app-server: frame the user message as turn/start instead of stream-json.
         // Codex takes attachments as local file *paths* (not base64 blocks like Claude):
@@ -1262,7 +1268,7 @@ impl SessionActor {
             let Some(codex) = self.codex.as_mut() else {
                 return Err("codex driver missing".to_string());
             };
-            let lines = codex.frame_user_turn(&augmented, &image_paths, &overrides);
+            let lines = codex.frame_user_turn(&augmented, &image_paths, skills, &overrides);
             for line in &lines {
                 self.write_json_line(line, "codex turn/start").await?;
             }
@@ -1469,6 +1475,34 @@ impl SessionActor {
                 self.control_waiters.insert(request_id.clone(), tx);
                 for line in &lines {
                     self.write_json_line(line, "codex thread/goal/get").await?;
+                }
+                return Ok((request_id, rx));
+            }
+            // Codex MCP runtime status: reuse the shared "mcp_status" subtype (McpStatusPanel)
+            // but route it to mcpServerStatus/list. Reply shape differs from Claude's mcp_status
+            // ({data: McpServerStatus[]}); the frontend normalizes both.
+            "mcp_status" => {
+                let lines = self.codex.as_mut().unwrap().frame_mcp_status(&request_id);
+                if lines.is_empty() {
+                    let _ = tx.send(serde_json::json!({ "ok": false, "error": "no thread" }));
+                    return Ok((request_id, rx));
+                }
+                self.control_waiters.insert(request_id.clone(), tx);
+                for line in &lines {
+                    self.write_json_line(line, "codex mcpServerStatus/list")
+                        .await?;
+                }
+                return Ok((request_id, rx));
+            }
+            "skills_list" => {
+                let lines = self.codex.as_mut().unwrap().frame_skills_list(&request_id);
+                if lines.is_empty() {
+                    let _ = tx.send(serde_json::json!({ "ok": false, "error": "no thread" }));
+                    return Ok((request_id, rx));
+                }
+                self.control_waiters.insert(request_id.clone(), tx);
+                for line in &lines {
+                    self.write_json_line(line, "codex skills/list").await?;
                 }
                 return Ok((request_id, rx));
             }

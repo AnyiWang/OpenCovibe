@@ -11,6 +11,7 @@ use tauri::{AppHandle, Emitter};
 use tokio::sync::oneshot;
 
 use super::session_actor::AttachmentData;
+use super::session_protocol::CodexSkillRef;
 
 // ── Turn types ──
 
@@ -52,6 +53,8 @@ pub struct UserTurnTicket {
     pub ticket_seq: u64,
     pub text: String,
     pub attachments: Vec<AttachmentData>,
+    /// Codex skill picks → structured `{type:"skill"}` input items. Empty for Claude / no skill.
+    pub skills: Vec<CodexSkillRef>,
     pub kind: UserTurnKind,
     pub turn_index: u32,
     pub reply: oneshot::Sender<Result<(), String>>,

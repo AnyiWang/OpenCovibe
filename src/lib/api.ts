@@ -532,16 +532,23 @@ export async function sendSessionMessage(
   runId: string,
   message: string,
   attachments?: Array<{ content_base64: string; media_type: string; filename: string }>,
+  // Structured Codex skill refs — sent as {type:"skill", name, path} UserInput items so the
+  // agent actually triggers the skill. `path` is required by the backend; sourcing name+path
+  // from the runtime skills list (not from typed "/name" text) is what makes this valid.
+  // Omitted/empty = unchanged behavior (Claude + Codex-without-skill).
+  skills?: Array<{ name: string; path: string }>,
 ): Promise<void> {
   dbg("api", "sendSessionMessage", {
     runId,
     msgLen: message.length,
     attachments: attachments?.length ?? 0,
+    skills: skills?.length ?? 0,
   });
   return invoke("send_session_message", {
     runId,
     message,
     attachments: attachments ?? null,
+    skills: skills && skills.length > 0 ? skills : null,
   });
 }
 
@@ -691,6 +698,35 @@ export async function setMaxThinkingTokens(runId: string, tokens: number) {
 
 export async function getMcpStatus(runId: string) {
   return sendSessionControl(runId, "mcp_status");
+}
+
+/** A skill the Codex agent actually sees this session (vs the static file-scan list).
+ *  Mirrors Codex 0.136 `SkillMetadata` (only the fields we render). `scope` is the
+ *  load origin: user | repo | system | admin. */
+export interface CodexRuntimeSkill {
+  name: string;
+  description: string;
+  shortDescription?: string;
+  path: string;
+  scope: "user" | "repo" | "system" | "admin";
+  enabled: boolean;
+}
+
+/** One cwd's resolved skill set, plus any per-skill load errors. Mirrors `SkillsListEntry`. */
+export interface CodexRuntimeSkillsEntry {
+  cwd: string;
+  skills: CodexRuntimeSkill[];
+  errors: { path: string; message: string }[];
+}
+
+/** Ask the live Codex app-server which skills the agent actually loaded this session
+ *  (`skills/list`). Reply shape: `{data: SkillsListEntry[]}`. Caller MUST gate on a live
+ *  Codex session — there is no static fallback here, it speaks to the running process. */
+export async function listCodexSkillsRuntime(
+  runId: string,
+): Promise<{ data: CodexRuntimeSkillsEntry[] }> {
+  const result = await sendSessionControl(runId, "skills_list");
+  return result as unknown as { data: CodexRuntimeSkillsEntry[] };
 }
 
 export async function setMcpServers(runId: string, servers: Record<string, unknown>) {

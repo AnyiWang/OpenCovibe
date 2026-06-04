@@ -2235,11 +2235,20 @@ export class SessionStore {
   }
 
   /** Send a subsequent message in an active session. */
-  async sendMessage(text: string, attachments: Attachment[]): Promise<void> {
+  async sendMessage(
+    text: string,
+    attachments: Attachment[],
+    // Structured Codex skill refs picked in the composer. Threaded to api.sendSessionMessage so
+    // the agent triggers the skill via a {type:"skill"} UserInput item. Live-Codex only (the
+    // picker is gated to that); empty/undefined = unchanged behavior for Claude and no-skill sends.
+    skills?: { name: string; path: string }[],
+  ): Promise<void> {
     if (!this.run) return;
     this.error = "";
     // Invalidate idle snapshot — user is sending a new message
     snapshotCache.deleteSnapshot(this.run.id).catch(() => {});
+
+    const hasSkills = !!skills && skills.length > 0;
 
     try {
       if (
@@ -2247,7 +2256,10 @@ export class SessionStore {
         this.sessionAlive &&
         this.run.agent === "codex" &&
         this.isRunning &&
-        attachments.length === 0
+        attachments.length === 0 &&
+        // Skills must ride on turn/start (the {type:"skill"} UserInput item) — turn/steer takes
+        // plain text only, so a skill-bearing send falls through to the enqueue path below.
+        !hasSkills
       ) {
         // Mid-turn steer (Codex app-server): a turn is RUNNING and the user sends from the
         // mid-turn send button. Inject the text into the CURRENT turn via turn/steer instead
@@ -2262,7 +2274,13 @@ export class SessionStore {
         // Content-based dedup in _reduce(user_message) prevents double display
         // when the backend's UserMessage bus event arrives.
         this._pushOptimisticUser(text, attachments);
-        await api.sendSessionMessage(this.run.id, text, mapAttachments(attachments) ?? undefined);
+        await api.sendSessionMessage(
+          this.run.id,
+          text,
+          mapAttachments(attachments) ?? undefined,
+          hasSkills ? skills : undefined,
+        );
+        if (hasSkills) dbg("skills", "store send with skills", { count: skills!.length });
         if (this.isKnownSlashCommand(text)) {
           dbg("store", "skip response timeout for slash command", { cmd: text.split(" ")[0] });
         } else {
@@ -4270,6 +4288,71 @@ export class SessionStore {
             tokensUsed: ev.goal?.tokensUsed,
           });
         }
+        break;
+      }
+
+      case "codex_hook_run": {
+        // Codex Wave-4 hook lifecycle. `hook/started` arrives with status="running",
+        // then `hook/completed` with a terminal HookRunStatus. hook_id is stable across
+        // the pair, so we UPSERT one timeline entry: update in place on completion rather
+        // than stacking a second card. Distinct hook_ids stay distinct cards.
+        dbg("store", "codex_hook_run", {
+          hook_id: ev.hook_id,
+          event_name: ev.event_name,
+          status: ev.status,
+          duration_ms: ev.duration_ms,
+        });
+        const tl = ctx ? ctx.tl : this.timeline;
+        const idx = tl.findIndex((e) => e.kind === "hook" && e.hookId === ev.hook_id);
+        if (idx >= 0) {
+          const old = tl[idx] as Extract<TimelineEntry, { kind: "hook" }>;
+          const updated: TimelineEntry = {
+            ...old,
+            status: ev.status,
+            // Merge optional fields only when present — `hook/completed` carries
+            // duration/message; `hook/started` may omit them, and we keep the prior value.
+            ...(ev.status_message !== undefined ? { statusMessage: ev.status_message } : {}),
+            ...(ev.duration_ms !== undefined ? { durationMs: ev.duration_ms } : {}),
+          };
+          if (ctx) {
+            ctx.tl[idx] = updated;
+          } else {
+            const u = [...this.timeline];
+            u[idx] = updated;
+            this.timeline = u;
+          }
+        } else {
+          const hookEntryId = uuid();
+          const entry: TimelineEntry = {
+            kind: "hook",
+            id: hookEntryId,
+            anchorId: hookEntryId,
+            hookId: ev.hook_id,
+            eventName: ev.event_name,
+            status: ev.status,
+            ...(ev.status_message !== undefined ? { statusMessage: ev.status_message } : {}),
+            ...(ev.duration_ms !== undefined ? { durationMs: ev.duration_ms } : {}),
+            ts: eventTs(ev),
+          };
+          this._pushTimeline(ctx, entry);
+        }
+        break;
+      }
+
+      case "codex_mcp_status": {
+        // Codex Wave-4: live MCP server startup-state push. Map the raw Codex status to the
+        // panel vocab and upsert store.mcpServers by name so McpStatusPanel updates without a
+        // manual refresh. Unknown server name → append (a server can appear mid-session).
+        const mapped =
+          ev.status === "ready" ? "connected" : ev.status === "starting" ? "pending" : "failed"; // failed | cancelled → failed
+        dbg("store", "codex_mcp_status", { name: ev.name, status: ev.status, mapped });
+        const existing = this.mcpServers.find((s) => s.name === ev.name);
+        const next: McpServerInfo[] = existing
+          ? this.mcpServers.map((s) =>
+              s.name === ev.name ? { ...s, status: mapped, error: ev.error } : s,
+            )
+          : [...this.mcpServers, { name: ev.name, status: mapped, error: ev.error }];
+        this.updateMcpServers(next);
         break;
       }
 

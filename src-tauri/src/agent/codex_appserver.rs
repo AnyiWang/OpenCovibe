@@ -15,8 +15,8 @@
 //! `--enable default_mode_request_user_input` to unlock it in normal sessions.
 
 use crate::agent::session_protocol::{
-    CodexTurnOverrides, LifecycleSignal, ParsedLine, PendingInteractive, PendingKind,
-    SessionProtocol, StartupCtx,
+    CodexSkillRef, CodexTurnOverrides, LifecycleSignal, ParsedLine, PendingInteractive,
+    PendingKind, SessionProtocol, StartupCtx,
 };
 use crate::models::BusEvent;
 use serde_json::{json, Value};
@@ -171,6 +171,21 @@ impl CodexAppServer {
     pub fn frame_goal_clear(&mut self, request_id: &str) -> Vec<Value> {
         self.frame_tracked(request_id, "thread/goal/clear", json!({}))
     }
+
+    /// Frame `mcpServerStatus/list` — read runtime status of every configured MCP server.
+    /// Response: `{data: McpServerStatus[], nextCursor}` where each entry carries
+    /// `{name, serverInfo, tools, resources, authStatus}`. Note this is a DIFFERENT shape than
+    /// Claude's `mcp_status` reply — the frontend normalizes both. `threadId` scopes the query.
+    pub fn frame_mcp_status(&mut self, request_id: &str) -> Vec<Value> {
+        self.frame_tracked(request_id, "mcpServerStatus/list", json!({}))
+    }
+
+    /// Frame `skills/list` — the skills the agent actually sees this session (vs the static
+    /// file scan in the Extend page). Response: `{data: SkillsListEntry[]}` where each entry is
+    /// `{cwd, skills: SkillMetadata[], errors}`. We omit `cwds` so it defaults to the session cwd.
+    pub fn frame_skills_list(&mut self, request_id: &str) -> Vec<Value> {
+        self.frame_tracked(request_id, "skills/list", json!({}))
+    }
 }
 
 /// The request_id we surface for a server request = its stringified json-rpc id.
@@ -254,6 +269,7 @@ impl SessionProtocol for CodexAppServer {
         &mut self,
         text: &str,
         image_paths: &[String],
+        skills: &[CodexSkillRef],
         overrides: &CodexTurnOverrides,
     ) -> Vec<Value> {
         let thread_id = match &self.thread_id {
@@ -263,11 +279,17 @@ impl SessionProtocol for CodexAppServer {
                 return vec![];
             }
         };
-        let mut input = vec![json!({
+        // Skill directives lead the input (they scope the turn), then the user text, then images.
+        // Codex only triggers a skill via this typed `{type:"skill"}` item — not via `/name` text.
+        let mut input: Vec<Value> = skills
+            .iter()
+            .map(|s| json!({ "type": "skill", "name": s.name, "path": s.path }))
+            .collect();
+        input.push(json!({
             "type": "text",
             "text": text,
             "text_elements": []
-        })];
+        }));
         for path in image_paths {
             input.push(json!({ "type": "localImage", "path": path }));
         }
@@ -736,6 +758,71 @@ impl CodexAppServer {
             }
             // TODO(wave1): diff panel — surface turn/diff/updated as a reviewable diff view.
             "turn/diff/updated" => {}
+            // Hook lifecycle: started fires when a hook begins, completed when it finishes (with a
+            // terminal HookRunStatus + duration). Both carry the full HookRunSummary at `run`; the
+            // stable `run.id` lets the frontend update one card in place instead of stacking.
+            "hook/started" | "hook/completed" => {
+                if let Some(ev) = hook_run_event(run_id, method, params) {
+                    out.events.push(ev);
+                }
+            }
+            // MCP tool-call progress: append the human message into the open MCP tool card (keyed
+            // by itemId == ToolStart's tool_use_id), reusing the same delta path as shell output.
+            "item/mcpToolCall/progress" => {
+                if let (Some(id), Some(msg)) = (
+                    params.get("itemId").and_then(|v| v.as_str()),
+                    params.get("message").and_then(|v| v.as_str()),
+                ) {
+                    if !id.is_empty() && !msg.is_empty() {
+                        out.events.push(BusEvent::ToolOutputDelta {
+                            run_id: run_id.to_string(),
+                            tool_use_id: id.to_string(),
+                            delta: format!("{msg}\n"),
+                            parent_tool_use_id: None,
+                        });
+                    }
+                }
+            }
+            // Guardian auto-approval review → a concise notice so auto-approved/denied actions are
+            // visible. Only the terminal `completed` is surfaced (started would double the noise).
+            // Upstream marks this payload [UNSTABLE] — extract defensively, never hard-depend on it.
+            "item/autoApprovalReview/completed" => {
+                if let Some(content) = guardian_notice(params) {
+                    out.events.push(BusEvent::CommandOutput {
+                        run_id: run_id.to_string(),
+                        content,
+                    });
+                }
+            }
+            // MCP server startup-state change → live-update the status panel (no manual refresh).
+            // params = {name, status: "starting"|"ready"|"failed"|"cancelled", error: string|null}.
+            "mcpServer/startupStatus/updated" => {
+                if let Some(name) = params.get("name").and_then(|v| v.as_str()) {
+                    let status = params
+                        .get("status")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("starting")
+                        .to_string();
+                    let error = params
+                        .get("error")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
+                    out.events.push(BusEvent::CodexMcpStatus {
+                        run_id: run_id.to_string(),
+                        name: name.to_string(),
+                        status,
+                        error,
+                    });
+                }
+            }
+            // Skills changed on disk mid-session → emit a notice so the user knows the runtime
+            // skill set shifted (the Extend panel / autocomplete re-fetch via skills/list on demand).
+            "skills/changed" => {
+                out.events.push(BusEvent::CommandOutput {
+                    run_id: run_id.to_string(),
+                    content: "[notice] skills changed".to_string(),
+                });
+            }
             _ => {} // process/* deltas, realtime, fs, status — ignored in v1.
         }
     }
@@ -996,6 +1083,95 @@ fn token_usage_event(run_id: &str, params: &Value) -> Option<BusEvent> {
     })
 }
 
+/// Map `hook/started` | `hook/completed` to a `CodexHookRun` event. Both notifications carry the
+/// full HookRunSummary at `run`; `run.id` is stable across the started→completed pair so the
+/// frontend upserts one card. On `started` we force status "running" (the summary's status field
+/// is not yet terminal); on `completed` we pass through the terminal HookRunStatus.
+fn hook_run_event(run_id: &str, method: &str, params: &Value) -> Option<BusEvent> {
+    let run = params.get("run")?;
+    let hook_id = run.get("id").and_then(|v| v.as_str())?.to_string();
+    let event_name = run
+        .get("eventName")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let status = if method == "hook/started" {
+        "running".to_string()
+    } else {
+        run.get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("completed")
+            .to_string()
+    };
+    let status_message = run
+        .get("statusMessage")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let duration_ms = run.get("durationMs").and_then(|v| v.as_u64());
+    Some(BusEvent::CodexHookRun {
+        run_id: run_id.to_string(),
+        hook_id,
+        event_name,
+        status,
+        status_message,
+        duration_ms,
+    })
+}
+
+/// Build a one-line `[guardian]` notice from an `item/autoApprovalReview/completed` payload.
+/// The shape is [UNSTABLE] upstream, so every field is best-effort: we summarize the reviewed
+/// action (command / patch / mcp tool / network) and the review status/rationale when present,
+/// and fall back to a bare notice rather than dropping the signal.
+fn guardian_notice(params: &Value) -> Option<String> {
+    let action = params.get("action");
+    let what = action
+        .and_then(|a| a.get("type"))
+        .and_then(|v| v.as_str())
+        .map(|t| match t {
+            "command" | "execve" => {
+                let cmd = action
+                    .and_then(|a| a.get("command").or_else(|| a.get("program")))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("command");
+                format!("command `{cmd}`")
+            }
+            "applyPatch" => "file edit".to_string(),
+            "mcpToolCall" => {
+                let tool = action
+                    .and_then(|a| a.get("toolName"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("tool");
+                format!("MCP tool `{tool}`")
+            }
+            "networkAccess" => {
+                let host = action
+                    .and_then(|a| a.get("host"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("network");
+                format!("network access to {host}")
+            }
+            other => other.to_string(),
+        })
+        .unwrap_or_else(|| "action".to_string());
+    let status = params
+        .get("review")
+        .and_then(|r| r.get("status"))
+        .and_then(|v| v.as_str());
+    let rationale = params
+        .get("review")
+        .and_then(|r| r.get("rationale"))
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty());
+    let head = match status {
+        Some(s) => format!("[guardian] auto-review {s}: {what}"),
+        None => format!("[guardian] auto-review: {what}"),
+    };
+    Some(match rationale {
+        Some(r) => format!("{head} — {r}"),
+        None => head,
+    })
+}
+
 /// Map `turn/plan/updated` to a TodoWrite ToolStart+ToolEnd pair so the plan renders in the
 /// existing TodoWrite card. Reuses pipe_parser's `newTodos` shape: `{content, status,
 /// activeForm}` with status one of pending|in_progress|completed. The tool_use_id is derived
@@ -1102,6 +1278,11 @@ mod tests {
         CodexTurnOverrides::default()
     }
 
+    /// No skill directives — the common case for turns that aren't skill invocations.
+    fn no_skills() -> &'static [CodexSkillRef] {
+        &[]
+    }
+
     #[test]
     fn startup_new_thread() {
         let mut s = CodexAppServer::new();
@@ -1143,9 +1324,11 @@ mod tests {
     #[test]
     fn user_turn_requires_thread_id() {
         let mut s = CodexAppServer::new();
-        assert!(s.frame_user_turn("hi", &[], &no_overrides()).is_empty());
+        assert!(s
+            .frame_user_turn("hi", &[], no_skills(), &no_overrides())
+            .is_empty());
         let mut s = ready_server();
-        let msgs = s.frame_user_turn("hi", &[], &no_overrides());
+        let msgs = s.frame_user_turn("hi", &[], no_skills(), &no_overrides());
         assert_eq!(msgs[0]["method"], "turn/start");
         assert_eq!(msgs[0]["params"]["threadId"], "th-123");
         assert_eq!(msgs[0]["params"]["input"][0]["text"], "hi");
@@ -1159,7 +1342,12 @@ mod tests {
     #[test]
     fn user_turn_attaches_local_images() {
         let mut s = ready_server();
-        let msgs = s.frame_user_turn("describe this", &["/x/a.png".to_string()], &no_overrides());
+        let msgs = s.frame_user_turn(
+            "describe this",
+            &["/x/a.png".to_string()],
+            no_skills(),
+            &no_overrides(),
+        );
         let input = &msgs[0]["params"]["input"];
         // text first, then one localImage item per path.
         assert_eq!(input[0]["type"], "text");
@@ -1167,8 +1355,45 @@ mod tests {
         assert_eq!(input[1]["type"], "localImage");
         assert_eq!(input[1]["path"], "/x/a.png");
         // No images → no localImage items.
-        let none = s.frame_user_turn("hi", &[], &no_overrides());
+        let none = s.frame_user_turn("hi", &[], no_skills(), &no_overrides());
         assert_eq!(none[0]["params"]["input"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn user_turn_leads_input_with_skill_items() {
+        let mut s = ready_server();
+        // P-2 skill send: Codex only triggers a skill via a typed {type:"skill"} item, so skills
+        // must LEAD params.input, then the text item, then any localImage items.
+        let skills = [
+            CodexSkillRef {
+                name: "review".into(),
+                path: "/skills/review.md".into(),
+            },
+            CodexSkillRef {
+                name: "lint".into(),
+                path: "/skills/lint.md".into(),
+            },
+        ];
+        let msgs = s.frame_user_turn("go", &["/x/a.png".to_string()], &skills, &no_overrides());
+        let input = &msgs[0]["params"]["input"];
+        // input[0..2] = skill items in order with name+path; input[2] = text; input[3] = image.
+        assert_eq!(input[0]["type"], "skill");
+        assert_eq!(input[0]["name"], "review");
+        assert_eq!(input[0]["path"], "/skills/review.md");
+        assert_eq!(input[1]["type"], "skill");
+        assert_eq!(input[1]["name"], "lint");
+        assert_eq!(input[1]["path"], "/skills/lint.md");
+        assert_eq!(input[2]["type"], "text");
+        assert_eq!(input[2]["text"], "go");
+        assert_eq!(input[3]["type"], "localImage");
+        assert_eq!(input[3]["path"], "/x/a.png");
+
+        // Empty skills → no regression: input[0] is the text item (no skill items leading).
+        let plain = s.frame_user_turn("go", &[], no_skills(), &no_overrides());
+        let pin = &plain[0]["params"]["input"];
+        assert_eq!(pin.as_array().unwrap().len(), 1);
+        assert_eq!(pin[0]["type"], "text");
+        assert_eq!(pin[0]["text"], "go");
     }
 
     #[test]
@@ -1180,7 +1405,7 @@ mod tests {
             model: Some("gpt-5-codex".into()),
             effort: Some("high".into()),
         };
-        let msgs = s.frame_user_turn("go", &[], &overrides);
+        let msgs = s.frame_user_turn("go", &[], no_skills(), &overrides);
         let params = &msgs[0]["params"];
         assert_eq!(params["approvalPolicy"], "never");
         assert_eq!(params["sandboxPolicy"]["type"], "dangerFullAccess");
@@ -1191,7 +1416,7 @@ mod tests {
             model: Some("gpt-5".into()),
             ..Default::default()
         };
-        let msgs = s.frame_user_turn("go", &[], &partial);
+        let msgs = s.frame_user_turn("go", &[], no_skills(), &partial);
         assert_eq!(msgs[0]["params"]["model"], "gpt-5");
         assert!(msgs[0]["params"].get("approvalPolicy").is_none());
         assert!(msgs[0]["params"].get("sandboxPolicy").is_none());
@@ -1524,6 +1749,260 @@ mod tests {
         assert!(out.events.is_empty());
     }
 
+    // ── Wave-4 ecosystem notifications: hook lifecycle, MCP progress, guardian, skills ──
+
+    #[test]
+    fn hook_started_emits_running_codex_hook_run() {
+        let mut s = ready_server();
+        // HookStartedNotification: { threadId, turnId, run: HookRunSummary }. On started the
+        // summary's own status is "running"; the parser forces "running" regardless.
+        let out = s.parse_line(
+            "r",
+            r#"{"method":"hook/started","params":{"threadId":"th-123","turnId":"t-1","run":{
+                "id":"hook-run-7","eventName":"preToolUse","handlerType":"command",
+                "executionMode":"blocking","scope":"project","sourcePath":"/x/.codex/hooks.toml",
+                "source":"local","displayOrder":0,"status":"running","statusMessage":null,
+                "startedAt":1711900000,"completedAt":null,"durationMs":null,"entries":[]
+            }}}"#,
+        );
+        assert_eq!(out.events.len(), 1);
+        match &out.events[0] {
+            BusEvent::CodexHookRun {
+                hook_id,
+                event_name,
+                status,
+                status_message,
+                duration_ms,
+                ..
+            } => {
+                assert_eq!(hook_id, "hook-run-7");
+                assert_eq!(event_name, "preToolUse");
+                assert_eq!(status, "running");
+                assert_eq!(status_message.as_deref(), None);
+                assert_eq!(*duration_ms, None);
+            }
+            e => panic!("expected CodexHookRun, got {e:?}"),
+        }
+    }
+
+    #[test]
+    fn hook_completed_passes_through_terminal_status_and_duration() {
+        let mut s = ready_server();
+        // HookCompletedNotification carries the terminal HookRunStatus + durationMs. The stable
+        // run.id matches the started event so the frontend upserts a single card.
+        let out = s.parse_line(
+            "r",
+            r#"{"method":"hook/completed","params":{"threadId":"th-123","turnId":"t-1","run":{
+                "id":"hook-run-7","eventName":"postToolUse","handlerType":"command",
+                "executionMode":"blocking","scope":"project","sourcePath":"/x/.codex/hooks.toml",
+                "source":"local","displayOrder":0,"status":"blocked","statusMessage":"denied by policy",
+                "startedAt":1711900000,"completedAt":1711900002,"durationMs":1234,"entries":[]
+            }}}"#,
+        );
+        assert_eq!(out.events.len(), 1);
+        match &out.events[0] {
+            BusEvent::CodexHookRun {
+                hook_id,
+                event_name,
+                status,
+                status_message,
+                duration_ms,
+                ..
+            } => {
+                assert_eq!(hook_id, "hook-run-7");
+                assert_eq!(event_name, "postToolUse");
+                assert_eq!(status, "blocked");
+                assert_eq!(status_message.as_deref(), Some("denied by policy"));
+                assert_eq!(*duration_ms, Some(1234));
+            }
+            e => panic!("expected CodexHookRun, got {e:?}"),
+        }
+    }
+
+    #[test]
+    fn hook_event_missing_run_or_id_is_dropped() {
+        let mut s = ready_server();
+        // No `run` object → nothing to surface (defensive against partial upstream payloads).
+        let out = s.parse_line(
+            "r",
+            r#"{"method":"hook/started","params":{"threadId":"th-123"}}"#,
+        );
+        assert!(out.events.is_empty());
+        // `run` present but no stable id → can't key a card, drop.
+        let out = s.parse_line(
+            "r",
+            r#"{"method":"hook/completed","params":{"run":{"eventName":"stop","status":"completed"}}}"#,
+        );
+        assert!(out.events.is_empty());
+    }
+
+    #[test]
+    fn mcp_tool_call_progress_to_tool_output_delta() {
+        let mut s = ready_server();
+        // McpToolCallProgressNotification: { threadId, turnId, itemId, message }. Appends to the
+        // open MCP tool card keyed by itemId, with a trailing newline like shell output.
+        let out = s.parse_line(
+            "r",
+            r#"{"method":"item/mcpToolCall/progress","params":{"threadId":"th-123","turnId":"t-1","itemId":"call_mcp_1","message":"fetching page 3/10"}}"#,
+        );
+        assert_eq!(out.events.len(), 1);
+        match &out.events[0] {
+            BusEvent::ToolOutputDelta {
+                tool_use_id, delta, ..
+            } => {
+                assert_eq!(tool_use_id, "call_mcp_1");
+                assert_eq!(delta, "fetching page 3/10\n");
+            }
+            e => panic!("expected ToolOutputDelta, got {e:?}"),
+        }
+        // Empty itemId or empty message → no event (can't key a card / nothing to append).
+        let out = s.parse_line(
+            "r",
+            r#"{"method":"item/mcpToolCall/progress","params":{"itemId":"","message":"x"}}"#,
+        );
+        assert!(out.events.is_empty());
+        let out = s.parse_line(
+            "r",
+            r#"{"method":"item/mcpToolCall/progress","params":{"itemId":"call_mcp_1","message":""}}"#,
+        );
+        assert!(out.events.is_empty());
+    }
+
+    #[test]
+    fn guardian_auto_review_to_command_output() {
+        let mut s = ready_server();
+        // ItemGuardianApprovalReviewCompletedNotification [UNSTABLE]: action describes the reviewed
+        // action, review carries status + rationale. Command action → "command `...`".
+        let out = s.parse_line(
+            "r",
+            r#"{"method":"item/autoApprovalReview/completed","params":{
+                "threadId":"th-123","turnId":"t-1","startedAtMs":1,"completedAtMs":2,
+                "reviewId":"rev-1","targetItemId":"call_1","decisionSource":"model",
+                "action":{"type":"command","source":"shell","command":"rm -rf build","cwd":"/x"},
+                "review":{"status":"approved","riskLevel":"low","userAuthorization":null,"rationale":"safe within workspace"}
+            }}"#,
+        );
+        assert_eq!(out.events.len(), 1);
+        match &out.events[0] {
+            BusEvent::CommandOutput { content, .. } => {
+                assert_eq!(
+                    content,
+                    "[guardian] auto-review approved: command `rm -rf build` — safe within workspace"
+                );
+            }
+            e => panic!("expected CommandOutput, got {e:?}"),
+        }
+    }
+
+    #[test]
+    fn guardian_auto_review_action_variants() {
+        let mut s = ready_server();
+        // applyPatch → "file edit"; no rationale → no trailing "— ...".
+        let out = s.parse_line(
+            "r",
+            r#"{"method":"item/autoApprovalReview/completed","params":{
+                "action":{"type":"applyPatch","cwd":"/x","files":["/x/a.rs"]},
+                "review":{"status":"denied","rationale":null}
+            }}"#,
+        );
+        match &out.events[0] {
+            BusEvent::CommandOutput { content, .. } => {
+                assert_eq!(content, "[guardian] auto-review denied: file edit");
+            }
+            e => panic!("expected CommandOutput, got {e:?}"),
+        }
+        // mcpToolCall → uses toolName; networkAccess → uses host.
+        let out = s.parse_line(
+            "r",
+            r#"{"method":"item/autoApprovalReview/completed","params":{
+                "action":{"type":"mcpToolCall","server":"srv","toolName":"search","connectorId":null,"connectorName":null,"toolTitle":null},
+                "review":{"status":"approved","rationale":"read-only"}
+            }}"#,
+        );
+        match &out.events[0] {
+            BusEvent::CommandOutput { content, .. } => {
+                assert_eq!(
+                    content,
+                    "[guardian] auto-review approved: MCP tool `search` — read-only"
+                );
+            }
+            e => panic!("expected CommandOutput, got {e:?}"),
+        }
+        let out = s.parse_line(
+            "r",
+            r#"{"method":"item/autoApprovalReview/completed","params":{
+                "action":{"type":"networkAccess","target":"example.com","host":"example.com","protocol":"https","port":443},
+                "review":{"status":"timedOut"}
+            }}"#,
+        );
+        match &out.events[0] {
+            BusEvent::CommandOutput { content, .. } => {
+                assert_eq!(
+                    content,
+                    "[guardian] auto-review timedOut: network access to example.com"
+                );
+            }
+            e => panic!("expected CommandOutput, got {e:?}"),
+        }
+    }
+
+    #[test]
+    fn skills_changed_to_notice() {
+        let mut s = ready_server();
+        // SkillsChangedNotification is an empty object — invalidation signal only.
+        let out = s.parse_line("r", r#"{"method":"skills/changed","params":{}}"#);
+        assert_eq!(out.events.len(), 1);
+        match &out.events[0] {
+            BusEvent::CommandOutput { content, .. } => {
+                assert_eq!(content, "[notice] skills changed");
+            }
+            e => panic!("expected CommandOutput, got {e:?}"),
+        }
+    }
+
+    #[test]
+    fn mcp_startup_status_to_codex_mcp_status() {
+        let mut s = ready_server();
+        // Real codex 0.137 shape: starting → then failed with an error string.
+        let out = s.parse_line(
+            "r",
+            r#"{"method":"mcpServer/startupStatus/updated","params":{"name":"codex_apps","status":"starting","error":null}}"#,
+        );
+        assert_eq!(out.events.len(), 1);
+        match &out.events[0] {
+            BusEvent::CodexMcpStatus {
+                name,
+                status,
+                error,
+                ..
+            } => {
+                assert_eq!(name, "codex_apps");
+                assert_eq!(status, "starting");
+                assert_eq!(error.as_deref(), None);
+            }
+            e => panic!("expected CodexMcpStatus, got {e:?}"),
+        }
+
+        let out = s.parse_line(
+            "r",
+            r#"{"method":"mcpServer/startupStatus/updated","params":{"name":"codex_apps","status":"failed","error":"handshake failed"}}"#,
+        );
+        match &out.events[0] {
+            BusEvent::CodexMcpStatus { status, error, .. } => {
+                assert_eq!(status, "failed");
+                assert_eq!(error.as_deref(), Some("handshake failed"));
+            }
+            e => panic!("expected CodexMcpStatus, got {e:?}"),
+        }
+
+        // Missing name → dropped (no server to address).
+        let out = s.parse_line(
+            "r",
+            r#"{"method":"mcpServer/startupStatus/updated","params":{"status":"ready"}}"#,
+        );
+        assert!(out.events.is_empty());
+    }
+
     #[test]
     fn rate_limits_updated_to_rate_limit_event() {
         let mut s = ready_server();
@@ -1662,7 +2141,7 @@ mod tests {
         assert!(s.is_ready(), "id:2 reply must mark Ready");
         assert_eq!(out.thread_id.as_deref(), Some("th-ack"));
         // frame_user_turn now has a thread id and emits turn/start (not dropped).
-        let msgs = s.frame_user_turn("hi", &[], &no_overrides());
+        let msgs = s.frame_user_turn("hi", &[], no_skills(), &no_overrides());
         assert_eq!(msgs[0]["params"]["threadId"], "th-ack");
     }
 
@@ -1869,7 +2348,7 @@ mod tests {
                     if !sent && driver.is_ready() {
                         sent = true;
                         let prompt = "Run the shell command: echo hi > probe.txt  (create that file now).";
-                        for msg in driver.frame_user_turn(prompt, &[], &no_overrides()) {
+                        for msg in driver.frame_user_turn(prompt, &[], no_skills(), &no_overrides()) {
                             let mut l = serde_json::to_string(&msg).unwrap();
                             l.push('\n');
                             stdin.write_all(l.as_bytes()).await.unwrap();
@@ -1971,7 +2450,7 @@ mod tests {
                         let prompt = "Call request_user_input to ask me ONE multiple-choice \
                                       question: header \"Pick\", question \"A or B?\", options \
                                       A and B. Call that tool now, before anything else.";
-                        for msg in driver.frame_user_turn(prompt, &[], &no_overrides()) {
+                        for msg in driver.frame_user_turn(prompt, &[], no_skills(), &no_overrides()) {
                             let mut l = serde_json::to_string(&msg).unwrap();
                             l.push('\n');
                             stdin.write_all(l.as_bytes()).await.unwrap();

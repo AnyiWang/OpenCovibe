@@ -67,6 +67,7 @@
   import type { PromptInputSnapshot } from "$lib/types";
   import MarkdownContent from "$lib/components/MarkdownContent.svelte";
   import HookReviewCard from "$lib/components/HookReviewCard.svelte";
+  import HookExecutionCard from "$lib/components/HookExecutionCard.svelte";
   import ContextUsageGrid from "$lib/components/ContextUsageGrid.svelte";
   import CostSummaryView from "$lib/components/CostSummaryView.svelte";
   import { parseContextMarkdown } from "$lib/utils/context-parser";
@@ -183,6 +184,11 @@
   }
   /** Preloaded skill details from filesystem (has descriptions). */
   let preloadedSkills = $state<import("$lib/types").StandaloneSkill[]>([]);
+  /** Skills the live Codex agent actually loaded this session (name + path), from the app-server
+   *  `skills/list` runtime query. `path` is required to send a skill as a structured
+   *  {type:"skill"} UserInput. Empty unless there's a live Codex session — the composer skill
+   *  picker is gated on this being non-empty so we never offer a skill we can't actually send. */
+  let codexRuntimeSkills = $state<{ name: string; path: string; description: string }[]>([]);
   /** Preloaded agent definitions from filesystem. */
   let preloadedAgents = $state<import("$lib/types").AgentDefinitionSummary[]>([]);
   /** Project-level commands from {cwd}/.claude/commands/ + ~/.claude/commands/. */
@@ -1015,6 +1021,40 @@
       }));
     }
     return preloadedSkills.map((s) => ({ name: s.name, description: s.description }));
+  });
+
+  /** Race guard for the runtime skills query (run can switch mid-flight). */
+  let codexSkillsGen = 0;
+  /** Source the live Codex agent's loaded skills via app-server `skills/list`. Gated to a live
+   *  Codex session — no session means no process to ask, so we clear and the picker stays hidden
+   *  (avoids offering skills we can't send). Runs once per (runId, sessionAlive) transition. */
+  $effect(() => {
+    const runId = store.run?.id;
+    const live = effectiveAgent === "codex" && store.sessionAlive && !!runId;
+    if (!live) {
+      if (codexRuntimeSkills.length > 0) codexRuntimeSkills = [];
+      return;
+    }
+    const gen = ++codexSkillsGen;
+    dbg("skills", "fetch runtime skills", { runId });
+    api
+      .listCodexSkillsRuntime(runId!)
+      .then((res) => {
+        if (gen !== codexSkillsGen) return; // run/session changed while in flight
+        // Flatten every cwd entry's enabled skills; only enabled ones can actually trigger.
+        const flat = res.data.flatMap((entry) =>
+          entry.skills
+            .filter((s) => s.enabled)
+            .map((s) => ({
+              name: s.name,
+              path: s.path,
+              description: s.shortDescription ?? s.description ?? "",
+            })),
+        );
+        codexRuntimeSkills = flat;
+        dbg("skills", "runtime skills loaded", { count: flat.length });
+      })
+      .catch((e) => dbgWarn("skills", "listCodexSkillsRuntime failed", e));
   });
 
   // ── Per-turn usage annotations in timeline ──
@@ -2049,7 +2089,13 @@
 
   // ── Send message ──
 
-  async function sendMessage(text: string, attachments: Attachment[]) {
+  async function sendMessage(
+    text: string,
+    attachments: Attachment[],
+    // Codex skill refs picked in the composer (live-Codex only). Forwarded to store.sendMessage,
+    // which threads them to the structured {type:"skill"} send. Empty for Claude / no-skill sends.
+    skills?: { name: string; path: string }[],
+  ) {
     if (!text.trim()) return;
 
     store.error = "";
@@ -2169,7 +2215,7 @@
         // sidebar afterward so its status badge leaves the stale "stopped" state.
         const wasStoppedCodex =
           store.useStreamSession && !store.sessionAlive && store.run?.agent === "codex";
-        await store.sendMessage(text, attachments);
+        await store.sendMessage(text, attachments, skills);
         if (wasStoppedCodex) window.dispatchEvent(new Event("ocv:runs-changed"));
         requestAnimationFrame(() => promptRef?.focus());
       }
@@ -4515,6 +4561,7 @@
           runId={store.run?.id ?? ""}
           mcpServers={store.mcpServers}
           sessionAlive={store.sessionAlive}
+          agent={effectiveAgent}
           onClose={() => (mcpPanelOpen = false)}
           onServersUpdate={(servers) => {
             store.updateMcpServers(servers);
@@ -4926,6 +4973,13 @@
                           </div>
                         </div>
                       </div>
+                    {:else if entry.kind === "hook"}
+                      <HookExecutionCard
+                        eventName={entry.eventName}
+                        status={entry.status}
+                        statusMessage={entry.statusMessage}
+                        durationMs={entry.durationMs}
+                      />
                     {/if}
                   </div>
                 {/if}
@@ -5583,6 +5637,7 @@
         onShortcutHelp={() => (shortcutHelpOpen = !shortcutHelpOpen)}
         availableSkills={store.availableSkills}
         {skillItems}
+        codexSkillItems={codexRuntimeSkills}
         agents={preloadedAgents.map((a) => ({ name: a.name, description: a.description }))}
         hasStash={!!stashedInput}
         {userHistory}

@@ -5974,6 +5974,7 @@ describe("sendMessage routing", () => {
       "codex-idle",
       "next task please",
       undefined,
+      undefined, // no skills
     );
     expect(api.steerSession).not.toHaveBeenCalled();
   });
@@ -5985,7 +5986,12 @@ describe("sendMessage routing", () => {
     await store.sendMessage("more detail", []);
 
     expect(api.steerSession).not.toHaveBeenCalled();
-    expect(api.sendSessionMessage).toHaveBeenCalledWith("claude-run", "more detail", undefined);
+    expect(api.sendSessionMessage).toHaveBeenCalledWith(
+      "claude-run",
+      "more detail",
+      undefined,
+      undefined, // no skills
+    );
   });
 
   it("falls through to enqueue when a running Codex send carries attachments", async () => {
@@ -5999,6 +6005,37 @@ describe("sendMessage routing", () => {
     // turn/steer takes plain text only — attachments use the normal enqueue path.
     expect(api.steerSession).not.toHaveBeenCalled();
     expect(api.sendSessionMessage).toHaveBeenCalled();
+  });
+
+  it("forwards picked Codex skills to sendSessionMessage", async () => {
+    store.run = makeRun("codex-skill", { agent: "codex", status: "running" });
+    store.phase = "idle"; // sessionAlive but not running → enqueue path
+
+    const skills = [{ name: "find-bugs", path: "/abs/find-bugs/SKILL.md" }];
+    await store.sendMessage("scan this", [], skills);
+
+    expect(api.sendSessionMessage).toHaveBeenCalledWith(
+      "codex-skill",
+      "scan this",
+      undefined,
+      skills,
+    );
+  });
+
+  it("does NOT steer a running Codex turn when skills are attached (skills need turn/start)", async () => {
+    store.run = makeRun("codex-skill-run", { agent: "codex", status: "running" });
+    store.phase = "running"; // running → would normally steer, but skills force enqueue
+
+    const skills = [{ name: "find-bugs", path: "/abs/find-bugs/SKILL.md" }];
+    await store.sendMessage("scan this", [], skills);
+
+    expect(api.steerSession).not.toHaveBeenCalled();
+    expect(api.sendSessionMessage).toHaveBeenCalledWith(
+      "codex-skill-run",
+      "scan this",
+      undefined,
+      skills,
+    );
   });
 });
 
@@ -6126,5 +6163,215 @@ describe("SessionStore — Codex Wave-3 (goal + rewind)", () => {
       expect(store.streamingText).toBe("");
       expect(store.thinkingText).toBe("");
     });
+  });
+});
+
+// ── Codex Wave-4: codex_hook_run reducer (hook lifecycle upsert) ──
+
+describe("SessionStore — Codex Wave-4 (hook lifecycle)", () => {
+  let store: SessionStore;
+
+  beforeEach(() => {
+    store = new SessionStore();
+    store.run = makeRun("codex-w4", { agent: "codex" });
+    store.phase = "running";
+  });
+
+  function hookEntries() {
+    return store.timeline.filter((e) => e.kind === "hook") as Extract<
+      (typeof store.timeline)[number],
+      { kind: "hook" }
+    >[];
+  }
+
+  it("creates a running hook card on hook/started", () => {
+    store.applyEvent({
+      type: "codex_hook_run",
+      run_id: "codex-w4",
+      hook_id: "hook-run-7",
+      event_name: "preToolUse",
+      status: "running",
+    } as BusEvent);
+
+    const hooks = hookEntries();
+    expect(hooks).toHaveLength(1);
+    expect(hooks[0].hookId).toBe("hook-run-7");
+    expect(hooks[0].eventName).toBe("preToolUse");
+    expect(hooks[0].status).toBe("running");
+    // started carries no duration/message → optional fields stay unset.
+    expect(hooks[0].durationMs).toBeUndefined();
+    expect(hooks[0].statusMessage).toBeUndefined();
+  });
+
+  it("upserts: completed updates the SAME entry, not a second card", () => {
+    store.applyEvent({
+      type: "codex_hook_run",
+      run_id: "codex-w4",
+      hook_id: "hook-run-7",
+      event_name: "preToolUse",
+      status: "running",
+    } as BusEvent);
+    const startedId = hookEntries()[0].id;
+
+    store.applyEvent({
+      type: "codex_hook_run",
+      run_id: "codex-w4",
+      hook_id: "hook-run-7",
+      event_name: "preToolUse",
+      status: "completed",
+      duration_ms: 1234,
+    } as BusEvent);
+
+    const hooks = hookEntries();
+    // Still ONE card — keyed by hook_id, updated in place.
+    expect(hooks).toHaveLength(1);
+    expect(hooks[0].id).toBe(startedId);
+    expect(hooks[0].status).toBe("completed");
+    expect(hooks[0].durationMs).toBe(1234);
+  });
+
+  it("merges status_message on completion while keeping prior fields", () => {
+    store.applyEvent({
+      type: "codex_hook_run",
+      run_id: "codex-w4",
+      hook_id: "hook-run-8",
+      event_name: "permissionRequest",
+      status: "running",
+    } as BusEvent);
+    store.applyEvent({
+      type: "codex_hook_run",
+      run_id: "codex-w4",
+      hook_id: "hook-run-8",
+      event_name: "permissionRequest",
+      status: "blocked",
+      status_message: "denied by policy",
+      duration_ms: 42,
+    } as BusEvent);
+
+    const hooks = hookEntries();
+    expect(hooks).toHaveLength(1);
+    expect(hooks[0].status).toBe("blocked");
+    expect(hooks[0].statusMessage).toBe("denied by policy");
+    expect(hooks[0].durationMs).toBe(42);
+    // eventName from the started event is preserved across the upsert.
+    expect(hooks[0].eventName).toBe("permissionRequest");
+  });
+
+  it("keeps distinct hook_ids as distinct cards", () => {
+    store.applyEvent({
+      type: "codex_hook_run",
+      run_id: "codex-w4",
+      hook_id: "hook-a",
+      event_name: "preToolUse",
+      status: "running",
+    } as BusEvent);
+    store.applyEvent({
+      type: "codex_hook_run",
+      run_id: "codex-w4",
+      hook_id: "hook-b",
+      event_name: "postToolUse",
+      status: "running",
+    } as BusEvent);
+
+    const hooks = hookEntries();
+    expect(hooks).toHaveLength(2);
+    expect(hooks.map((h) => h.hookId).sort()).toEqual(["hook-a", "hook-b"]);
+  });
+
+  it("is a known event type under strictMode (0 unknown, no throw)", () => {
+    // codex_hook_run must hit its reducer case, not the `default` unknown branch.
+    const strict = new SessionStore();
+    strict.strictMode = true;
+    strict.run = makeRun("codex-w4", { agent: "codex" });
+    strict.phase = "running";
+    expect(() =>
+      strict.applyEventBatch([
+        {
+          type: "codex_hook_run",
+          run_id: "codex-w4",
+          hook_id: "hook-strict",
+          event_name: "sessionStart",
+          status: "running",
+        },
+        {
+          type: "codex_hook_run",
+          run_id: "codex-w4",
+          hook_id: "hook-strict",
+          event_name: "sessionStart",
+          status: "completed",
+          duration_ms: 5,
+        },
+      ] as BusEvent[]),
+    ).not.toThrow();
+    expect(strict.unknownEventCount).toBe(0);
+    expect(strict.rawFallbackCount).toBe(0);
+  });
+});
+
+// ── Codex Wave-4: codex_mcp_status reducer (live MCP startup-state) ──
+
+describe("SessionStore — Codex Wave-4 (MCP live status)", () => {
+  let store: SessionStore;
+
+  beforeEach(() => {
+    store = new SessionStore();
+    store.run = makeRun("codex-w4", { agent: "codex" });
+    store.phase = "running";
+  });
+
+  it("maps Codex startup states to the panel vocab and upserts by name", () => {
+    // Unknown server → appended.
+    store.applyEvent({
+      type: "codex_mcp_status",
+      run_id: "codex-w4",
+      name: "codex_apps",
+      status: "starting",
+    } as BusEvent);
+    expect(store.mcpServers).toHaveLength(1);
+    expect(store.mcpServers[0]).toMatchObject({ name: "codex_apps", status: "pending" });
+
+    // Same name → updated in place (still one entry), ready → connected.
+    store.applyEvent({
+      type: "codex_mcp_status",
+      run_id: "codex-w4",
+      name: "codex_apps",
+      status: "ready",
+    } as BusEvent);
+    expect(store.mcpServers).toHaveLength(1);
+    expect(store.mcpServers[0].status).toBe("connected");
+
+    // failed carries the error through; cancelled also maps to failed.
+    store.applyEvent({
+      type: "codex_mcp_status",
+      run_id: "codex-w4",
+      name: "codex_apps",
+      status: "failed",
+      error: "handshake failed",
+    } as BusEvent);
+    expect(store.mcpServers[0].status).toBe("failed");
+    expect(store.mcpServers[0].error).toBe("handshake failed");
+
+    store.applyEvent({
+      type: "codex_mcp_status",
+      run_id: "codex-w4",
+      name: "codex_apps",
+      status: "cancelled",
+    } as BusEvent);
+    expect(store.mcpServers[0].status).toBe("failed");
+  });
+
+  it("is a known event type (no unknown/raw fallback)", () => {
+    const strict = new SessionStore();
+    strict.run = makeRun("codex-w4", { agent: "codex" });
+    strict.strictMode = true;
+    expect(() =>
+      strict.applyEvent({
+        type: "codex_mcp_status",
+        run_id: "codex-w4",
+        name: "s1",
+        status: "ready",
+      } as BusEvent),
+    ).not.toThrow();
+    expect(strict.unknownEventCount).toBe(0);
   });
 });

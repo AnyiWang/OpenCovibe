@@ -201,6 +201,8 @@ fn event_type_name(event: &BusEvent) -> &'static str {
         BusEvent::RalphStarted { .. } => "ralph_started",
         BusEvent::RalphIteration { .. } => "ralph_iteration",
         BusEvent::RalphComplete { .. } => "ralph_complete",
+        BusEvent::CodexHookRun { .. } => "codex_hook_run",
+        BusEvent::CodexMcpStatus { .. } => "codex_mcp_status",
         BusEvent::Raw { .. } => "raw",
     }
 }

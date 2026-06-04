@@ -44,6 +44,15 @@ pub struct CodexTurnOverrides {
     pub effort: Option<String>,
 }
 
+/// A skill the user picked in the composer, sent as a structured Codex `UserInput` item
+/// (`{type:"skill", name, path}`) rather than as `/name` text. Codex's app-server only triggers
+/// a skill via this typed item — plain slash text does NOT invoke it (see SkillSelector gating).
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct CodexSkillRef {
+    pub name: String,
+    pub path: String,
+}
+
 /// Which interactive surface a pending server request maps to. Determines which
 /// frontend response command (and `frame_response` branch) applies.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -109,6 +118,7 @@ pub trait SessionProtocol: Send {
         &mut self,
         text: &str,
         image_paths: &[String],
+        skills: &[CodexSkillRef],
         overrides: &CodexTurnOverrides,
     ) -> Vec<Value>;
 

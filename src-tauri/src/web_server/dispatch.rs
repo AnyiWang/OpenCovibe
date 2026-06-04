@@ -971,6 +971,7 @@ pub async fn dispatch_command(
                 .send(ActorCommand::SendMessage {
                     text: message,
                     attachments,
+                    skills: Vec::new(),
                     reply: reply_tx,
                 })
                 .await
