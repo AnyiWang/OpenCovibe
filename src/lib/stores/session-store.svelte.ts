@@ -323,6 +323,9 @@ export class SessionStore {
   sessionCommands = $state<CliCommand[]>([]);
   /** MCP servers from session_init (per-session state). */
   mcpServers = $state<McpServerInfo[]>([]);
+  /** Codex Wave-4: latest cumulative turn diff (`turn/diff/updated`). Live-only,
+   *  not replayed — cleared at the start of each turn (run_state→running) and on reset. */
+  turnDiff = $state<string>("");
 
   // ── CLI verbose fields (from session_init / usage_update) ──
   cliVersion = $state<string>("");
@@ -1515,6 +1518,7 @@ export class SessionStore {
     this.scheduledTasks = [];
     this.sessionCommands = [];
     this.mcpServers = [];
+    this.turnDiff = "";
     this.cliVersion = "";
     // NOTE: permissionMode intentionally NOT cleared — user-level preference, same as platformId.
     // However, if persist had failed, reset the flag so next session_init can re-sync.
@@ -3576,6 +3580,9 @@ export class SessionStore {
             const newPhase: SessionPhase = ev.state === "spawning" ? "spawning" : "running";
             if (ctx) ctx.phase = newPhase;
             else this._setPhase(newPhase);
+            // New turn starting — drop the previous turn's aggregated diff (live-only,
+            // not snapshotted so a ctx replay path never reaches here).
+            if (!ctx) this.turnDiff = "";
             // Invalidate idle snapshot — session is now active
             if (!ctx && this.run) {
               snapshotCache.deleteSnapshot(this.run.id).catch(() => {});
@@ -4353,6 +4360,15 @@ export class SessionStore {
             )
           : [...this.mcpServers, { name: ev.name, status: mapped, error: ev.error }];
         this.updateMcpServers(next);
+        break;
+      }
+
+      case "codex_turn_diff": {
+        // Codex Wave-4: cumulative turn diff push. The diff is aggregated across the whole
+        // turn server-side; later events supersede earlier ones, so keep the latest.
+        // Cleared at the next turn start (run_state→running) and on reset.
+        dbg("store", "codex_turn_diff", { len: ev.diff.length });
+        this.turnDiff = ev.diff;
         break;
       }
 

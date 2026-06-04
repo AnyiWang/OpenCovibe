@@ -1136,7 +1136,10 @@ export type BusEvent =
   // Codex Wave-4: live MCP server startup-state change (`mcpServer/startupStatus/updated`).
   // status is the raw Codex McpServerStartupState ("starting"|"ready"|"failed"|"cancelled");
   // the store reducer maps it to the panel vocab and upserts store.mcpServers by name.
-  | { type: "codex_mcp_status"; run_id: string; name: string; status: string; error?: string };
+  | { type: "codex_mcp_status"; run_id: string; name: string; status: string; error?: string }
+  // Codex Wave-4: turn-level aggregated unified diff (`turn/diff/updated`). diff is cumulative
+  // across the turn; the store keeps the latest (cleared at the next turn). Not replayed.
+  | { type: "codex_turn_diff"; run_id: string; turn_id: string; diff: string };
 
 export type RalphCompleteReason =
   | "max_iterations"

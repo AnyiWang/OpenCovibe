@@ -1388,6 +1388,14 @@ pub enum BusEvent {
         #[serde(skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
+    /// Codex turn-level aggregated unified diff (`turn/diff/updated`). `diff` is the cumulative
+    /// diff across all file changes in the turn; later pushes supersede earlier ones (latest
+    /// wins). Not replayed — ephemeral live state cleared at the next turn, like goal/mcp status.
+    CodexTurnDiff {
+        run_id: String,
+        turn_id: String,
+        diff: String,
+    },
     /// Tool use summary — top-level event type "tool_use_summary".
     ToolUseSummary {
         run_id: String,

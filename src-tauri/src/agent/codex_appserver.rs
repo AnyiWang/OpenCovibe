@@ -756,8 +756,22 @@ impl CodexAppServer {
                     });
                 }
             }
-            // TODO(wave1): diff panel — surface turn/diff/updated as a reviewable diff view.
-            "turn/diff/updated" => {}
+            // Turn-level aggregated unified diff → surface for a reviewable diff view. params =
+            // {threadId, turnId, diff}. diff is cumulative across the turn; latest supersedes.
+            "turn/diff/updated" => {
+                if let Some(diff) = params.get("diff").and_then(|v| v.as_str()) {
+                    let turn_id = params
+                        .get("turnId")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    out.events.push(BusEvent::CodexTurnDiff {
+                        run_id: run_id.to_string(),
+                        turn_id,
+                        diff: diff.to_string(),
+                    });
+                }
+            }
             // Hook lifecycle: started fires when a hook begins, completed when it finishes (with a
             // terminal HookRunStatus + duration). Both carry the full HookRunSummary at `run`; the
             // stable `run.id` lets the frontend update one card in place instead of stacking.
@@ -1020,6 +1034,16 @@ fn item_completed_events(run_id: &str, item: &Value, out: &mut Vec<BusEvent>) {
     }
     if item_type == "userMessage" || item_type == "reasoning" {
         return; // user echo / reasoning already streamed via deltas
+    }
+    // Context compaction completed. In 0.137 this surfaces as a `contextCompaction` item (the
+    // legacy `thread/compacted` notification is deprecated); we close the loop on our own
+    // `thread/compact/start` request with a user-visible notice. The item carries only an id.
+    if item_type == "contextCompaction" {
+        out.push(BusEvent::CommandOutput {
+            run_id: run_id.to_string(),
+            content: "[notice] context compacted".to_string(),
+        });
+        return;
     }
     if let Some(tool_name) = item_tool_name(item) {
         let id = item
@@ -2129,6 +2153,58 @@ mod tests {
             BusEvent::CommandOutput { content, .. } => assert_eq!(content, "[notice] bad config"),
             e => panic!("expected CommandOutput, got {e:?}"),
         }
+    }
+
+    // ── G5: context compaction completes via a `contextCompaction` item/completed ────────
+    #[test]
+    fn context_compaction_item_to_notice() {
+        let mut s = ready_server();
+        // 0.137 surfaces compaction completion as an item (id only); the legacy
+        // thread/compacted notification is deprecated and intentionally NOT handled.
+        let out = s.parse_line(
+            "r",
+            r#"{"method":"item/completed","params":{"item":{"id":"item_1","type":"contextCompaction"}}}"#,
+        );
+        assert_eq!(out.events.len(), 1);
+        match &out.events[0] {
+            BusEvent::CommandOutput { content, .. } => {
+                assert_eq!(content, "[notice] context compacted");
+            }
+            e => panic!("expected CommandOutput, got {e:?}"),
+        }
+    }
+
+    // ── G4: turn-level aggregated diff → CodexTurnDiff (latest supersedes) ────────────────
+    #[test]
+    fn turn_diff_updated_to_codex_turn_diff() {
+        let mut s = ready_server();
+        let out = s.parse_line(
+            "r",
+            r#"{"method":"turn/diff/updated","params":{"threadId":"t","turnId":"tu","diff":"--- a\n+++ b\n@@ -1 +1 @@\n-old\n+new"}}"#,
+        );
+        assert_eq!(out.events.len(), 1);
+        match &out.events[0] {
+            BusEvent::CodexTurnDiff { turn_id, diff, .. } => {
+                assert_eq!(turn_id, "tu");
+                assert_eq!(diff, "--- a\n+++ b\n@@ -1 +1 @@\n-old\n+new");
+            }
+            e => panic!("expected CodexTurnDiff, got {e:?}"),
+        }
+    }
+
+    #[test]
+    fn turn_diff_missing_diff_is_dropped() {
+        let mut s = ready_server();
+        // No `diff` field → nothing to surface; emit no event (no empty-diff card).
+        let out = s.parse_line(
+            "r",
+            r#"{"method":"turn/diff/updated","params":{"threadId":"t","turnId":"tu"}}"#,
+        );
+        assert!(
+            out.events.is_empty(),
+            "turn/diff/updated without diff must emit no event, got {:?}",
+            out.events
+        );
     }
 
     #[test]

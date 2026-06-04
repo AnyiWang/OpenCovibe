@@ -6,9 +6,13 @@
   let {
     open = $bindable(false),
     title = "Git Diff",
+    diffText,
   }: {
     open: boolean;
     title?: string;
+    // When provided, render this supplied unified-diff string directly (no git fetch,
+    // no staged/unstaged tabs). Used for Codex turn diffs. Absent → git-diff mode.
+    diffText?: string;
   } = $props();
 
   let tab = $state<"unstaged" | "staged">("unstaged");
@@ -28,9 +32,14 @@
     }
   }
 
-  // Load diff when opened or tab changes
+  // Load diff when opened or tab changes. In supplied-diff mode, seed `diff` from the
+  // prop instead of fetching git (re-seed reactively so live turn-diff updates show).
   $effect(() => {
-    if (open) {
+    if (!open) return;
+    if (diffText !== undefined) {
+      diff = diffText;
+      loading = false;
+    } else {
       loadDiff(tab === "staged");
     }
   });
@@ -38,24 +47,26 @@
 
 <Modal bind:open {title}>
   <div class="space-y-3">
-    <div class="flex gap-1 border-b">
-      <button
-        class="px-3 py-1.5 text-sm transition-colors {tab === 'unstaged'
-          ? 'border-b-2 border-primary font-medium'
-          : 'text-muted-foreground hover:text-foreground'}"
-        onclick={() => (tab = "unstaged")}
-      >
-        {t("diff_unstaged")}
-      </button>
-      <button
-        class="px-3 py-1.5 text-sm transition-colors {tab === 'staged'
-          ? 'border-b-2 border-primary font-medium'
-          : 'text-muted-foreground hover:text-foreground'}"
-        onclick={() => (tab = "staged")}
-      >
-        {t("diff_staged")}
-      </button>
-    </div>
+    {#if diffText === undefined}
+      <div class="flex gap-1 border-b">
+        <button
+          class="px-3 py-1.5 text-sm transition-colors {tab === 'unstaged'
+            ? 'border-b-2 border-primary font-medium'
+            : 'text-muted-foreground hover:text-foreground'}"
+          onclick={() => (tab = "unstaged")}
+        >
+          {t("diff_unstaged")}
+        </button>
+        <button
+          class="px-3 py-1.5 text-sm transition-colors {tab === 'staged'
+            ? 'border-b-2 border-primary font-medium'
+            : 'text-muted-foreground hover:text-foreground'}"
+          onclick={() => (tab = "staged")}
+        >
+          {t("diff_staged")}
+        </button>
+      </div>
+    {/if}
 
     {#if loading}
       <div class="flex items-center justify-center py-8">

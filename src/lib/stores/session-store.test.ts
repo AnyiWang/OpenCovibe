@@ -6375,3 +6375,69 @@ describe("SessionStore — Codex Wave-4 (MCP live status)", () => {
     expect(strict.unknownEventCount).toBe(0);
   });
 });
+
+// ── Codex Wave-4 (G4): codex_turn_diff reducer (live aggregated turn diff) ──
+
+describe("SessionStore — Codex Wave-4 (turn diff live)", () => {
+  let store: SessionStore;
+
+  beforeEach(() => {
+    store = new SessionStore();
+    store.run = makeRun("codex-w4d", { agent: "codex" });
+    store.phase = "running";
+  });
+
+  it("stores the latest diff; a later event supersedes the earlier one", () => {
+    expect(store.turnDiff).toBe("");
+
+    store.applyEvent({
+      type: "codex_turn_diff",
+      run_id: "codex-w4d",
+      turn_id: "tu1",
+      diff: "--- a\n+++ b\n@@ -1 +1 @@\n-old\n+new",
+    } as BusEvent);
+    expect(store.turnDiff).toBe("--- a\n+++ b\n@@ -1 +1 @@\n-old\n+new");
+
+    // Cumulative push — later event wins (diff is aggregated server-side).
+    store.applyEvent({
+      type: "codex_turn_diff",
+      run_id: "codex-w4d",
+      turn_id: "tu1",
+      diff: "--- a\n+++ b\n@@ -1,2 +1,2 @@\n-old\n+new\n+extra",
+    } as BusEvent);
+    expect(store.turnDiff).toBe("--- a\n+++ b\n@@ -1,2 +1,2 @@\n-old\n+new\n+extra");
+  });
+
+  it("clears the diff at the next turn start (run_state→running)", () => {
+    store.applyEvent({
+      type: "codex_turn_diff",
+      run_id: "codex-w4d",
+      turn_id: "tu1",
+      diff: "some diff",
+    } as BusEvent);
+    expect(store.turnDiff).toBe("some diff");
+
+    // Next turn begins — the previous turn's aggregated diff is dropped.
+    store.applyEvent({
+      type: "run_state",
+      run_id: "codex-w4d",
+      state: "running",
+    } as BusEvent);
+    expect(store.turnDiff).toBe("");
+  });
+
+  it("is a known event type (no unknown/raw fallback)", () => {
+    const strict = new SessionStore();
+    strict.run = makeRun("codex-w4d", { agent: "codex" });
+    strict.strictMode = true;
+    expect(() =>
+      strict.applyEvent({
+        type: "codex_turn_diff",
+        run_id: "codex-w4d",
+        turn_id: "tu1",
+        diff: "d",
+      } as BusEvent),
+    ).not.toThrow();
+    expect(strict.unknownEventCount).toBe(0);
+  });
+});

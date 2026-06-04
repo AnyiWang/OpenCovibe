@@ -54,6 +54,7 @@
   import ToolBurstHeader from "$lib/components/ToolBurstHeader.svelte";
   import SessionStatusBar from "$lib/components/SessionStatusBar.svelte";
   import McpStatusPanel from "$lib/components/McpStatusPanel.svelte";
+  import DiffModal from "$lib/components/DiffModal.svelte";
   import PromptInput from "$lib/components/PromptInput.svelte";
   import ScheduledTasksChip from "$lib/components/ScheduledTasksChip.svelte";
   import TodoPanel from "$lib/components/TodoPanel.svelte";
@@ -466,6 +467,9 @@
 
   // ── MCP panel ──
   let mcpPanelOpen = $state(false);
+
+  // ── Codex turn diff (live aggregated diff for the current turn) ──
+  let turnDiffOpen = $state(false);
 
   // ── CLI session browser ──
 
@@ -4570,6 +4574,33 @@
       </div>
     {/if}
 
+    <!-- Codex turn diff pill (floating below status bar). Only Codex turns push an
+         aggregated diff; show the affordance once store.turnDiff is non-empty. -->
+    {#if effectiveAgent === "codex" && store.turnDiff.trim()}
+      <div class="absolute {statusBarExpanded ? 'top-16' : 'top-9'} right-3 z-30">
+        <button
+          type="button"
+          class="flex items-center gap-1.5 rounded-full border border-border bg-background/90 px-2.5 py-1 text-xs font-medium text-foreground shadow-sm backdrop-blur hover:bg-muted/60 transition-colors"
+          onclick={() => {
+            dbg("chat", "turn diff open", { len: store.turnDiff.length });
+            turnDiffOpen = true;
+          }}
+          title="View the aggregated diff for the current turn"
+        >
+          <svg
+            class="h-3.5 w-3.5 text-muted-foreground"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.5"
+          >
+            <path d="M9 3v18M3 9h18M3 15h18" />
+          </svg>
+          Turn diff
+        </button>
+      </div>
+    {/if}
+
     <!-- Preview URL input bar -->
     {#if previewUrlBarOpen}
       <div class="flex items-center gap-2 px-3 py-1.5 border-b border-border bg-muted/30 text-xs">
@@ -5708,6 +5739,9 @@
   />
 
   <CodexReviewModal bind:open={codexReviewPickerOpen} onSubmit={runCodexReview} />
+
+  <!-- Codex turn diff: supplied-diff mode (no git fetch, no staged/unstaged tabs). -->
+  <DiffModal bind:open={turnDiffOpen} title="Turn diff" diffText={store.turnDiff} />
 
   <RewindCodexModal
     bind:open={codexRewindOpen}

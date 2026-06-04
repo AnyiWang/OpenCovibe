@@ -41,12 +41,21 @@ export const HOOK_EVENT_TYPES: readonly HookEventType[] = [
 
 export type { HookEventType };
 
-/** Codex CLI supported hook event types (5 types). Separate from HookEventType. */
+/**
+ * Codex CLI supported hook event types (10 types). Separate from HookEventType.
+ * Order and PascalCase names mirror Codex's [hooks] config table
+ * (HookEventsToml serde rename in codex-rs/config/src/hook_config.rs).
+ */
 export const CODEX_HOOK_EVENT_TYPES: readonly string[] = [
   "PreToolUse",
+  "PermissionRequest",
   "PostToolUse",
+  "PreCompact",
+  "PostCompact",
   "SessionStart",
   "UserPromptSubmit",
+  "SubagentStart",
+  "SubagentStop",
   "Stop",
 ];
 
