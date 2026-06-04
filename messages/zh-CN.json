@@ -633,6 +633,10 @@
   "tool_async": "异步",
   "tool_toolsCount": "{count} 个工具",
   "tool_tokensCount": "{count} 个 token",
+  "tool_statReads": "读取文件",
+  "tool_statSearches": "搜索",
+  "tool_statCommands": "执行命令",
+  "tool_statEdits": "编辑文件",
   "tool_resultsCount": "{count} 个结果",
   "tool_statusDone": "完成",
   "tool_statusWip": "进行中",
@@ -1138,6 +1142,7 @@
   "inline_switchToMode": "切换到 {mode} 模式",
   "inline_addDirectory": "添加目录：{dir}",
   "inline_toolCount": "{count} 个工具",
+  "inline_subagent": "子智能体",
   "batch_status": "{completed}/{total} 已完成 · {running} 执行中",
   "batch_failed": "{failed} 失败",
 

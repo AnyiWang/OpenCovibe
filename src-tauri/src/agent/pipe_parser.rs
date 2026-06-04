@@ -119,11 +119,17 @@ impl CodexStdoutParser {
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
+                // Same `codexCollab` shape as the app-server path so the frontend renders both
+                // identically. The exec item carries fewer fields (tool + prompt) than app-server.
                 vec![BusEvent::ToolStart {
                     run_id: run_id.to_string(),
                     tool_use_id,
                     tool_name: "Agent".to_string(),
-                    input: serde_json::json!({ "tool": tool, "prompt": prompt }),
+                    input: serde_json::json!({
+                        "codexCollab": true,
+                        "operation": tool,
+                        "prompt": prompt,
+                    }),
                     parent_tool_use_id: None,
                 }]
             }
@@ -239,18 +245,21 @@ impl CodexStdoutParser {
                 }]
             }
             "collab_tool_call" => {
+                let payload = serde_json::json!({
+                    "codexCollab": true,
+                    "operation": item.get("tool").and_then(|v| v.as_str()).unwrap_or("collab"),
+                    "status": item.get("status").and_then(|v| v.as_str()),
+                    "agents_states": item.get("agents_states").cloned().unwrap_or(serde_json::json!({})),
+                });
                 vec![BusEvent::ToolEnd {
                     run_id: run_id.to_string(),
                     tool_use_id,
                     tool_name: "Agent".to_string(),
-                    output: item
-                        .get("agents_states")
-                        .cloned()
-                        .unwrap_or(serde_json::json!({})),
+                    output: serde_json::json!({ "content": payload.clone() }),
                     status,
                     duration_ms: None,
                     parent_tool_use_id: None,
-                    tool_use_result: None,
+                    tool_use_result: Some(payload),
                 }]
             }
             "todo_list" => self.map_todo_list(run_id, item),
@@ -658,8 +667,43 @@ mod tests {
         let events = p.parse_line("run-1", &raw);
         assert_eq!(events.len(), 1);
         match &events[0] {
-            BusEvent::ToolStart { tool_name, .. } => assert_eq!(tool_name, "Agent"),
+            BusEvent::ToolStart {
+                tool_name, input, ..
+            } => {
+                assert_eq!(tool_name, "Agent");
+                // Enriched collab shape so exec renders identically to app-server.
+                assert_eq!(input["codexCollab"], true);
+                assert_eq!(input["operation"], "code_review");
+                assert_eq!(input["prompt"], "review this");
+            }
             other => panic!("expected ToolStart, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn collab_tool_call_completed() {
+        let mut p = parser();
+        let raw = json!({
+            "type": "item.completed",
+            "item": {"id": "col_0", "type": "collab_tool_call", "tool": "code_review", "status": "completed", "agents_states": {"t2": {"status": "completed"}}}
+        });
+        let events = p.parse_line("run-1", &raw);
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            BusEvent::ToolEnd {
+                tool_name,
+                status,
+                tool_use_result,
+                ..
+            } => {
+                assert_eq!(tool_name, "Agent");
+                assert_eq!(status, "success");
+                let result = tool_use_result.as_ref().unwrap();
+                assert_eq!(result["codexCollab"], true);
+                assert_eq!(result["operation"], "code_review");
+                assert_eq!(result["agents_states"]["t2"]["status"], "completed");
+            }
+            other => panic!("expected ToolEnd, got {:?}", other),
         }
     }
 

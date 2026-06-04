@@ -633,6 +633,10 @@
   "tool_async": "async",
   "tool_toolsCount": "{count} tools",
   "tool_tokensCount": "{count} tokens",
+  "tool_statReads": "Files read",
+  "tool_statSearches": "Searches",
+  "tool_statCommands": "Commands run",
+  "tool_statEdits": "Files edited",
   "tool_resultsCount": "{count} results",
   "tool_statusDone": "done",
   "tool_statusWip": "wip",
@@ -1138,6 +1142,7 @@
   "inline_switchToMode": "Switch to {mode} mode",
   "inline_addDirectory": "Add directory: {dir}",
   "inline_toolCount": "{count} tools",
+  "inline_subagent": "Sub-agent",
   "batch_status": "{completed}/{total} completed · {running} running",
   "batch_failed": "{failed} failed",
 

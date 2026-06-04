@@ -59,6 +59,8 @@ import ralphLoopEvents from "./__fixtures__/ralph-loop.json";
 import scheduledTasksEvents from "./__fixtures__/scheduled-tasks.json";
 import malformedEvents from "./__fixtures__/malformed-events.json";
 import codexSimpleEvents from "./__fixtures__/codex-simple.json";
+import subagentAgentEvents from "./__fixtures__/subagent-agent.json";
+import codexCollabEvents from "./__fixtures__/codex-collab.json";
 
 // Import store and mocked modules after mocks
 import { SessionStore } from "./session-store.svelte";
@@ -1686,6 +1688,66 @@ describe("SessionStore reducer", () => {
       expect(taskEntry).toBeDefined();
       expect(taskEntry.tool.status).toBe("success");
       expect(taskEntry.tool.duration_ms).toBe(5000);
+    });
+  });
+
+  // ── Agent (Task→Agent rename) + Codex collab subagent shapes ──
+  // The reducer routes subagent children by parent_tool_use_id (tool-name agnostic), so the
+  // "Agent" rename and Codex collab runs must produce the same subTimeline + tool entries that
+  // InlineToolCard / ToolDetailView consume. These lock the entry shapes (not the rendered DOM —
+  // component-render tests aren't supported in this node-env vitest setup; assert on the data the
+  // components branch on instead: isSubagentTool, tool_use_result.toolStats, input.codexCollab).
+  describe("subagent rendering shapes", () => {
+    it("Agent (renamed) routes children to subTimeline and surfaces AgentOutput toolStats", () => {
+      store.run = makeRun("run-agent");
+      store.phase = "running";
+      store.applyEventBatch(subagentAgentEvents as BusEvent[]);
+
+      const mainTools = store.timeline.filter((e) => e.kind === "tool");
+      expect(mainTools).toHaveLength(1);
+      const agentEntry = mainTools[0] as Extract<TimelineEntry, { kind: "tool" }>;
+      expect(agentEntry.tool.tool_name).toBe("Agent");
+      expect(agentEntry.tool.status).toBe("success");
+
+      // Child Bash routed into the parent Agent subTimeline, same as the legacy Task path.
+      expect(agentEntry.subTimeline).toBeDefined();
+      expect(agentEntry.subTimeline!).toHaveLength(2); // Bash tool + subagent message
+      const subBash = agentEntry.subTimeline![0] as Extract<TimelineEntry, { kind: "tool" }>;
+      expect(subBash.tool.tool_name).toBe("Bash");
+
+      // ToolDetailView's taskResult derives from tool_use_result.totalToolUseCount; toolStats
+      // drives the per-category counts. Lock the shape the panel reads.
+      const result = agentEntry.tool.tool_use_result as Record<string, unknown>;
+      expect(result).toBeDefined();
+      expect(result.totalToolUseCount).toBe(1);
+      expect((result.toolStats as Record<string, unknown>).bashCount).toBe(1);
+      expect(result.agentType).toBe("Bash");
+    });
+
+    it("Codex collab run carries codexCollab marker on input and tool_use_result", () => {
+      store.run = makeRun("run-collab");
+      store.phase = "running";
+      store.applyEventBatch(codexCollabEvents as BusEvent[]);
+
+      const tools = store.timeline.filter((e) => e.kind === "tool");
+      expect(tools).toHaveLength(1);
+      const collab = tools[0] as Extract<TimelineEntry, { kind: "tool" }>;
+      expect(collab.tool.tool_name).toBe("Agent");
+      expect(collab.tool.status).toBe("success");
+
+      // ToolDetailView's codexCollab derived state prefers tool_use_result, falls back to input —
+      // both carry the marker so the collab shape renders in-flight and after completion.
+      const input = collab.tool.input as Record<string, unknown>;
+      expect(input.codexCollab).toBe(true);
+      expect(input.operation).toBe("spawnAgent");
+
+      const result = collab.tool.tool_use_result as Record<string, unknown>;
+      expect(result.codexCollab).toBe(true);
+      expect(result.operation).toBe("spawnAgent");
+      expect(result.status).toBe("completed");
+      const agents = result.agents as Array<Record<string, unknown>>;
+      expect(agents[0].thread_id).toBe("t2");
+      expect(agents[0].status).toBe("completed");
     });
   });
 

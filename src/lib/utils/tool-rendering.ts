@@ -145,6 +145,8 @@ const FRIENDLY_TOOL_NAMES: Record<string, string> = {
   Grep: "Search content",
   WebFetch: "Fetch URLs",
   WebSearch: "Search web",
+  // Upstream renamed the subagent tool Task → Agent; keep Task for legacy run replay.
+  Agent: "Run sub-agent",
   Task: "Run sub-agent",
   NotebookEdit: "Edit notebook",
   PowerShell: "Run PowerShell",
@@ -158,6 +160,12 @@ const FRIENDLY_TOOL_NAMES: Record<string, string> = {
 /** Map a tool name to a human-readable description. Falls back to the original name. */
 export function friendlyToolName(name: string): string {
   return FRIENDLY_TOOL_NAMES[name] ?? name;
+}
+
+/** Single source of truth for the subagent-spawn tool name.
+ *  Upstream renamed Task → Agent; "Task" is kept only for replay of legacy stored runs. */
+export function isSubagentTool(name: string): boolean {
+  return name === "Agent" || name === "Task";
 }
 
 /**
@@ -300,7 +308,14 @@ export interface ToolBurst {
   stats: { completed: number; failed: number; running: number; total: number };
 }
 
-const BURST_EXCLUDE = new Set(["Task", "AskUserQuestion", "ExitPlanMode", "EnterPlanMode"]);
+// Agent/Task (subagent) excluded — they own a subTimeline and must not collapse into a burst.
+const BURST_EXCLUDE = new Set([
+  "Agent",
+  "Task",
+  "AskUserQuestion",
+  "ExitPlanMode",
+  "EnterPlanMode",
+]);
 
 /**
  * Detect "tool burst" segments: consecutive tool entries (regardless of tool_name)

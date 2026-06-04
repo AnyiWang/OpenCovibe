@@ -14,6 +14,7 @@
     planFileName,
     isPlanFilePath,
     extractTaskToolMeta,
+    isSubagentTool,
     shouldShowSubTimeline as _shouldShow,
     getToolRenderLevel,
     getToolDetail,
@@ -77,7 +78,7 @@
 
   // Look up the task notification for this specific Task tool
   let taskNotification = $derived.by(() => {
-    if (tool.tool_name !== "Task" || !taskNotifications) return undefined;
+    if (!isSubagentTool(tool.tool_name) || !taskNotifications) return undefined;
     for (const n of taskNotifications.values()) {
       if (n.tool_use_id === tool.tool_use_id) return n;
     }
@@ -223,7 +224,18 @@
   });
 
   // Task (subagent) meta: extract agent type + model for enhanced header
-  let taskMeta = $derived(tool.tool_name === "Task" ? extractTaskToolMeta(tool.input) : null);
+  let taskMeta = $derived(isSubagentTool(tool.tool_name) ? extractTaskToolMeta(tool.input) : null);
+
+  // Codex collab subagent: rendered as tool_name "Agent" but with a codexCollab marker and a
+  // different input shape (operation, not subagent_type). Marker may ride on input or result.
+  let codexCollabOp = $derived.by<string | null>(() => {
+    if (!isSubagentTool(tool.tool_name)) return null;
+    const inp = tool.input as Record<string, unknown> | undefined;
+    if (inp?.codexCollab && typeof inp.operation === "string") return inp.operation;
+    const res = tool.tool_use_result as Record<string, unknown> | undefined;
+    if (res?.codexCollab && typeof res.operation === "string") return res.operation;
+    return null;
+  });
 
   // Status display
   let statusKind = $derived(
@@ -1611,7 +1623,20 @@
 
       <!-- Tool name + detail -->
       <div class="flex-1 min-w-0 flex items-center gap-1.5">
-        {#if taskMeta}
+        {#if codexCollabOp}
+          <!-- Codex collab subagent: "Sub-agent · {operation}" -->
+          <span class="text-xs font-medium text-foreground">{t("inline_subagent")}</span>
+          <span class="text-xs text-muted-foreground">· {codexCollabOp}</span>
+          {#if subToolCount > 0}
+            <span class="text-[10px] px-1 py-0.5 rounded bg-muted text-muted-foreground">
+              {#if tool.status === "running"}
+                {subToolCompleted}/{subToolCount} tools
+              {:else}
+                {t("inline_toolCount", { count: String(subToolCount) })}
+              {/if}
+            </span>
+          {/if}
+        {:else if taskMeta}
           <!-- Task tool: show agent type + model badge -->
           <span class="text-xs font-medium text-foreground">{taskMeta.subagentType}</span>
           {#if taskMeta.model}

@@ -1,0 +1,62 @@
+[
+  {
+    "type": "user_message",
+    "run_id": "run-collab",
+    "text": "Explore the codebase with a sub-agent"
+  },
+  {
+    "type": "run_state",
+    "run_id": "run-collab",
+    "state": "running",
+    "error": null,
+    "exit_code": null
+  },
+  {
+    "type": "tool_start",
+    "run_id": "run-collab",
+    "tool_use_id": "col1",
+    "tool_name": "Agent",
+    "input": {
+      "codexCollab": true,
+      "operation": "spawnAgent",
+      "prompt": "explore X",
+      "model": "gpt-5-codex",
+      "reasoningEffort": "high",
+      "status": "inProgress",
+      "receiverThreadIds": [],
+      "agents": [{ "thread_id": "t2", "status": "running", "message": null }]
+    }
+  },
+  {
+    "type": "tool_end",
+    "run_id": "run-collab",
+    "tool_use_id": "col1",
+    "tool_name": "Agent",
+    "output": {
+      "content": {
+        "codexCollab": true,
+        "operation": "spawnAgent",
+        "status": "completed",
+        "agents": [{ "thread_id": "t2", "status": "completed", "message": "done" }]
+      }
+    },
+    "status": "success",
+    "tool_use_result": {
+      "codexCollab": true,
+      "operation": "spawnAgent",
+      "prompt": "explore X",
+      "model": "gpt-5-codex",
+      "reasoningEffort": "high",
+      "status": "completed",
+      "receiverThreadIds": [],
+      "agents": [{ "thread_id": "t2", "status": "completed", "message": "done" }]
+    }
+  },
+  {
+    "type": "run_state",
+    "run_id": "run-collab",
+    "state": "idle",
+    "error": null,
+    "exit_code": null
+  }
+]

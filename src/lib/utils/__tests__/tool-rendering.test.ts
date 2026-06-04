@@ -16,6 +16,8 @@ import {
   applyPlanEditsForward,
   getToolRenderLevel,
   getToolDetail,
+  isSubagentTool,
+  friendlyToolName,
 } from "../tool-rendering";
 
 // ── extractOutputText ──
@@ -966,5 +968,35 @@ describe("getToolDetail scheduling extractor", () => {
   it("returns empty string for empty input", () => {
     expect(getToolDetail({})).toBe("");
     expect(getToolDetail(undefined)).toBe("");
+  });
+});
+
+describe("isSubagentTool", () => {
+  it("recognizes Agent (current upstream name)", () => {
+    expect(isSubagentTool("Agent")).toBe(true);
+  });
+
+  it("recognizes Task (legacy name, kept for stored-run replay)", () => {
+    expect(isSubagentTool("Task")).toBe(true);
+  });
+
+  it("rejects non-subagent tools", () => {
+    expect(isSubagentTool("Bash")).toBe(false);
+    expect(isSubagentTool("Read")).toBe(false);
+    expect(isSubagentTool("")).toBe(false);
+  });
+});
+
+describe("friendlyToolName", () => {
+  it("maps Agent to a human-readable subagent label", () => {
+    expect(friendlyToolName("Agent")).toBe("Run sub-agent");
+  });
+
+  it("maps legacy Task to the same label as Agent", () => {
+    expect(friendlyToolName("Task")).toBe("Run sub-agent");
+  });
+
+  it("falls back to the original name for unmapped tools", () => {
+    expect(friendlyToolName("SomeUnknownTool")).toBe("SomeUnknownTool");
   });
 });

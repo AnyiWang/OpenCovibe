@@ -1006,13 +1006,56 @@ fn item_tool_name(item: &Value) -> Option<String> {
     }
 }
 
+/// Build the rich tool input for a `collabAgentToolCall` item (Codex multi-agent / spawn_agent).
+/// `codexCollab: true` lets the frontend render the collab shape (operation + per-agent states),
+/// which differs from Claude's AgentInput (subagent_type/prompt). Shared by started + completed.
+fn collab_input(item: &Value) -> Value {
+    let agents: Vec<Value> = item
+        .get("agentsStates")
+        .and_then(|v| v.as_object())
+        .map(|m| {
+            m.iter()
+                .map(|(tid, st)| {
+                    json!({
+                        "thread_id": tid,
+                        "status": st.get("status").and_then(|v| v.as_str()),
+                        "message": st.get("message").and_then(|v| v.as_str()),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    json!({
+        "codexCollab": true,
+        "operation": item.get("tool").and_then(|v| v.as_str()).unwrap_or("collab"),
+        "prompt": item.get("prompt").and_then(|v| v.as_str()).unwrap_or(""),
+        "model": item.get("model").and_then(|v| v.as_str()),
+        "reasoningEffort": item.get("reasoningEffort").and_then(|v| v.as_str()),
+        "status": item.get("status").and_then(|v| v.as_str()),
+        "receiverThreadIds": item.get("receiverThreadIds").cloned().unwrap_or(json!([])),
+        "agents": agents,
+    })
+}
+
 fn item_started_event(run_id: &str, item: &Value) -> Option<BusEvent> {
-    let tool_name = item_tool_name(item)?;
     let id = item
         .get("id")
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
+    // Codex multi-agent: collabAgentToolCall (spawn_agent etc.) renders as an "Agent" subagent
+    // card. item_tool_name doesn't cover it (it's not a plain tool), so handle it up front —
+    // otherwise it's dropped entirely on the app-server path.
+    if item.get("type").and_then(|v| v.as_str()) == Some("collabAgentToolCall") {
+        return Some(BusEvent::ToolStart {
+            run_id: run_id.to_string(),
+            tool_use_id: id,
+            tool_name: "Agent".to_string(),
+            input: collab_input(item),
+            parent_tool_use_id: None,
+        });
+    }
+    let tool_name = item_tool_name(item)?;
     let mut input = serde_json::Map::new();
     if let Some(cmd) = item.get("command").and_then(|v| v.as_str()) {
         input.insert("command".into(), json!(cmd));
@@ -1056,6 +1099,31 @@ fn item_completed_events(run_id: &str, item: &Value, out: &mut Vec<BusEvent>) {
         out.push(BusEvent::CommandOutput {
             run_id: run_id.to_string(),
             content: "[notice] context compacted".to_string(),
+        });
+        return;
+    }
+    // Codex multi-agent collab tool call finished → close the "Agent" subagent card. status
+    // "failed" → error; otherwise success. The rich collab payload rides on output + tool_use_result.
+    if item_type == "collabAgentToolCall" {
+        let id = item
+            .get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let status = match item.get("status").and_then(|v| v.as_str()) {
+            Some("failed") => "error",
+            _ => "success",
+        };
+        let payload = collab_input(item);
+        out.push(BusEvent::ToolEnd {
+            run_id: run_id.to_string(),
+            tool_use_id: id,
+            tool_name: "Agent".to_string(),
+            output: json!({ "content": payload.clone() }),
+            status: status.to_string(),
+            duration_ms: None,
+            parent_tool_use_id: None,
+            tool_use_result: Some(payload),
         });
         return;
     }
@@ -1680,6 +1748,67 @@ mod tests {
             } => {
                 assert_eq!(tool_name, "Bash");
                 assert_eq!(status, "success");
+            }
+            e => panic!("expected ToolEnd, got {e:?}"),
+        }
+    }
+
+    #[test]
+    fn collab_agent_item_lifecycle() {
+        let mut s = ready_server();
+        // collabAgentToolCall renders as an "Agent" subagent card with the rich collab input
+        // (codexCollab flag + per-agent states), not item_tool_name's plain-tool shape.
+        let started = s.parse_line(
+            "r",
+            r#"{"method":"item/started","params":{"item":{"id":"col1","type":"collabAgentToolCall","tool":"spawnAgent","prompt":"explore X","agentsStates":{"t2":{"status":"running","message":null}}}}}"#,
+        );
+        match &started.events[0] {
+            BusEvent::ToolStart {
+                tool_name, input, ..
+            } => {
+                assert_eq!(tool_name, "Agent");
+                assert_eq!(input["codexCollab"], true);
+                assert_eq!(input["operation"], "spawnAgent");
+                assert_eq!(input["prompt"], "explore X");
+                assert_eq!(input["agents"][0]["thread_id"], "t2");
+                assert_eq!(input["agents"][0]["status"], "running");
+            }
+            e => panic!("expected ToolStart, got {e:?}"),
+        }
+        // completed with status "completed" → success; rich payload rides on tool_use_result.
+        let completed = s.parse_line(
+            "r",
+            r#"{"method":"item/completed","params":{"item":{"id":"col1","type":"collabAgentToolCall","tool":"spawnAgent","status":"completed","agentsStates":{"t2":{"status":"completed","message":"done"}}}}}"#,
+        );
+        match &completed.events[0] {
+            BusEvent::ToolEnd {
+                tool_name,
+                status,
+                tool_use_result,
+                ..
+            } => {
+                assert_eq!(tool_name, "Agent");
+                assert_eq!(status, "success");
+                assert_eq!(tool_use_result.as_ref().unwrap()["codexCollab"], true);
+                assert_eq!(tool_use_result.as_ref().unwrap()["operation"], "spawnAgent");
+            }
+            e => panic!("expected ToolEnd, got {e:?}"),
+        }
+    }
+
+    #[test]
+    fn collab_agent_failed_maps_to_error_status() {
+        let mut s = ready_server();
+        let completed = s.parse_line(
+            "r",
+            r#"{"method":"item/completed","params":{"item":{"id":"col1","type":"collabAgentToolCall","tool":"spawnAgent","status":"failed"}}}"#,
+        );
+        match &completed.events[0] {
+            BusEvent::ToolEnd {
+                tool_name, status, ..
+            } => {
+                assert_eq!(tool_name, "Agent");
+                assert_eq!(status, "error");
             }
             e => panic!("expected ToolEnd, got {e:?}"),
         }

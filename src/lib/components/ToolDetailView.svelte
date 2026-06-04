@@ -11,6 +11,7 @@
     isPlanFilePath,
     extractImageBlocks,
     copyToClipboard,
+    isSubagentTool,
   } from "$lib/utils/tool-rendering";
   import MarkdownContent from "$lib/components/MarkdownContent.svelte";
   import TeamToolDetail from "$lib/components/TeamToolDetail.svelte";
@@ -376,6 +377,15 @@
   );
 
   // Structured Task (subagent) result from tool_use_result
+  // toolStats added by upstream AgentOutput.completed (Task→Agent rename); omitted on older runs.
+  interface AgentToolStats {
+    readCount?: number;
+    searchCount?: number;
+    bashCount?: number;
+    editFileCount?: number;
+    linesAdded?: number;
+    linesRemoved?: number;
+  }
   interface TaskResultMeta {
     status: string;
     totalToolUseCount?: number;
@@ -385,6 +395,8 @@
     description?: string;
     outputFile?: string;
     prompt?: string;
+    agentType?: string;
+    toolStats?: AgentToolStats;
   }
   let taskResult = $derived(
     tool.tool_use_result != null &&
@@ -397,6 +409,66 @@
         ? (tool.tool_use_result as unknown as TaskResultMeta)
         : undefined,
   );
+
+  // ── Codex collab (multi-agent) subagent rendering ──
+  // BASE surfaces Codex collab tool calls as tool_name "Agent" with a `codexCollab` marker,
+  // but the input/output shape differs from Claude's AgentInput — branch on the marker.
+  interface CodexCollabAgent {
+    thread_id: string;
+    status: string; // CollabAgentStatus
+    message?: string;
+  }
+  interface CodexCollabMeta {
+    operation: string; // CollabAgentTool: spawnAgent | sendInput | resumeAgent | wait | closeAgent
+    prompt?: string;
+    model?: string | null;
+    reasoningEffort?: string | null;
+    status?: string | null; // CollabAgentToolCallStatus
+    receiverThreadIds?: string[];
+    agents?: CodexCollabAgent[];
+  }
+  // The marker may ride on input (ToolStart) or on the result payload (ToolEnd); prefer the
+  // result (richer/final) and fall back to input for the in-flight render.
+  let codexCollab = $derived.by<CodexCollabMeta | null>(() => {
+    const res = tool.tool_use_result;
+    if (res != null && typeof res === "object" && (res as Record<string, unknown>).codexCollab) {
+      return res as unknown as CodexCollabMeta;
+    }
+    const inp = tool.input;
+    if (inp != null && typeof inp === "object" && (inp as Record<string, unknown>).codexCollab) {
+      return inp as unknown as CodexCollabMeta;
+    }
+    return null;
+  });
+
+  $effect(() => {
+    if (codexCollab) {
+      dbg("ToolDetailView", "codex-collab-render", {
+        operation: codexCollab.operation,
+        status: codexCollab.status,
+        agents: codexCollab.agents?.length ?? 0,
+      });
+    }
+  });
+
+  /** Map CollabAgentStatus / CollabAgentToolCallStatus to an existing status-badge color class. */
+  function codexCollabBadgeClass(status: string | null | undefined): string {
+    switch (status) {
+      case "completed":
+        return "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400";
+      case "errored":
+      case "failed":
+      case "notFound":
+        return "bg-red-500/15 text-red-600 dark:text-red-400";
+      case "running":
+      case "inProgress":
+      case "pendingInit":
+        return "bg-blue-500/15 text-blue-600 dark:text-blue-400";
+      // interrupted / shutdown and anything else → neutral
+      default:
+        return "bg-neutral-500/15 text-muted-foreground";
+    }
+  }
 
   // Write: reuse editResult pattern for structuredPatch
   let writeResult = $derived(
@@ -1066,12 +1138,77 @@
           : t("common_showAllLines", { count: String(outputLineCount) })}
       </button>
     {/if}
-  {:else if tool.tool_name === "Task"}
-    <!-- Task (subagent): prompt + type + usage stats -->
+  {:else if isSubagentTool(tool.tool_name) && codexCollab}
+    <!-- Codex collab (multi-agent): operation + status + per-agent states.
+         Distinct shape from Claude's AgentInput/AgentOutput. -->
+    <div class="rounded bg-muted p-2 overflow-y-auto">
+      <div class="flex items-center gap-2 text-xs text-muted-foreground">
+        <span class="text-cyan-400 font-medium">{codexCollab.operation}</span>
+        {#if codexCollab.status}
+          <span
+            class="px-1.5 py-0.5 rounded text-[10px] font-medium {codexCollabBadgeClass(
+              codexCollab.status,
+            )}">{codexCollab.status}</span
+          >
+        {/if}
+        {#if codexCollab.model}
+          <span class="font-mono text-[10px]">{codexCollab.model}</span>
+        {/if}
+        {#if codexCollab.reasoningEffort}
+          <span class="text-[10px] opacity-70">{codexCollab.reasoningEffort}</span>
+        {/if}
+      </div>
+      {#if codexCollab.prompt}
+        <div class="mt-1 text-xs text-muted-foreground truncate">{codexCollab.prompt}</div>
+      {/if}
+    </div>
+    {#if codexCollab.agents && codexCollab.agents.length > 0}
+      <div class="space-y-1 px-2 py-1">
+        {#each codexCollab.agents as agent}
+          <div class="flex items-center gap-2 text-xs">
+            <span class="font-mono text-[10px] text-muted-foreground/70"
+              >{agent.thread_id.slice(0, 8)}</span
+            >
+            <span
+              class="px-1.5 py-0.5 rounded text-[10px] font-medium {codexCollabBadgeClass(
+                agent.status,
+              )}">{agent.status}</span
+            >
+            {#if agent.message}
+              <span class="text-muted-foreground truncate">{agent.message}</span>
+            {/if}
+          </div>
+        {/each}
+      </div>
+    {/if}
+    {#if outputText}
+      <div
+        class="rounded bg-muted p-2 relative prose-chat {outputExpanded
+          ? ''
+          : 'max-h-96 overflow-hidden'}"
+      >
+        <MarkdownContent text={outputText} />
+        {@render truncateOverlay(needsExpand)}
+      </div>
+      {#if needsExpand}
+        <button
+          class="w-full text-[10px] text-muted-foreground/60 hover:text-muted-foreground py-1 transition-colors"
+          onclick={toggleOutputExpand}
+        >
+          {outputExpanded
+            ? t("common_collapse")
+            : t("common_showAllLines", { count: String(outputLineCount) })}
+        </button>
+      {/if}
+    {/if}
+  {:else if isSubagentTool(tool.tool_name)}
+    <!-- Subagent (Agent / legacy Task): prompt + type + usage stats -->
     <div class="rounded bg-muted p-2 max-h-20 overflow-y-auto">
       <div class="text-xs text-muted-foreground">
         {#if tool.input?.subagent_type}
           <span class="text-cyan-400 font-medium">{tool.input.subagent_type}</span>
+        {:else if taskResult?.agentType}
+          <span class="text-cyan-400 font-medium">{taskResult.agentType}</span>
         {/if}
         {#if tool.input?.prompt}
           <span class="ml-1 truncate">{tool.input.prompt}</span>
@@ -1107,6 +1244,22 @@
           {/if}
         {/if}
       </div>
+      <!-- AgentOutput.completed.toolStats: compact per-tool counts; omitted on older runs -->
+      {#if taskResult.toolStats}
+        {@const ts = taskResult.toolStats}
+        <div
+          class="flex items-center gap-2 px-2 pb-1 text-[10px] text-muted-foreground/60 font-mono"
+        >
+          {#if ts.readCount}<span title={t("tool_statReads")}>R{ts.readCount}</span>{/if}
+          {#if ts.searchCount}<span title={t("tool_statSearches")}>S{ts.searchCount}</span>{/if}
+          {#if ts.bashCount}<span title={t("tool_statCommands")}>⌨{ts.bashCount}</span>{/if}
+          {#if ts.editFileCount}<span title={t("tool_statEdits")}>✎{ts.editFileCount}</span>{/if}
+          {#if ts.linesAdded || ts.linesRemoved}
+            <span class="text-emerald-600 dark:text-emerald-400">+{ts.linesAdded ?? 0}</span>
+            <span class="text-red-600 dark:text-red-400">-{ts.linesRemoved ?? 0}</span>
+          {/if}
+        </div>
+      {/if}
     {/if}
     {#if outputText}
       <div
