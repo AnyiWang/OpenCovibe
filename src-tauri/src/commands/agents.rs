@@ -735,13 +735,160 @@ fn discover_codex_plugin_agents() -> Vec<AgentDefinitionSummary> {
     agents
 }
 
+/// Built-in Codex agent roles (used by `spawn_agent`). Surfaced from the backend so the Extend
+/// panel reflects the CLI's actual role set instead of a hardcoded frontend list.
+const CODEX_BUILTIN_ROLES: &[(&str, &str)] = &[
+    (
+        "default",
+        "Built-in Codex role used by spawn_agent — standard behavior with no special overrides.",
+    ),
+    (
+        "explorer",
+        "Built-in read-only Codex role for fast codebase exploration via spawn_agent.",
+    ),
+    (
+        "worker",
+        "Built-in Codex role for implementation/production work via spawn_agent.",
+    ),
+];
+
+fn codex_role_summary(
+    name: &str,
+    description: &str,
+    source: &str,
+    readonly: bool,
+    raw_content: Option<String>,
+) -> AgentDefinitionSummary {
+    AgentDefinitionSummary {
+        file_name: name.to_string(),
+        name: name.to_string(),
+        description: description.to_string(),
+        model: None,
+        source: source.to_string(),
+        scope: "user".to_string(),
+        tools: None,
+        disallowed_tools: None,
+        permission_mode: None,
+        max_turns: None,
+        background: None,
+        isolation: None,
+        readonly,
+        raw_content,
+        agent: Some("codex".to_string()),
+    }
+}
+
+/// Discover Codex agent roles from the three real sources — built-in roles, the `[agents.<name>]`
+/// config table, and `$CODEX_HOME/agents/*.toml` role files. This is the PRIMARY way users define
+/// agents (the previously-surfaced plugin agents are a separate, secondary source). Precedence:
+/// a built-in name wins over a same-named config/file entry; config wins over a file.
+fn discover_codex_role_agents() -> Vec<AgentDefinitionSummary> {
+    let mut out: Vec<AgentDefinitionSummary> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+
+    for (name, desc) in CODEX_BUILTIN_ROLES {
+        out.push(codex_role_summary(name, desc, "codex_builtin", true, None));
+        seen.insert((*name).to_string());
+    }
+
+    let (config, _) = crate::storage::cli_config::load_codex_config();
+    push_codex_config_roles(&config, &mut out, &mut seen);
+
+    if let Ok(home) = crate::storage::cli_config::codex_home_dir() {
+        collect_codex_role_files(&home.join("agents"), &mut out, &mut seen);
+    }
+
+    log::debug!("[agents] discover_codex_role_agents: {} total", out.len());
+    out
+}
+
+/// Append `[agents.<name>]` config-table roles (description / config_file / nickname_candidates).
+/// Pure (takes a loaded config Value) so it's testable without touching CODEX_HOME. readonly: G3
+/// surfaces roles read-only; editing the table / role files is a separate item, and it keeps the
+/// panel from misfiring Claude-style file ops on them.
+fn push_codex_config_roles(
+    config: &serde_json::Value,
+    out: &mut Vec<AgentDefinitionSummary>,
+    seen: &mut HashSet<String>,
+) {
+    let Some(agents_tbl) = config.get("agents").and_then(|v| v.as_object()) else {
+        return;
+    };
+    for (name, val) in agents_tbl {
+        if !seen.insert(name.clone()) {
+            continue; // built-in of the same name already added
+        }
+        let description = val
+            .get("description")
+            .and_then(|v| v.as_str())
+            .unwrap_or("User-defined Codex agent role.")
+            .to_string();
+        out.push(codex_role_summary(
+            name,
+            &description,
+            "codex_config",
+            true,
+            None,
+        ));
+    }
+}
+
+/// Recursively collect `.toml` role files from `$CODEX_HOME/agents/`, mirroring Codex's loader
+/// (`collect_agent_role_files`: recurse, `.toml` only). Best-effort description from the file.
+fn collect_codex_role_files(
+    dir: &std::path::Path,
+    out: &mut Vec<AgentDefinitionSummary>,
+    seen: &mut HashSet<String>,
+) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return, // missing dir is the normal first-run case
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_codex_role_files(&path, out, seen);
+            continue;
+        }
+        if path.extension().and_then(|e| e.to_str()) != Some("toml") {
+            continue;
+        }
+        let Some(name) = path.file_stem().and_then(|s| s.to_str()).map(String::from) else {
+            continue;
+        };
+        if !seen.insert(name.clone()) {
+            continue; // already defined by a built-in or the config table
+        }
+        let raw = std::fs::read_to_string(&path).ok();
+        let description = raw
+            .as_deref()
+            .and_then(|s| s.parse::<toml::Value>().ok())
+            .and_then(|t| {
+                t.get("description")
+                    .and_then(|v| v.as_str())
+                    .map(String::from)
+            })
+            .unwrap_or_else(|| format!("Codex agent role file ({name})."));
+        out.push(codex_role_summary(
+            &name,
+            &description,
+            "codex_role_file",
+            true,
+            raw,
+        ));
+    }
+}
+
 // ── Tauri commands ──
 
-/// List Codex plugin agents (pure filesystem scan, no CLI call).
+/// List Codex agents: built-in + user-defined roles (`[agents.*]` config + `$CODEX_HOME/agents/`)
+/// followed by plugin-bundled agents. Pure filesystem/config scan, no CLI call.
 #[tauri::command]
 pub fn list_codex_agents() -> Result<Vec<AgentDefinitionSummary>, String> {
     log::debug!("[agents] list_codex_agents");
-    Ok(discover_codex_plugin_agents())
+    let mut agents = discover_codex_role_agents();
+    agents.extend(discover_codex_plugin_agents());
+    Ok(agents)
 }
 
 /// List all agent definitions from user/project/plugin sources.
@@ -1441,5 +1588,73 @@ You are a code reviewer."#;
             &config,
             &map
         ));
+    }
+
+    // ── Codex agent role discovery (G3) ──
+
+    #[test]
+    fn codex_config_roles_surface_with_description() {
+        let config = serde_json::json!({
+            "agents": {
+                "reviewer": { "description": "Reviews diffs", "nickname_candidates": ["Critic"] },
+                "scout": {} // no description → fallback
+            }
+        });
+        let mut out = Vec::new();
+        let mut seen = HashSet::new();
+        push_codex_config_roles(&config, &mut out, &mut seen);
+
+        let reviewer = out.iter().find(|a| a.name == "reviewer").expect("reviewer");
+        assert_eq!(reviewer.source, "codex_config");
+        assert_eq!(reviewer.description, "Reviews diffs");
+        assert_eq!(reviewer.agent.as_deref(), Some("codex"));
+        assert!(reviewer.readonly);
+
+        let scout = out.iter().find(|a| a.name == "scout").expect("scout");
+        assert_eq!(scout.description, "User-defined Codex agent role.");
+    }
+
+    #[test]
+    fn codex_config_roles_skip_seen_names() {
+        // A built-in name already in `seen` must not be overwritten by a config entry.
+        let config = serde_json::json!({ "agents": { "explorer": { "description": "custom" } } });
+        let mut out = Vec::new();
+        let mut seen = HashSet::from(["explorer".to_string()]);
+        push_codex_config_roles(&config, &mut out, &mut seen);
+        assert!(
+            out.is_empty(),
+            "explorer was already seen (built-in) → skipped"
+        );
+    }
+
+    #[test]
+    fn codex_role_files_scanned_from_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let agents_dir = tmp.path().join("agents");
+        std::fs::create_dir_all(agents_dir.join("nested")).unwrap();
+        std::fs::write(
+            agents_dir.join("planner.toml"),
+            "description = \"Plans the work\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            agents_dir.join("nested/builder.toml"),
+            "model = \"gpt-5.5\"\n",
+        )
+        .unwrap();
+        std::fs::write(agents_dir.join("notes.md"), "ignored").unwrap(); // non-toml ignored
+
+        let mut out = Vec::new();
+        let mut seen = HashSet::new();
+        collect_codex_role_files(&agents_dir, &mut out, &mut seen);
+
+        let names: Vec<&str> = out.iter().map(|a| a.name.as_str()).collect();
+        assert!(names.contains(&"planner"));
+        assert!(names.contains(&"builder")); // recursive
+        assert!(!names.contains(&"notes")); // .md skipped
+        let planner = out.iter().find(|a| a.name == "planner").unwrap();
+        assert_eq!(planner.source, "codex_role_file");
+        assert_eq!(planner.description, "Plans the work");
+        assert!(planner.raw_content.is_some());
     }
 }

@@ -76,43 +76,15 @@
     },
   ];
 
-  // ── Codex built-in roles (hardcoded, read-only) ──
-  const codexBuiltInAgents: AgentDefinitionSummary[] = [
-    {
-      file_name: "default",
-      name: "default",
-      description:
-        "Built-in Codex role used by spawn_agent — standard behavior with no special overrides.",
-      source: "built-in",
-      scope: "user",
-      readonly: true,
-      agent: "codex",
-    },
-    {
-      file_name: "explorer",
-      name: "explorer",
-      description: "Read-only Codex role for fast codebase exploration via spawn_agent.",
-      source: "built-in",
-      scope: "user",
-      readonly: true,
-      agent: "codex",
-    },
-    {
-      file_name: "worker",
-      name: "worker",
-      description: "Read-only Codex role for implementation work via spawn_agent.",
-      source: "built-in",
-      scope: "user",
-      readonly: true,
-      agent: "codex",
-    },
-  ];
+  // Codex roles (built-in + user-defined [agents.*] + $CODEX_HOME/agents/ + plugins) now come from
+  // the backend `list_codex_agents` — split by `source` below. No hardcoded list here.
 
   // ── State ──
   let loading = $state(true);
   let customAgents = $state<AgentDefinitionSummary[]>([]);
   let pluginAgents = $state<AgentDefinitionSummary[]>([]);
-  let codexPluginAgents = $state<AgentDefinitionSummary[]>([]);
+  // All Codex agents from the backend (built-in roles, user [agents.*]/role files, plugin agents).
+  let codexAgents = $state<AgentDefinitionSummary[]>([]);
   let pluginError = $state(false);
   let selectedAgent = $state<AgentDefinitionSummary | null>(null);
   let selectedContent = $state<string | null>(null);
@@ -148,7 +120,7 @@
 
       customAgents = nextCustom;
       pluginAgents = nextPlugin;
-      codexPluginAgents = nextCodex;
+      codexAgents = nextCodex;
       pluginError = claude.status === "rejected";
 
       if (codex.status === "rejected") {
@@ -157,13 +129,7 @@
 
       // Clear stale selection using local arrays (no $derived dependency)
       if (selectedAgent) {
-        const all = [
-          ...builtInAgents,
-          ...codexBuiltInAgents,
-          ...nextCustom,
-          ...nextPlugin,
-          ...nextCodex,
-        ];
+        const all = [...builtInAgents, ...nextCustom, ...nextPlugin, ...nextCodex];
         if (!all.some((a) => agentKey(a) === agentKey(selectedAgent!))) {
           selectedAgent = null;
           selectedContent = null;
@@ -192,12 +158,27 @@
     return `${a.agent ?? "claude"}:${a.source}:${a.file_name}`;
   }
 
-  let allBuiltIn = $derived([...builtInAgents, ...codexBuiltInAgents]);
+  // Split backend Codex agents by source: built-in roles → built-in group; user-defined roles
+  // ([agents.*] config + $CODEX_HOME/agents/ files) → custom group; everything else → plugin group.
+  let codexBuiltin = $derived(codexAgents.filter((a) => a.source === "codex_builtin"));
+  let codexCustom = $derived(
+    codexAgents.filter((a) => a.source === "codex_config" || a.source === "codex_role_file"),
+  );
+  let codexPluginAgents = $derived(
+    codexAgents.filter(
+      (a) =>
+        a.source !== "codex_builtin" &&
+        a.source !== "codex_config" &&
+        a.source !== "codex_role_file",
+    ),
+  );
+
+  let allBuiltIn = $derived([...builtInAgents, ...codexBuiltin]);
   let allPlugin = $derived([...pluginAgents, ...codexPluginAgents]);
 
   let displayedAgents = $derived.by(() => {
     if (activeGroup === "built-in") return allBuiltIn;
-    if (activeGroup === "custom") return customAgents;
+    if (activeGroup === "custom") return [...customAgents, ...codexCustom];
     return allPlugin;
   });
 
@@ -211,6 +192,11 @@
       return;
     }
     if (agent.source === "built-in") {
+      return;
+    }
+    // Codex roles are config/file-based, not Claude agent files — never call readAgentFile for
+    // them (it's Claude-scoped). raw_content (role files) is shown above; the rest have no body.
+    if (agent.agent === "codex") {
       return;
     }
     // Load raw content for custom agents
@@ -278,7 +264,9 @@
   }
 
   function scopeLabel(agent: AgentDefinitionSummary): string {
-    if (agent.source === "built-in") return t("agent_builtIn");
+    if (agent.source === "built-in" || agent.source === "codex_builtin") return t("agent_builtIn");
+    if (agent.source === "codex_config") return "config.toml";
+    if (agent.source === "codex_role_file") return "role file";
     if (agent.scope === "user") return t("agent_scopeUser");
     if (agent.scope === "project") return t("agent_scopeProject");
     if (agent.scope === "plugin") {
@@ -292,7 +280,8 @@
   }
 
   function scopeColor(agent: AgentDefinitionSummary): string {
-    if (agent.source === "built-in") return "bg-muted text-muted-foreground";
+    if (agent.source === "built-in" || agent.source === "codex_builtin")
+      return "bg-muted text-muted-foreground";
     if (agent.scope === "user") return "bg-blue-500/10 text-blue-600 dark:text-blue-400";
     if (agent.scope === "project") return "bg-green-500/10 text-green-600 dark:text-green-400";
     if (agent.scope === "plugin") return "bg-purple-500/10 text-purple-600 dark:text-purple-400";
