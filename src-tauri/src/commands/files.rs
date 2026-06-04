@@ -147,17 +147,27 @@ pub(crate) fn validate_file_path(
                 log::debug!("[files] path allowed (extra dir): {}", canonical.display());
                 return Ok(canonical);
             }
-            // Also allow git repo root (for ancestor AGENTS.md files)
-            for ancestor in extra_canonical.ancestors().skip(1) {
-                if ancestor.join(".git").exists() {
-                    if canonical.starts_with(ancestor) {
-                        log::debug!(
-                            "[files] path allowed (git root of cwd): {}",
-                            canonical.display()
-                        );
-                        return Ok(canonical);
+            // Also allow ancestor agent-memory files (e.g. an AGENTS.md / CLAUDE.md at
+            // the repo root when cwd is a subdir). Restricted to those filenames: an
+            // unrestricted git-root allowance would let a caller write e.g.
+            // `<repo>/.git/hooks/pre-commit` and gain code execution on the next commit.
+            let is_agent_memory = canonical
+                .file_name()
+                .and_then(|n| n.to_str())
+                .map(|n| n.eq_ignore_ascii_case("AGENTS.md") || n.eq_ignore_ascii_case("CLAUDE.md"))
+                .unwrap_or(false);
+            if is_agent_memory {
+                for ancestor in extra_canonical.ancestors().skip(1) {
+                    if ancestor.join(".git").exists() {
+                        if canonical.starts_with(ancestor) {
+                            log::debug!(
+                                "[files] path allowed (agent-memory file at git root): {}",
+                                canonical.display()
+                            );
+                            return Ok(canonical);
+                        }
+                        break;
                     }
-                    break;
                 }
             }
         }
