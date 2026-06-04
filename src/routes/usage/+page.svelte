@@ -4,7 +4,7 @@
   import * as api from "$lib/api";
   import type { UsageOverview, DailyAggregate } from "$lib/types";
   import { formatCost, formatTokenCount } from "$lib/utils/format";
-  import { dbg, dbgWarn } from "$lib/utils/debug";
+  import { dbg } from "$lib/utils/debug";
   import Card from "$lib/components/Card.svelte";
   import HeatmapCalendar from "$lib/components/HeatmapCalendar.svelte";
   import StackedModelChart from "$lib/components/StackedModelChart.svelte";
@@ -15,8 +15,8 @@
   let loading = $state(true);
   let error = $state("");
   let selectedDays = $state<number | undefined>(undefined); // undefined = all
-  let heatmapDaily = $state<DailyAggregate[] | null>(null);
-  let heatmapRequestId = 0;
+  /** A reload (scope/range switch) is in flight over already-loaded content — dim, don't collapse. */
+  let busy = $state(false);
 
   /** "app" = OpenCovibe runs only, "global" = all Claude Code sessions */
   let scope = $state<"app" | "global">("global");
@@ -54,6 +54,22 @@
     }
     return Math.max(...data.daily.map((d) => d.inputTokens + d.outputTokens), 1);
   });
+
+  // Bars to render in the daily-trend chart. The backend already filters `daily` to the
+  // selected range, so show all of it — slicing to a fixed window made 30d/90d/All look
+  // nearly identical (and scaled bars to an off-screen peak).
+  let chartDaily = $derived(data?.daily ?? []);
+
+  /** Strip per-model breakdown, sort by date, cap at 365 — input for the activity calendar. */
+  function deriveHeatmap(daily: DailyAggregate[]): DailyAggregate[] {
+    const copy = daily.map((d) => ({ ...d, modelBreakdown: undefined }));
+    copy.sort((a, b) => a.date.localeCompare(b.date));
+    return copy.length > 365 ? copy.slice(-365) : copy;
+  }
+
+  // Activity calendar follows the selected range (derived from the same filtered `daily`), so
+  // it stays consistent with the active-days/streak labels instead of always showing a full year.
+  let heatmapDaily = $derived(data ? deriveHeatmap(data.daily) : null);
 
   // Sort state for run history
   let sortCol = $state<"date" | "cost" | "tokens" | "turns">("date");
@@ -99,9 +115,17 @@
 
   async function loadData(days?: number) {
     const thisRequest = ++requestId;
-    if (!data) loading = true; // Only show full spinner on initial load
+    // Full spinner only on the very first load. Reloads (scope/range switch) keep the current
+    // content fully visible and mounted — no collapse, no dim. A small corner spinner appears
+    // only if the reload is slow (cold cache), gated behind a short delay so fast cached
+    // switches swap content instantly with no flicker or jump.
+    if (!data) loading = true;
     error = "";
     showFullScanMessage = false;
+
+    const busyTimer = setTimeout(() => {
+      if (thisRequest === requestId && data) busy = true;
+    }, 180);
 
     // Delayed indicator: show message if full scan takes > 500ms
     const delayTimer = setTimeout(() => {
@@ -138,28 +162,12 @@
       if (thisRequest !== requestId) return;
       error = String(e);
     } finally {
+      clearTimeout(busyTimer);
       clearTimeout(delayTimer);
       if (thisRequest === requestId) {
         loading = false;
+        busy = false;
         showFullScanMessage = false;
-      }
-    }
-  }
-
-  async function loadHeatmapData() {
-    const token = ++heatmapRequestId;
-    try {
-      const result = await api.getHeatmapDaily(scope);
-      if (token === heatmapRequestId) {
-        heatmapDaily = result;
-        dbg("usage", "heatmap loaded", { scope, days: result.length });
-      } else {
-        dbg("usage", "heatmap discarded stale", { token, current: heatmapRequestId });
-      }
-    } catch (e) {
-      if (token === heatmapRequestId) {
-        heatmapDaily = null;
-        dbgWarn("usage", "heatmap load failed", e);
       }
     }
   }
@@ -175,8 +183,8 @@
     if (s === "app" && (chartMode === "messages" || chartMode === "sessions")) {
       chartMode = "cost";
     }
+    // heatmapDaily is derived from data.daily, so it rebuilds automatically on reload.
     loadData(selectedDays);
-    loadHeatmapData();
   }
 
   async function refreshCache() {
@@ -184,7 +192,7 @@
     refreshing = true;
     try {
       await api.clearUsageCache();
-      await Promise.all([loadData(selectedDays), loadHeatmapData()]);
+      await loadData(selectedDays);
     } finally {
       refreshing = false;
     }
@@ -225,11 +233,19 @@
 
   onMount(() => {
     loadData(selectedDays);
-    loadHeatmapData();
   });
 </script>
 
-<div class="max-w-4xl mx-auto p-6 space-y-6 animate-slide-up">
+<div class="relative max-w-4xl mx-auto p-6 space-y-6 animate-slide-up">
+  <!-- Reload indicator (scope/range switch). Absolutely positioned → no layout impact.
+       Hidden during refresh — the refresh button has its own spinner, so a second one is noise. -->
+  {#if busy && !refreshing}
+    <div class="absolute right-6 top-6 z-10">
+      <div
+        class="h-4 w-4 border-2 border-primary/30 border-t-primary rounded-full animate-spin"
+      ></div>
+    </div>
+  {/if}
   <!-- Header -->
   <div class="flex items-center gap-4">
     <div class="flex h-14 w-14 items-center justify-center rounded-2xl bg-emerald-500/10">
@@ -336,309 +352,230 @@
       {error}
     </div>
   {:else if data}
-    <!-- Summary cards -->
-    <div class="grid grid-cols-2 gap-4 sm:grid-cols-4">
-      <Card class="p-4 text-center">
-        <p class="text-2xl font-bold">{formatCost(data.totalCostUsd)}</p>
-        <p class="text-xs text-muted-foreground mt-1">{t("usage_totalCost")}</p>
-      </Card>
-      <Card class="p-4 text-center">
-        <p class="text-2xl font-bold">{formatTokenCount(data.totalTokens)}</p>
-        <p class="text-xs text-muted-foreground mt-1">{t("usage_totalTokens")}</p>
-      </Card>
-      <Card class="p-4 text-center">
-        <p class="text-2xl font-bold">{data.totalRuns}</p>
-        <p class="text-xs text-muted-foreground mt-1">
-          {scope === "global" ? t("usage_sessions") : t("usage_runs")}
-        </p>
-      </Card>
-      <Card class="p-4 text-center">
-        {#if data.currentStreak > 0}
-          <p class="text-2xl font-bold">
-            {t("usage_currentStreak", { count: String(data.currentStreak) })}
-          </p>
+    <div class="space-y-6">
+      <!-- Summary cards -->
+      <div class="grid grid-cols-2 gap-4 sm:grid-cols-4">
+        <Card class="p-4 text-center">
+          <p class="text-2xl font-bold">{formatCost(data.totalCostUsd)}</p>
+          <p class="text-xs text-muted-foreground mt-1">{t("usage_totalCost")}</p>
+        </Card>
+        <Card class="p-4 text-center">
+          <p class="text-2xl font-bold">{formatTokenCount(data.totalTokens)}</p>
+          <p class="text-xs text-muted-foreground mt-1">{t("usage_totalTokens")}</p>
+        </Card>
+        <Card class="p-4 text-center">
+          <p class="text-2xl font-bold">{data.totalRuns}</p>
           <p class="text-xs text-muted-foreground mt-1">
-            {t("usage_longestStreak", { count: String(data.longestStreak) })}
+            {scope === "global" ? t("usage_sessions") : t("usage_runs")}
           </p>
-        {:else}
-          <p class="text-2xl font-bold">
-            {t("usage_activeDays", { count: String(data.activeDays) })}
-          </p>
-          <p class="text-xs text-muted-foreground mt-1">
-            {scope === "global" ? t("usage_avgCostSession") : t("usage_avgCostRun")}
-          </p>
-        {/if}
-      </Card>
-    </div>
+        </Card>
+        <Card class="p-4 text-center">
+          {#if data.currentStreak > 0}
+            <p class="text-2xl font-bold">
+              {t("usage_currentStreak", { count: String(data.currentStreak) })}
+            </p>
+            <p class="text-xs text-muted-foreground mt-1">
+              {t("usage_longestStreak", { count: String(data.longestStreak) })}
+            </p>
+          {:else}
+            <p class="text-2xl font-bold">
+              {t("usage_activeDays", { count: String(data.activeDays) })}
+            </p>
+            <p class="text-xs text-muted-foreground mt-1">
+              {scope === "global" ? t("usage_avgCostSession") : t("usage_avgCostRun")}
+            </p>
+          {/if}
+        </Card>
+      </div>
 
-    <!-- Activity Heatmap (always 52 weeks, independent of date filter) -->
-    {#if heatmapDaily}
-      <Card class="p-6 space-y-3">
+      <!-- Activity Heatmap (always 52 weeks, independent of date filter) -->
+      {#if heatmapDaily}
+        <Card class="p-6 space-y-3">
+          <div class="flex items-center justify-between">
+            <h2 class="text-sm font-semibold text-muted-foreground uppercase tracking-wider">
+              {t("usage_activityHeatmap")}
+            </h2>
+            <div class="flex gap-3 text-xs text-muted-foreground">
+              {#if data.activeDays > 0}
+                <span>{t("usage_activeDays", { count: String(data.activeDays) })}</span>
+              {/if}
+              {#if data.longestStreak > 0}
+                <span>{t("usage_longestStreak", { count: String(data.longestStreak) })}</span>
+              {/if}
+            </div>
+          </div>
+          <HeatmapCalendar daily={heatmapDaily} metric={chartMode} />
+        </Card>
+      {/if}
+
+      <!-- Daily trend chart -->
+      <Card class="p-6 space-y-4">
         <div class="flex items-center justify-between">
           <h2 class="text-sm font-semibold text-muted-foreground uppercase tracking-wider">
-            {t("usage_activityHeatmap")}
+            {t("usage_dailyTrend")}
           </h2>
-          <div class="flex gap-3 text-xs text-muted-foreground">
-            {#if data.activeDays > 0}
-              <span>{t("usage_activeDays", { count: String(data.activeDays) })}</span>
-            {/if}
-            {#if data.longestStreak > 0}
-              <span>{t("usage_longestStreak", { count: String(data.longestStreak) })}</span>
-            {/if}
-          </div>
-        </div>
-        <HeatmapCalendar daily={heatmapDaily} metric={chartMode} />
-      </Card>
-    {/if}
-
-    <!-- Daily trend chart -->
-    <Card class="p-6 space-y-4">
-      <div class="flex items-center justify-between">
-        <h2 class="text-sm font-semibold text-muted-foreground uppercase tracking-wider">
-          {t("usage_dailyTrend")}
-        </h2>
-        <div class="flex gap-1">
-          <button
-            class="px-2 py-0.5 text-[10px] font-medium rounded transition-colors
+          <div class="flex gap-1">
+            <button
+              class="px-2 py-0.5 text-[10px] font-medium rounded transition-colors
               {chartMode === 'cost'
-              ? 'bg-primary/20 text-primary'
-              : 'text-muted-foreground hover:text-foreground'}"
-            onclick={() => (chartMode = "cost")}
-          >
-            {t("usage_chartCost")}
-          </button>
-          <button
-            class="px-2 py-0.5 text-[10px] font-medium rounded transition-colors
+                ? 'bg-primary/20 text-primary'
+                : 'text-muted-foreground hover:text-foreground'}"
+              onclick={() => (chartMode = "cost")}
+            >
+              {t("usage_chartCost")}
+            </button>
+            <button
+              class="px-2 py-0.5 text-[10px] font-medium rounded transition-colors
               {chartMode === 'tokens'
-              ? 'bg-primary/20 text-primary'
-              : 'text-muted-foreground hover:text-foreground'}"
-            onclick={() => (chartMode = "tokens")}
-          >
-            {t("usage_chartTokens")}
-          </button>
-          {#if scope === "global"}
-            <button
-              class="px-2 py-0.5 text-[10px] font-medium rounded transition-colors
+                ? 'bg-primary/20 text-primary'
+                : 'text-muted-foreground hover:text-foreground'}"
+              onclick={() => (chartMode = "tokens")}
+            >
+              {t("usage_chartTokens")}
+            </button>
+            {#if scope === "global"}
+              <button
+                class="px-2 py-0.5 text-[10px] font-medium rounded transition-colors
                 {chartMode === 'messages'
-                ? 'bg-primary/20 text-primary'
-                : 'text-muted-foreground hover:text-foreground'}"
-              onclick={() => (chartMode = "messages")}
-            >
-              {t("usage_chartMessages")}
-            </button>
-            <button
-              class="px-2 py-0.5 text-[10px] font-medium rounded transition-colors
+                  ? 'bg-primary/20 text-primary'
+                  : 'text-muted-foreground hover:text-foreground'}"
+                onclick={() => (chartMode = "messages")}
+              >
+                {t("usage_chartMessages")}
+              </button>
+              <button
+                class="px-2 py-0.5 text-[10px] font-medium rounded transition-colors
                 {chartMode === 'sessions'
-                ? 'bg-primary/20 text-primary'
-                : 'text-muted-foreground hover:text-foreground'}"
-              onclick={() => (chartMode = "sessions")}
-            >
-              {t("usage_chartSessions")}
-            </button>
-          {/if}
-        </div>
-      </div>
-      {#if data.daily.length > 0}
-        {#if scope === "global" && chartMode === "tokens" && data.daily.some((d) => d.modelBreakdown)}
-          <StackedModelChart daily={data.daily} />
-        {:else}
-          <div class="flex h-40">
-            <!-- Y-axis labels -->
-            <div
-              class="flex flex-col justify-between items-end pr-2 text-[10px] text-muted-foreground tabular-nums shrink-0 py-0.5"
-            >
-              <span>{formatAxisValue(maxDailyValue)}</span>
-              <span>{formatAxisValue(maxDailyValue / 2)}</span>
-              <span>0</span>
-            </div>
-            <!-- Bars + X-axis -->
-            <div class="flex-1 flex flex-col min-w-0">
-              <div class="flex-1 flex gap-[2px] border-l border-b border-border/50 relative">
-                <!-- 50% gridline -->
-                <div
-                  class="absolute inset-x-0 top-1/2 border-t border-border/30 pointer-events-none"
-                ></div>
-                {#each data.daily.slice(-30) as day}
-                  {@const value = getDailyValue(day)}
-                  {@const pct = Math.max((value / maxDailyValue) * 100, 2)}
-                  <div
-                    class="flex-1 min-w-0 flex items-end group cursor-default"
-                    title={getDailyTooltip(day)}
-                  >
-                    <div
-                      class="w-full rounded-t bg-primary/60 group-hover:bg-primary transition-colors"
-                      style="height: {pct}%"
-                    ></div>
-                  </div>
-                {/each}
-              </div>
-              <!-- X-axis date labels -->
-              <div class="flex gap-[2px] mt-1">
-                {#each data.daily.slice(-30) as day, i}
-                  {@const showLabel =
-                    data.daily.slice(-30).length <= 10 ||
-                    i % Math.ceil(data.daily.slice(-30).length / 10) === 0}
-                  <div class="flex-1 min-w-0 text-center">
-                    {#if showLabel}
-                      <span class="text-[10px] text-muted-foreground tabular-nums">
-                        {formatShortDate(day.date)}
-                      </span>
-                    {/if}
-                  </div>
-                {/each}
-              </div>
-            </div>
+                  ? 'bg-primary/20 text-primary'
+                  : 'text-muted-foreground hover:text-foreground'}"
+                onclick={() => (chartMode = "sessions")}
+              >
+                {t("usage_chartSessions")}
+              </button>
+            {/if}
           </div>
-        {/if}
-      {:else}
-        <p class="text-sm text-muted-foreground">{t("usage_noDailyData")}</p>
-      {/if}
-    </Card>
-
-    <!-- By Model -->
-    <Card class="p-6 space-y-4">
-      <h2 class="text-sm font-semibold text-muted-foreground uppercase tracking-wider">
-        {t("usage_byModel")}
-      </h2>
-      {#if data.byModel.length > 0}
-        <div class="overflow-x-auto">
-          <table class="w-full text-sm">
-            <thead>
-              <tr class="text-xs text-muted-foreground border-b border-border">
-                <th class="text-left py-2 font-medium">{t("usage_thModel")}</th>
-                {#if scope === "app"}
-                  <th class="text-right py-2 font-medium">{t("usage_thRuns")}</th>
-                {/if}
-                <th class="text-right py-2 font-medium">{t("usage_thInTokens")}</th>
-                <th class="text-right py-2 font-medium">{t("usage_thOutTokens")}</th>
-                <th class="text-right py-2 font-medium">{t("usage_thCacheRead")}</th>
-                <th class="text-right py-2 font-medium">{t("usage_thCacheWrite")}</th>
-                <th class="text-right py-2 font-medium">{t("usage_thCost")}</th>
-                <th class="text-right py-2 font-medium w-24">%</th>
-              </tr>
-            </thead>
-            <tbody>
-              {#each data.byModel as modelRow}
-                <tr class="border-b border-border/50 hover:bg-muted/30">
-                  <td class="py-2 font-mono text-xs truncate max-w-[180px]" title={modelRow.model}>
-                    {modelRow.model}
-                  </td>
-                  {#if scope === "app"}
-                    <td class="py-2 text-right tabular-nums">{modelRow.runs}</td>
-                  {/if}
-                  <td class="py-2 text-right tabular-nums font-mono text-xs">
-                    {formatTokenCount(modelRow.inputTokens)}
-                  </td>
-                  <td class="py-2 text-right tabular-nums font-mono text-xs">
-                    {formatTokenCount(modelRow.outputTokens)}
-                  </td>
-                  <td class="py-2 text-right tabular-nums font-mono text-xs text-muted-foreground">
-                    {formatTokenCount(modelRow.cacheReadTokens)}
-                  </td>
-                  <td class="py-2 text-right tabular-nums font-mono text-xs text-muted-foreground">
-                    {formatTokenCount(modelRow.cacheWriteTokens)}
-                  </td>
-                  <td class="py-2 text-right tabular-nums font-mono text-xs">
-                    {formatCost(modelRow.costUsd)}
-                  </td>
-                  <td class="py-2 text-right">
-                    <div class="flex items-center justify-end gap-2">
-                      <div class="w-12 h-1.5 bg-muted rounded-full overflow-hidden">
-                        <div
-                          class="h-full bg-primary rounded-full"
-                          style="width: {Math.min(modelRow.pct, 100)}%"
-                        ></div>
-                      </div>
-                      <span class="text-xs tabular-nums text-muted-foreground w-8 text-right">
-                        {modelRow.pct.toFixed(0)}%
-                      </span>
-                    </div>
-                  </td>
-                </tr>
-              {/each}
-            </tbody>
-          </table>
         </div>
-      {:else}
-        <p class="text-sm text-muted-foreground">{t("usage_noModelData")}</p>
-      {/if}
-    </Card>
+        {#if data.daily.length > 0}
+          {#if scope === "global" && chartMode === "tokens" && data.daily.some((d) => d.modelBreakdown)}
+            <StackedModelChart daily={data.daily} />
+          {:else}
+            <div class="flex h-40">
+              <!-- Y-axis labels -->
+              <div
+                class="flex flex-col justify-between items-end pr-2 text-[10px] text-muted-foreground tabular-nums shrink-0 py-0.5"
+              >
+                <span>{formatAxisValue(maxDailyValue)}</span>
+                <span>{formatAxisValue(maxDailyValue / 2)}</span>
+                <span>0</span>
+              </div>
+              <!-- Bars + X-axis -->
+              <div class="flex-1 flex flex-col min-w-0">
+                <div class="flex-1 flex gap-[2px] border-l border-b border-border/50 relative">
+                  <!-- 50% gridline -->
+                  <div
+                    class="absolute inset-x-0 top-1/2 border-t border-border/30 pointer-events-none"
+                  ></div>
+                  {#each chartDaily as day}
+                    {@const value = getDailyValue(day)}
+                    {@const pct = Math.max((value / maxDailyValue) * 100, 2)}
+                    <div
+                      class="flex-1 min-w-0 flex items-end group cursor-default"
+                      title={getDailyTooltip(day)}
+                    >
+                      <div
+                        class="w-full rounded-t bg-primary/60 group-hover:bg-primary transition-colors"
+                        style="height: {pct}%"
+                      ></div>
+                    </div>
+                  {/each}
+                </div>
+                <!-- X-axis date labels -->
+                <div class="flex gap-[2px] mt-1">
+                  {#each chartDaily as day, i}
+                    {@const showLabel =
+                      chartDaily.length <= 10 || i % Math.ceil(chartDaily.length / 10) === 0}
+                    <div class="flex-1 min-w-0 text-center">
+                      {#if showLabel}
+                        <span class="text-[10px] text-muted-foreground tabular-nums">
+                          {formatShortDate(day.date)}
+                        </span>
+                      {/if}
+                    </div>
+                  {/each}
+                </div>
+              </div>
+            </div>
+          {/if}
+        {:else}
+          <p class="text-sm text-muted-foreground">{t("usage_noDailyData")}</p>
+        {/if}
+      </Card>
 
-    <!-- Run History (App mode only) -->
-    {#if scope === "app"}
+      <!-- By Model -->
       <Card class="p-6 space-y-4">
         <h2 class="text-sm font-semibold text-muted-foreground uppercase tracking-wider">
-          {t("usage_runHistory")}
+          {t("usage_byModel")}
         </h2>
-        {#if sortedRuns.length > 0}
+        {#if data.byModel.length > 0}
           <div class="overflow-x-auto">
             <table class="w-full text-sm">
               <thead>
                 <tr class="text-xs text-muted-foreground border-b border-border">
-                  <th
-                    class="text-left py-2 font-medium cursor-pointer select-none hover:text-foreground"
-                    onclick={() => toggleSort("date")}
-                  >
-                    {t("usage_thDate")}{sortIndicator("date")}
-                  </th>
-                  <th class="text-left py-2 font-medium">{t("usage_thName")}</th>
                   <th class="text-left py-2 font-medium">{t("usage_thModel")}</th>
-                  <th
-                    class="text-right py-2 font-medium cursor-pointer select-none hover:text-foreground"
-                    onclick={() => toggleSort("tokens")}
-                  >
-                    {t("usage_thTokens")}{sortIndicator("tokens")}
-                  </th>
-                  <th
-                    class="text-right py-2 font-medium cursor-pointer select-none hover:text-foreground"
-                    onclick={() => toggleSort("cost")}
-                  >
-                    {t("usage_thCost")}{sortIndicator("cost")}
-                  </th>
-                  <th
-                    class="text-right py-2 font-medium cursor-pointer select-none hover:text-foreground"
-                    onclick={() => toggleSort("turns")}
-                  >
-                    {t("usage_thTurns")}{sortIndicator("turns")}
-                  </th>
+                  {#if scope === "app"}
+                    <th class="text-right py-2 font-medium">{t("usage_thRuns")}</th>
+                  {/if}
+                  <th class="text-right py-2 font-medium">{t("usage_thInTokens")}</th>
+                  <th class="text-right py-2 font-medium">{t("usage_thOutTokens")}</th>
+                  <th class="text-right py-2 font-medium">{t("usage_thCacheRead")}</th>
+                  <th class="text-right py-2 font-medium">{t("usage_thCacheWrite")}</th>
+                  <th class="text-right py-2 font-medium">{t("usage_thCost")}</th>
+                  <th class="text-right py-2 font-medium w-24">%</th>
                 </tr>
               </thead>
               <tbody>
-                {#each sortedRuns as run}
-                  <tr
-                    class="border-b border-border/50 hover:bg-muted/30 cursor-pointer"
-                    onclick={() => goto(`/chat?run=${run.runId}`)}
-                  >
-                    <td class="py-2 text-xs text-muted-foreground whitespace-nowrap">
-                      {formatDate(run.startedAt)}
-                    </td>
-                    <td class="py-2 truncate max-w-[200px]" title={run.name}>
-                      {run.name}
-                    </td>
+                {#each data.byModel as modelRow}
+                  <tr class="border-b border-border/50 hover:bg-muted/30">
                     <td
-                      class="py-2 font-mono text-xs text-muted-foreground truncate max-w-[120px]"
-                      title={run.model ?? run.agent}
+                      class="py-2 font-mono text-xs truncate max-w-[180px]"
+                      title={modelRow.model}
                     >
-                      {#if run.agent !== "claude"}
-                        <span class="text-[10px] text-emerald-500/70 mr-1 font-sans"
-                          >{run.agent}</span
-                        >
-                      {/if}
-                      {run.model ?? "\u2014"}
+                      {modelRow.model}
+                    </td>
+                    {#if scope === "app"}
+                      <td class="py-2 text-right tabular-nums">{modelRow.runs}</td>
+                    {/if}
+                    <td class="py-2 text-right tabular-nums font-mono text-xs">
+                      {formatTokenCount(modelRow.inputTokens)}
                     </td>
                     <td class="py-2 text-right tabular-nums font-mono text-xs">
-                      {formatTokenCount(run.inputTokens + run.outputTokens)}
+                      {formatTokenCount(modelRow.outputTokens)}
                     </td>
                     <td
-                      class="py-2 text-right tabular-nums font-mono text-xs"
-                      title={run.costEstimated ? "Estimated from token count" : undefined}
+                      class="py-2 text-right tabular-nums font-mono text-xs text-muted-foreground"
                     >
-                      {formatCost(run.totalCostUsd)}{#if run.costEstimated}<span
-                          class="text-[9px] text-muted-foreground/50 ml-0.5">~</span
-                        >{/if}
+                      {formatTokenCount(modelRow.cacheReadTokens)}
                     </td>
-                    <td class="py-2 text-right tabular-nums">
-                      {run.numTurns}
+                    <td
+                      class="py-2 text-right tabular-nums font-mono text-xs text-muted-foreground"
+                    >
+                      {formatTokenCount(modelRow.cacheWriteTokens)}
+                    </td>
+                    <td class="py-2 text-right tabular-nums font-mono text-xs">
+                      {formatCost(modelRow.costUsd)}
+                    </td>
+                    <td class="py-2 text-right">
+                      <div class="flex items-center justify-end gap-2">
+                        <div class="w-12 h-1.5 bg-muted rounded-full overflow-hidden">
+                          <div
+                            class="h-full bg-primary rounded-full"
+                            style="width: {Math.min(modelRow.pct, 100)}%"
+                          ></div>
+                        </div>
+                        <span class="text-xs tabular-nums text-muted-foreground w-8 text-right">
+                          {modelRow.pct.toFixed(0)}%
+                        </span>
+                      </div>
                     </td>
                   </tr>
                 {/each}
@@ -646,11 +583,98 @@
             </table>
           </div>
         {:else}
-          <p class="text-sm text-muted-foreground">
-            {t("usage_noUsageData")}
-          </p>
+          <p class="text-sm text-muted-foreground">{t("usage_noModelData")}</p>
         {/if}
       </Card>
-    {/if}
+
+      <!-- Run History (App mode only) -->
+      {#if scope === "app"}
+        <Card class="p-6 space-y-4">
+          <h2 class="text-sm font-semibold text-muted-foreground uppercase tracking-wider">
+            {t("usage_runHistory")}
+          </h2>
+          {#if sortedRuns.length > 0}
+            <div class="overflow-x-auto">
+              <table class="w-full text-sm">
+                <thead>
+                  <tr class="text-xs text-muted-foreground border-b border-border">
+                    <th
+                      class="text-left py-2 font-medium cursor-pointer select-none hover:text-foreground"
+                      onclick={() => toggleSort("date")}
+                    >
+                      {t("usage_thDate")}{sortIndicator("date")}
+                    </th>
+                    <th class="text-left py-2 font-medium">{t("usage_thName")}</th>
+                    <th class="text-left py-2 font-medium">{t("usage_thModel")}</th>
+                    <th
+                      class="text-right py-2 font-medium cursor-pointer select-none hover:text-foreground"
+                      onclick={() => toggleSort("tokens")}
+                    >
+                      {t("usage_thTokens")}{sortIndicator("tokens")}
+                    </th>
+                    <th
+                      class="text-right py-2 font-medium cursor-pointer select-none hover:text-foreground"
+                      onclick={() => toggleSort("cost")}
+                    >
+                      {t("usage_thCost")}{sortIndicator("cost")}
+                    </th>
+                    <th
+                      class="text-right py-2 font-medium cursor-pointer select-none hover:text-foreground"
+                      onclick={() => toggleSort("turns")}
+                    >
+                      {t("usage_thTurns")}{sortIndicator("turns")}
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {#each sortedRuns as run}
+                    <tr
+                      class="border-b border-border/50 hover:bg-muted/30 cursor-pointer"
+                      onclick={() => goto(`/chat?run=${run.runId}`)}
+                    >
+                      <td class="py-2 text-xs text-muted-foreground whitespace-nowrap">
+                        {formatDate(run.startedAt)}
+                      </td>
+                      <td class="py-2 truncate max-w-[200px]" title={run.name}>
+                        {run.name}
+                      </td>
+                      <td
+                        class="py-2 font-mono text-xs text-muted-foreground truncate max-w-[120px]"
+                        title={run.model ?? run.agent}
+                      >
+                        {#if run.agent !== "claude"}
+                          <span class="text-[10px] text-emerald-500/70 mr-1 font-sans"
+                            >{run.agent}</span
+                          >
+                        {/if}
+                        {run.model ?? "\u2014"}
+                      </td>
+                      <td class="py-2 text-right tabular-nums font-mono text-xs">
+                        {formatTokenCount(run.inputTokens + run.outputTokens)}
+                      </td>
+                      <td
+                        class="py-2 text-right tabular-nums font-mono text-xs"
+                        title={run.costEstimated ? "Estimated from token count" : undefined}
+                      >
+                        {formatCost(run.totalCostUsd)}{#if run.costEstimated}<span
+                            class="text-[9px] text-muted-foreground/50 ml-0.5">~</span
+                          >{/if}
+                      </td>
+                      <td class="py-2 text-right tabular-nums">
+                        {run.numTurns}
+                      </td>
+                    </tr>
+                  {/each}
+                </tbody>
+              </table>
+            </div>
+          {:else}
+            <p class="text-sm text-muted-foreground">
+              {t("usage_noUsageData")}
+            </p>
+          {/if}
+        </Card>
+      {/if}
+    </div>
   {/if}
 </div>

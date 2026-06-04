@@ -210,13 +210,17 @@ pub fn read_global_usage(days: Option<u32>) -> Result<UsageOverview, String> {
     // Merge all per-file data into aggregate structures
     let (daily_model, scan_activity) = merge_all_file_data(&per_file);
 
-    // Write updated disk cache (atomic)
-    let new_disk_cache = DiskCache {
-        version: DISK_CACHE_VERSION,
-        manifest: current_manifest,
-        per_file,
-    };
-    write_disk_cache(&new_disk_cache);
+    // Write disk cache only when the file set changed. dirty_count > 0 covers new/modified
+    // files; a manifest length drop covers deletions (clean files keep equal length).
+    let manifest_changed = dirty_count > 0 || current_manifest.len() != old_manifest.len();
+    if manifest_changed {
+        let new_disk_cache = DiskCache {
+            version: DISK_CACHE_VERSION,
+            manifest: current_manifest,
+            per_file,
+        };
+        write_disk_cache(&new_disk_cache);
+    }
 
     // Read stats-cache for activity data (messages, sessions, tool calls)
     let (daily_activity, total_sessions) = read_activity_data(&claude_dir);

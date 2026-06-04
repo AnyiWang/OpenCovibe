@@ -17,7 +17,14 @@ fn parse_started_date_utc(started_at: &str) -> Option<chrono::NaiveDate> {
 }
 
 #[tauri::command]
-pub fn get_global_usage_overview(days: Option<u32>) -> Result<UsageOverview, String> {
+pub async fn get_global_usage_overview(days: Option<u32>) -> Result<UsageOverview, String> {
+    // Heavy scan + serialization — run off the main thread so the webview never freezes.
+    tokio::task::spawn_blocking(move || global_usage_overview_inner(days))
+        .await
+        .map_err(|e| format!("Join error: {}", e))?
+}
+
+fn global_usage_overview_inner(days: Option<u32>) -> Result<UsageOverview, String> {
     log::debug!("[stats] get_global_usage_overview: days={:?}", days);
     let claude = storage::claude_usage::read_global_usage(days)?;
     // Codex sessions live in ~/.codex/sessions (parallel to ~/.claude/projects). Merge so
@@ -146,7 +153,14 @@ struct DailyBuilder {
 }
 
 #[tauri::command]
-pub fn get_usage_overview(days: Option<u32>) -> Result<UsageOverview, String> {
+pub async fn get_usage_overview(days: Option<u32>) -> Result<UsageOverview, String> {
+    // App-scope scan reads every run's events — keep it off the main thread.
+    tokio::task::spawn_blocking(move || usage_overview_inner(days))
+        .await
+        .map_err(|e| format!("Join error: {}", e))?
+}
+
+fn usage_overview_inner(days: Option<u32>) -> Result<UsageOverview, String> {
     log::debug!("[stats] get_usage_overview: days={:?}", days);
 
     let metas = storage::runs::list_all_run_metas();
@@ -176,8 +190,8 @@ pub fn get_usage_overview(days: Option<u32>) -> Result<UsageOverview, String> {
             }
         }
 
-        // Extract usage from events.jsonl
-        let usage = storage::events::extract_run_usage(&meta.id);
+        // Extract usage from events.jsonl (cached by file mtime/size — most runs are immutable)
+        let usage = storage::events::extract_run_usage_cached(&meta.id);
 
         let mut cost = usage.as_ref().map(|u| u.total_cost_usd).unwrap_or(0.0);
         // total_tokens = input + output (billable tokens only, not cache)
@@ -366,6 +380,8 @@ pub fn get_usage_overview(days: Option<u32>) -> Result<UsageOverview, String> {
 pub fn clear_usage_cache() -> Result<(), String> {
     log::debug!("[stats] clear_usage_cache");
     storage::claude_usage::clear_cache();
+    storage::codex_usage::clear_cache();
+    storage::events::clear_usage_cache();
     Ok(())
 }
 
@@ -410,7 +426,7 @@ fn get_app_heatmap_daily() -> Result<Vec<DailyAggregate>, String> {
 
         let date = d.format("%Y-%m-%d").to_string();
         let day = daily_map.entry(date).or_default();
-        let usage = storage::events::extract_run_usage(&meta.id);
+        let usage = storage::events::extract_run_usage_cached(&meta.id);
         day.cost_usd += usage.as_ref().map(|u| u.total_cost_usd).unwrap_or(0.0);
         day.runs += 1;
         day.input_tokens += usage.as_ref().map(|u| u.input_tokens).unwrap_or(0);
@@ -434,12 +450,18 @@ fn get_app_heatmap_daily() -> Result<Vec<DailyAggregate>, String> {
 }
 
 #[tauri::command]
-pub fn get_heatmap_daily(scope: String) -> Result<Vec<DailyAggregate>, String> {
+pub async fn get_heatmap_daily(scope: String) -> Result<Vec<DailyAggregate>, String> {
+    tokio::task::spawn_blocking(move || heatmap_daily_inner(scope))
+        .await
+        .map_err(|e| format!("Join error: {}", e))?
+}
+
+fn heatmap_daily_inner(scope: String) -> Result<Vec<DailyAggregate>, String> {
     log::debug!("[stats] get_heatmap_daily: scope={}", scope);
     let raw = match scope.as_str() {
         "global" => {
             // Merge Claude + Codex daily so the global heatmap reflects both agents.
-            let overview = get_global_usage_overview(Some(365))?;
+            let overview = global_usage_overview_inner(Some(365))?;
             overview.daily
         }
         "app" => get_app_heatmap_daily()?,
@@ -586,7 +608,7 @@ mod tests {
 
     #[test]
     fn test_heatmap_daily_invalid_scope() {
-        let result = get_heatmap_daily("foo".to_string());
+        let result = heatmap_daily_inner("foo".to_string());
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("invalid scope"));
     }

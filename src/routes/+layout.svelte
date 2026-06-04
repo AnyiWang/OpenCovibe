@@ -2328,8 +2328,9 @@
       </header>
     {/if}
 
-    <!-- Page content -->
-    <main class="flex-1 overflow-y-auto">
+    <!-- Page content. scrollbar-gutter: stable reserves the scrollbar track so pages whose
+         height crosses the scroll threshold (e.g. Usage scope switch) don't shift horizontally. -->
+    <main class="flex-1 overflow-y-auto" style="scrollbar-gutter: stable;">
       {@render children()}
     </main>
   </div>

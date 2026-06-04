@@ -424,6 +424,70 @@ pub fn copy_bus_events(from_run_id: &str, to_run_id: &str) -> Result<(), String>
     Ok(())
 }
 
+// ── Per-run usage cache (App-scope Usage page) ──
+//
+// The Usage page's App scope aggregates over every run by reading each run's full
+// events.jsonl. With ~1000 runs that scan dominates page load. Cache the parsed result
+// keyed by the events file's (mtime, size): completed runs are immutable → cache hits;
+// a growing/changed file invalidates automatically.
+
+struct CachedRunUsage {
+    mtime_ns: u128,
+    size: u64,
+    usage: Option<RawRunUsage>,
+}
+
+static USAGE_CACHE: Lazy<std::sync::Mutex<HashMap<String, CachedRunUsage>>> =
+    Lazy::new(|| std::sync::Mutex::new(HashMap::new()));
+
+/// Cached wrapper around [`extract_run_usage`]: re-parses only when the run's events.jsonl
+/// changed since the last scan. Memory-only (process lifetime) — first scan after launch
+/// still reads every file; cleared by [`clear_usage_cache`].
+pub fn extract_run_usage_cached(run_id: &str) -> Option<RawRunUsage> {
+    let path = events_path(run_id);
+    let meta = match fs::metadata(&path) {
+        Ok(m) => m,
+        // No events file → no usage (matches extract_run_usage's early return).
+        Err(_) => return None,
+    };
+    let mtime_ns = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let size = meta.len();
+
+    if let Ok(cache) = USAGE_CACHE.lock() {
+        if let Some(c) = cache.get(run_id) {
+            if c.mtime_ns == mtime_ns && c.size == size {
+                return c.usage.clone();
+            }
+        }
+    }
+
+    let usage = extract_run_usage(run_id);
+    if let Ok(mut cache) = USAGE_CACHE.lock() {
+        cache.insert(
+            run_id.to_string(),
+            CachedRunUsage {
+                mtime_ns,
+                size,
+                usage: usage.clone(),
+            },
+        );
+    }
+    usage
+}
+
+/// Clear the in-memory per-run usage cache (used by the Usage refresh button).
+pub fn clear_usage_cache() {
+    if let Ok(mut cache) = USAGE_CACHE.lock() {
+        cache.clear();
+        log::debug!("[events] per-run usage cache cleared");
+    }
+}
+
 /// Extract aggregated usage from bus-events for a single run.
 ///
 /// Three modes:

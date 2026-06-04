@@ -16,11 +16,30 @@
 use crate::models::{DailyAggregate, ModelAggregate, UsageOverview};
 use crate::pricing;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::time::UNIX_EPOCH;
+use std::sync::{LazyLock, Mutex};
+use std::time::{Instant, UNIX_EPOCH};
 
 const DISK_CACHE_VERSION: u32 = 1;
+const CACHE_TTL_SECS: u64 = 120;
+
+// ── In-memory cache (mirrors claude_usage) ──
+
+static CACHE: LazyLock<Mutex<Option<CachedCodex>>> = LazyLock::new(|| Mutex::new(None));
+
+/// Separate mutex to serialize recomputation across concurrent callers.
+static COMPUTE_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+/// Merged scan result kept hot in memory so repeat global-usage calls (e.g. overview +
+/// heatmap on one page load) skip the disk-cache read/deserialize/merge cycle.
+struct CachedCodex {
+    computed_at: Instant,
+    /// date → model → TokenCounts (merged across all files)
+    merged: HashMap<String, HashMap<String, TokenCounts>>,
+    /// dates with at least one session turn (for activity/streaks)
+    all_dates: HashSet<String>,
+}
 
 #[derive(Clone, Default, Serialize, Deserialize)]
 struct TokenCounts {
@@ -222,10 +241,29 @@ fn write_disk_cache(cache: &DiskCache) {
 
 /// Read aggregated global Codex usage. `days` filters the daily window (None = all time).
 pub fn read_global_codex_usage(days: Option<u32>) -> Result<UsageOverview, String> {
+    let _compute_guard = COMPUTE_LOCK
+        .lock()
+        .map_err(|e| format!("Codex compute lock: {e}"))?;
+
     let dir = match sessions_dir() {
         Some(d) => d,
         None => return Ok(empty_overview()),
     };
+
+    // In-memory cache short-circuit: rebuild the date-filtered overview from hot data.
+    {
+        let lock = CACHE.lock().map_err(|e| format!("Codex cache lock: {e}"))?;
+        if let Some(ref c) = *lock {
+            if c.computed_at.elapsed().as_secs() < CACHE_TTL_SECS {
+                log::debug!(
+                    "[codex_usage] memory cache hit (age {}s)",
+                    c.computed_at.elapsed().as_secs()
+                );
+                return Ok(build_overview(c.merged.clone(), c.all_dates.clone(), days));
+            }
+        }
+    }
+
     let files = list_rollout_files(&dir);
     log::debug!("[codex_usage] {} rollout files", files.len());
 
@@ -234,14 +272,18 @@ pub fn read_global_codex_usage(days: Option<u32>) -> Result<UsageOverview, Strin
 
     // date → model → TokenCounts (merged across all files)
     let mut merged: HashMap<String, HashMap<String, TokenCounts>> = HashMap::new();
-    let mut all_dates: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut all_dates: HashSet<String> = HashSet::new();
+    let mut dirty = false;
 
     for (path, mtime_ns, size) in files {
         let key = path.to_string_lossy().to_string();
-        // Reuse cached scan if unchanged.
+        // Reuse cached scan if unchanged; otherwise (new or modified) rescan and mark dirty.
         let data = match old_cache.remove(&key) {
             Some(cf) if cf.mtime_ns == mtime_ns && cf.size == size => cf.data,
-            _ => scan_single_rollout(&path),
+            _ => {
+                dirty = true;
+                scan_single_rollout(&path)
+            }
         };
         for (date, models) in &data.daily {
             let day = merged.entry(date.clone()).or_default();
@@ -265,12 +307,41 @@ pub fn read_global_codex_usage(days: Option<u32>) -> Result<UsageOverview, Strin
         );
     }
 
-    write_disk_cache(&DiskCache {
-        version: DISK_CACHE_VERSION,
-        manifest: new_manifest,
-    });
+    // Write disk cache only when something changed. Leftover entries in old_cache are files
+    // that no longer exist (deletions) and also warrant a rewrite.
+    if dirty || !old_cache.is_empty() {
+        write_disk_cache(&DiskCache {
+            version: DISK_CACHE_VERSION,
+            manifest: new_manifest,
+        });
+    }
+
+    // Store hot copy before build_overview consumes the originals.
+    if let Ok(mut lock) = CACHE.lock() {
+        *lock = Some(CachedCodex {
+            computed_at: Instant::now(),
+            merged: merged.clone(),
+            all_dates: all_dates.clone(),
+        });
+    }
 
     Ok(build_overview(merged, all_dates, days))
+}
+
+/// Clear both the in-memory and on-disk Codex usage caches (used by the refresh button).
+pub fn clear_cache() {
+    if let Ok(mut lock) = CACHE.lock() {
+        *lock = None;
+        log::debug!("[codex_usage] in-memory cache cleared");
+    }
+    let path = disk_cache_path();
+    if path.exists() {
+        if let Err(e) = std::fs::remove_file(&path) {
+            log::error!("[codex_usage] failed to remove disk cache: {e}");
+        } else {
+            log::debug!("[codex_usage] disk cache deleted: {:?}", path);
+        }
+    }
 }
 
 fn empty_overview() -> UsageOverview {
