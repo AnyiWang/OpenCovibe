@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, untrack } from "svelte";
   import { goto } from "$app/navigation";
   import type {
     Attachment,
@@ -37,6 +37,13 @@
   import { IS_MAC } from "$lib/utils/platform";
   import { t } from "$lib/i18n/index.svelte";
   import { formatPasteSize } from "$lib/utils/format";
+  import {
+    buildPasteToken,
+    singlePasteTokenRe,
+    insertAtSelection,
+    parsePasteTokenSeqs,
+    expandPasteTokens,
+  } from "$lib/utils/paste-tokens";
   import {
     BINARY_ATTACHMENT_TYPES,
     MAX_ATTACHMENTS,
@@ -113,6 +120,8 @@
     onShortcutHelp,
     userHistory = [] as string[],
     runId = "",
+    initialDraft,
+    onDraftChange,
   }: {
     agent?: string;
     disabled?: boolean;
@@ -164,6 +173,11 @@
     onShortcutHelp?: () => void;
     userHistory?: string[];
     runId?: string;
+    /** Draft to seed the prompt with on mount (per-run persistence — issue #156). */
+    initialDraft?: PromptInputSnapshot;
+    /** Fired whenever the draft (text/attachments/paste blocks/path refs) changes, so the
+     *  parent can persist it keyed by run. */
+    onDraftChange?: (snapshot: PromptInputSnapshot) => void;
   } = $props();
 
   // ── BTW mode (side question) ──
@@ -331,6 +345,9 @@
     charCount: number;
     preview: string;
     ext?: string;
+    /** Display sequence for the inline token label. Set only for blocks anchored by a token
+     *  (clipboard paste); undefined for drag-dropped text files, which append at send instead. */
+    seq?: number;
   }
 
   interface PathRef {
@@ -340,7 +357,11 @@
     isDir: boolean;
   }
 
-  let inputText = $state("");
+  // Seed from initialDraft so a per-run draft survives the unmount/remount the chat page forces
+  // on run switch (issue #156). Read untracked — this is a one-time construction seed (the parent
+  // remounts per run via {#key}); onDraftChange keeps the draft current after.
+  const seed = untrack(() => initialDraft);
+  let inputText = $state(seed?.text ?? "");
   let pendingAttachments = $state<
     Array<{
       id: string;
@@ -351,9 +372,9 @@
       /** Filesystem path for >20MB clipboard PDFs (path-reference mode). */
       filePath?: string;
     }>
-  >([]);
-  let pastedBlocks = $state<PastedBlock[]>([]);
-  let pendingPathRefs = $state<PathRef[]>([]);
+  >(seed?.attachments ?? []);
+  let pastedBlocks = $state<PastedBlock[]>((seed?.pastedBlocks as PastedBlock[]) ?? []);
+  let pendingPathRefs = $state<PathRef[]>(seed?.pathRefs ?? []);
   /** Codex skills the user picked for THIS message (sent as structured {type:"skill"} refs, not
    *  text). Rendered as removable chips; cleared on send. Codex-only — Claude uses slash text. */
   let pendingSkills = $state<{ name: string; path: string }[]>([]);
@@ -367,6 +388,20 @@
     if (checkAndReset(histState, userHistory.length, runId)) {
       dbg("prompt-history", "reset", { runId, len: userHistory.length });
     }
+  });
+
+  // Prune token-anchored paste chips whose token the user deleted from the textarea.
+  // Only blocks with a seq carry a token; token-less drag-dropped blocks are left untouched.
+  $effect(() => {
+    const present = new Set(parsePasteTokenSeqs(inputText));
+    const next = pastedBlocks.filter((b) => b.seq == null || present.has(b.seq));
+    if (next.length !== pastedBlocks.length) pastedBlocks = next;
+  });
+
+  // Report draft changes upward so the parent can persist them per-run (issue #156). Reading the
+  // snapshot tracks all four state arrays, so this re-fires on any edit/paste/attachment change.
+  $effect(() => {
+    onDraftChange?.(getInputSnapshot());
   });
 
   /** Chunked ArrayBuffer→base64 (32KB chunks — safe for large files, avoids stack overflow). */
@@ -1195,8 +1230,14 @@
     const regularAtts = pendingAttachments.filter((a) => a.contentBase64);
     const pathRefAtts = pendingAttachments.filter((a) => a.filePath && !a.contentBase64);
 
-    // Combine paste blocks + typed text + path-reference file paths
-    const parts: string[] = pastedBlocks.map((b) => b.text);
+    // Expand inline paste tokens at their cursor positions (issue #156). `usedIds` are the blocks
+    // consumed by a token; the rest are orphans (drag-dropped text files, or blocks whose token the
+    // user deleted) and keep the legacy leading-append behavior.
+    const { text: expandedBody, usedSeqs } = expandPasteTokens(inputText, pastedBlocks);
+    const bodyText = expandedBody.trim();
+    const orphanBlocks = pastedBlocks.filter((b) => b.seq == null || !usedSeqs.has(b.seq));
+
+    const parts: string[] = orphanBlocks.map((b) => b.text);
     if (pathRefAtts.length > 0) {
       const refs = pathRefAtts.map((a) => `[PDF: ${a.filePath}]`).join("\n");
       parts.push(refs);
@@ -1206,7 +1247,7 @@
       parts.push(pendingPathRefs.map((r) => wrapPathInBackticks(r.path)).join("\n"));
     }
 
-    if (typed) parts.push(typed);
+    if (bodyText) parts.push(bodyText);
     const text = parts.join("\n\n");
     // Allow a skill-only send (a picked skill with no typed text is a valid skill turn).
     if ((!text && pendingSkills.length === 0) || disabled) return;
@@ -1466,7 +1507,8 @@
       return;
     }
 
-    // Long text → intercept, compress into chip
+    // Long text → intercept, compress into chip + drop a position-anchored token at the cursor
+    // so it expands back at the right spot on send (issue #156), instead of always prepending.
     e.preventDefault();
     if (pastedBlocks.length >= MAX_PASTE_BLOCKS) {
       showFileToast(t("prompt_maxPasteBlocks", { count: String(MAX_PASTE_BLOCKS) }));
@@ -1476,18 +1518,35 @@
     const firstLine = lines[0].trim();
     const preview = firstLine.length > 40 ? firstLine.slice(0, 40) + "..." : firstLine;
 
-    pastedBlocks = [
-      ...pastedBlocks,
-      {
-        id: uuid().slice(0, 8),
-        text,
-        lineCount,
-        charCount,
-        preview,
-      },
-    ];
+    const id = uuid().slice(0, 8);
+    const seq = nextPasteSeq();
+    const label = t("prompt_pasteToken", {
+      seq: String(seq),
+      size: formatPasteSize(lineCount, charCount),
+    });
+    const token = buildPasteToken(label);
 
-    dbg("prompt", "paste-compressed", { lineCount, charCount, blocks: pastedBlocks.length });
+    // Insert at cursor, replacing any active selection.
+    const selStart = textareaEl?.selectionStart ?? inputText.length;
+    const selEnd = textareaEl?.selectionEnd ?? selStart;
+    inputText = insertAtSelection(inputText, selStart, selEnd, token);
+    pastedBlocks = [...pastedBlocks, { id, text, lineCount, charCount, preview, seq }];
+
+    requestAnimationFrame(() => {
+      if (textareaEl) {
+        const pos = selStart + token.length;
+        textareaEl.selectionStart = textareaEl.selectionEnd = pos;
+        textareaEl.focus();
+      }
+    });
+
+    dbg("prompt", "paste-compressed", { lineCount, charCount, blocks: pastedBlocks.length, seq });
+  }
+
+  // Monotonic per-message token sequence — max existing seq + 1, so removing a chip and
+  // pasting again never reuses a visible "#N" that's still on screen.
+  function nextPasteSeq(): number {
+    return pastedBlocks.reduce((max, b) => Math.max(max, b.seq ?? 0), 0) + 1;
   }
 
   function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
@@ -1661,7 +1720,78 @@
   }
 
   function removePastedBlock(id: string) {
+    const blk = pastedBlocks.find((b) => b.id === id);
     pastedBlocks = pastedBlocks.filter((b) => b.id !== id);
+    // Drop the anchoring token too (token-less drag-dropped blocks have no seq → skip).
+    if (blk?.seq != null) inputText = inputText.replace(singlePasteTokenRe(blk.seq), "");
+  }
+
+  // ── Paste block editor (issue #156) ──
+  // The main textarea is capped at ~4 lines, so long pastes can't be edited inline. Instead the
+  // chip opens a full-height modal editor; on save we write back into the block and refresh the
+  // inline token's "N lines" label so chip and token stay in sync.
+  let editingBlockId = $state<string | null>(null);
+  let editingText = $state("");
+  let editorTextareaEl: HTMLTextAreaElement | undefined = $state();
+  let editingBlock = $derived(pastedBlocks.find((b) => b.id === editingBlockId) ?? null);
+
+  function openPasteEditor(id: string) {
+    const blk = pastedBlocks.find((b) => b.id === id);
+    if (!blk) return;
+    editingBlockId = id;
+    editingText = blk.text;
+    dbg("prompt", "paste-edit-open", { id, lines: blk.lineCount });
+    requestAnimationFrame(() => editorTextareaEl?.focus());
+  }
+
+  function cancelPasteEditor() {
+    editingBlockId = null;
+    editingText = "";
+  }
+
+  function savePasteEditor() {
+    if (editingBlockId == null) return;
+    const id = editingBlockId;
+    const text = editingText;
+    if (!text.trim()) {
+      // Emptied out → treat as removal (drops chip + token).
+      removePastedBlock(id);
+      cancelPasteEditor();
+      return;
+    }
+    const lines = text.split("\n");
+    const lineCount = lines.length;
+    const charCount = text.length;
+    const firstLine = lines[0].trim();
+    const preview = firstLine.length > 40 ? firstLine.slice(0, 40) + "..." : firstLine;
+    let seq: number | undefined;
+    pastedBlocks = pastedBlocks.map((b) => {
+      if (b.id !== id) return b;
+      seq = b.seq;
+      return { ...b, text, lineCount, charCount, preview };
+    });
+    // Refresh the token label so its "N lines" matches the edited content (token-anchored only).
+    if (seq != null) {
+      const label = t("prompt_pasteToken", {
+        seq: String(seq),
+        size: formatPasteSize(lineCount, charCount),
+      });
+      inputText = inputText.replace(singlePasteTokenRe(seq), buildPasteToken(label));
+    }
+    dbg("prompt", "paste-edit-save", { id, lines: lineCount });
+    cancelPasteEditor();
+  }
+
+  function handlePasteEditorKeydown(e: KeyboardEvent) {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      cancelPasteEditor();
+    } else if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+      e.preventDefault();
+      e.stopPropagation();
+      savePasteEditor();
+    }
   }
 
   function handleSkillSelect(skillName: string) {
@@ -1954,43 +2084,51 @@
         <span
           class="inline-flex items-center gap-1.5 rounded-md border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-950/50 text-blue-700 dark:text-blue-300 px-2 py-1 text-xs"
         >
-          {#if isSpreadsheet}
-            <!-- Table/spreadsheet icon -->
-            <svg
-              class="h-3.5 w-3.5 shrink-0"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            >
-              <path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
-              <path d="M3 9h18" /><path d="M3 15h18" /><path d="M9 3v18" />
-            </svg>
-          {:else}
-            <!-- Clipboard icon for text -->
-            <svg
-              class="h-3.5 w-3.5 shrink-0"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            >
-              <rect width="8" height="4" x="8" y="2" rx="1" ry="1" /><path
-                d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"
-              />
-            </svg>
-          {/if}
-          <span class="truncate max-w-[200px]">{block.preview}</span>
-          <span class="text-blue-400 dark:text-blue-500"
-            >{formatPasteSize(block.lineCount, block.charCount)}</span
+          <!-- Click the chip body to open the full editor (issue #156) -->
+          <button
+            type="button"
+            onclick={() => openPasteEditor(block.id)}
+            class="inline-flex min-w-0 items-center gap-1.5 hover:underline"
+            title={t("prompt_editPaste")}
           >
+            {#if isSpreadsheet}
+              <!-- Table/spreadsheet icon -->
+              <svg
+                class="h-3.5 w-3.5 shrink-0"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+                <path d="M3 9h18" /><path d="M3 15h18" /><path d="M9 3v18" />
+              </svg>
+            {:else}
+              <!-- Clipboard icon for text -->
+              <svg
+                class="h-3.5 w-3.5 shrink-0"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <rect width="8" height="4" x="8" y="2" rx="1" ry="1" /><path
+                  d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"
+                />
+              </svg>
+            {/if}
+            <span class="truncate max-w-[200px]">{block.preview}</span>
+            <span class="text-blue-400 dark:text-blue-500"
+              >{formatPasteSize(block.lineCount, block.charCount)}</span
+            >
+          </button>
           <button
             onclick={() => removePastedBlock(block.id)}
-            class="ml-0.5 rounded p-0.5 transition-colors hover:bg-blue-200/50 dark:hover:bg-blue-800/50"
+            class="rounded p-0.5 transition-colors hover:bg-blue-200/50 dark:hover:bg-blue-800/50"
             title={t("prompt_removePaste")}
           >
             <svg
@@ -2462,3 +2600,55 @@
     </div>
   {/if}
 </div>
+
+<!-- Paste block editor modal (issue #156): full-height surface for editing long pastes, since the
+     main textarea is capped at ~4 lines. -->
+{#if editingBlock}
+  <div
+    class="fixed inset-0 z-50 flex items-center justify-center"
+    role="dialog"
+    aria-modal="true"
+    tabindex="-1"
+    onkeydown={handlePasteEditorKeydown}
+  >
+    <div
+      class="fixed inset-0 bg-black/60 backdrop-blur-sm"
+      onclick={cancelPasteEditor}
+      role="presentation"
+    ></div>
+    <div
+      class="relative z-50 flex h-[80vh] w-[min(90vw,900px)] flex-col rounded-lg border bg-background p-4 shadow-lg"
+    >
+      <div class="mb-3 flex items-center justify-between gap-2">
+        <h2 class="text-sm font-semibold">
+          {t("prompt_editPasteTitle", { seq: String(editingBlock.seq ?? 1) })}
+        </h2>
+        <span class="text-xs text-muted-foreground">
+          {formatPasteSize(editingText.split("\n").length, editingText.length)}
+        </span>
+      </div>
+      <textarea
+        bind:this={editorTextareaEl}
+        bind:value={editingText}
+        spellcheck="false"
+        class="flex-1 w-full resize-none rounded-md border bg-muted/30 p-3 font-mono text-xs leading-relaxed focus:outline-none focus:ring-1 focus:ring-ring"
+      ></textarea>
+      <div class="mt-3 flex items-center justify-end gap-2">
+        <button
+          type="button"
+          onclick={cancelPasteEditor}
+          class="rounded-md border px-3 py-1.5 text-xs hover:bg-accent"
+        >
+          {t("common_cancel")}
+        </button>
+        <button
+          type="button"
+          onclick={savePasteEditor}
+          class="rounded-md bg-primary px-3 py-1.5 text-xs text-primary-foreground hover:bg-primary/90"
+        >
+          {t("common_save")}
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}

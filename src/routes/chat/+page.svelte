@@ -613,6 +613,25 @@
   let contextHistoryMap = $state<Map<string, ContextSnapshot[]>>(new Map());
   let contextHistory = $derived(contextHistoryMap.get(store.run?.id ?? "") ?? []);
 
+  // ── Per-run prompt drafts (issue #156) ──
+  // PromptInput unmounts/remounts on run switch (it's gated behind a phase condition, and loadRun
+  // flips phase to "running" mid-replay). So instead of stashing at transition time (unreliable —
+  // promptRef is mid-churn), PromptInput reports every draft change via onDraftChange, and we seed
+  // the freshly-mounted instance from this map via initialDraft (the `{#key}` forces a clean
+  // remount per run). Keyed by run id; "" = the not-yet-started "new chat".
+  let promptDraftsByRun = new Map<string, PromptInputSnapshot>();
+
+  function savePromptDraft(snap: PromptInputSnapshot) {
+    const rid = store.run?.id ?? "";
+    const hasContent =
+      snap.text.trim() ||
+      snap.attachments.length ||
+      snap.pastedBlocks.length ||
+      (snap.pathRefs?.length ?? 0) > 0;
+    if (hasContent) promptDraftsByRun.set(rid, snap);
+    else promptDraftsByRun.delete(rid);
+  }
+
   // ── Cumulative session token totals (from modelUsage, which is session-cumulative) ──
   // status bar shows session totals; per-turn values are in the turn separator annotations.
   let cumulativeTokens = $derived.by(() => {
@@ -2119,6 +2138,10 @@
     skills?: { name: string; path: string }[],
   ) {
     if (!text.trim()) return;
+
+    // The draft is being sent — drop it so it can't resurface. Esp. the "" new-chat bucket: its
+    // PromptInput remounts under the new run id before the clear effect flushes, so rely on this.
+    promptDraftsByRun.delete(store.run?.id ?? "");
 
     store.error = "";
     // Follow to new reply when sending a message
@@ -5679,70 +5702,75 @@
     <TodoPanel tasks={store.panelTasks} />
 
     {#if store.sessionAlive || !store.run || store.phase === "empty" || store.phase === "ready" || TERMINAL_PHASES.includes(store.phase)}
-      <PromptInput
-        bind:this={promptRef}
-        agent={effectiveAgent}
-        running={store.isActivelyRunning}
-        disabled={inputBlockedByPermission}
-        pendingPermission={store.hasInlinePermission}
-        hasRun={!!store.run}
-        sessionAlive={store.sessionAlive}
-        canResume={!store.sessionAlive &&
-          canResumeNow(store.run, store.phase, agentSettings?.no_session_persistence ?? false)}
-        useStreamSession={store.useStreamSession}
-        slashCommandMenu={getAgentFeatures(effectiveAgent).slashCommandMenu}
-        isRemote={store.isRemote}
-        cliCommands={store.sessionInitReceived && store.sessionCommands.length > 0
-          ? store.sessionCommands
-          : effectiveAgent === "codex"
-            ? []
-            : mergeProjectCommands(getCliCommands(), projectCommands)}
-        models={store.useStreamSession || effectiveAgent === "codex" ? effectiveModels : []}
-        currentModel={store.model}
-        permissionMode={store.features.permissionModeSwitch ? store.permissionMode : "default"}
-        cwd={store.effectiveCwd ||
-          folderCwdOverride ||
-          localStorage.getItem("ocv:project-cwd") ||
-          ""}
-        authMode={store.authMode}
-        platformId={store.platformId ?? "anthropic"}
-        platformCredentials={settings?.platform_credentials ?? []}
-        onSend={sendMessage}
-        onBtwSend={handleBtwSend}
-        onAgentChange={handleAgentChange}
-        onInterrupt={() => store.interrupt()}
-        onModelSwitch={handleModelChange}
-        onPermissionModeChange={store.features.permissionModeSwitch
-          ? handlePermissionModeChange
-          : undefined}
-        onVirtualCommand={handleVirtualCommand}
-        fastModeState={store.fastModeState}
-        onFastModeSwitch={handleFastModeSwitch}
-        onPlatformChange={handlePlatformChange}
-        {authOverview}
-        authSourceLabel={store.authSourceLabel}
-        authSourceCategory={store.authSourceCategory}
-        apiKeySource={store.apiKeySource}
-        onAuthModeChange={handleAuthModeChange}
-        {localProxyStatuses}
-        showAuthBadge={!welcomeVisible && store.useStreamSession}
-        onShortcutHelp={() => (shortcutHelpOpen = !shortcutHelpOpen)}
-        availableSkills={store.availableSkills}
-        {skillItems}
-        codexSkillItems={codexRuntimeSkills}
-        agents={preloadedAgents.map((a) => ({ name: a.name, description: a.description }))}
-        hasStash={!!stashedInput}
-        {userHistory}
-        runId={store.run?.id ?? ""}
-        onRestoreStash={() => {
-          if (stashedInput) {
-            promptRef?.restoreSnapshot(stashedInput);
-            stashedInput = null;
-            showChatToast(t("toast_stashRestored"));
-            dbg("chat", "stash restored via badge click");
-          }
-        }}
-      />
+      <!-- Key on run id so each chat gets a clean PromptInput, seeded from its own saved draft -->
+      {#key store.run?.id ?? ""}
+        <PromptInput
+          bind:this={promptRef}
+          agent={effectiveAgent}
+          running={store.isActivelyRunning}
+          disabled={inputBlockedByPermission}
+          pendingPermission={store.hasInlinePermission}
+          hasRun={!!store.run}
+          sessionAlive={store.sessionAlive}
+          canResume={!store.sessionAlive &&
+            canResumeNow(store.run, store.phase, agentSettings?.no_session_persistence ?? false)}
+          useStreamSession={store.useStreamSession}
+          slashCommandMenu={getAgentFeatures(effectiveAgent).slashCommandMenu}
+          isRemote={store.isRemote}
+          cliCommands={store.sessionInitReceived && store.sessionCommands.length > 0
+            ? store.sessionCommands
+            : effectiveAgent === "codex"
+              ? []
+              : mergeProjectCommands(getCliCommands(), projectCommands)}
+          models={store.useStreamSession || effectiveAgent === "codex" ? effectiveModels : []}
+          currentModel={store.model}
+          permissionMode={store.features.permissionModeSwitch ? store.permissionMode : "default"}
+          cwd={store.effectiveCwd ||
+            folderCwdOverride ||
+            localStorage.getItem("ocv:project-cwd") ||
+            ""}
+          authMode={store.authMode}
+          platformId={store.platformId ?? "anthropic"}
+          platformCredentials={settings?.platform_credentials ?? []}
+          onSend={sendMessage}
+          onBtwSend={handleBtwSend}
+          onAgentChange={handleAgentChange}
+          onInterrupt={() => store.interrupt()}
+          onModelSwitch={handleModelChange}
+          onPermissionModeChange={store.features.permissionModeSwitch
+            ? handlePermissionModeChange
+            : undefined}
+          onVirtualCommand={handleVirtualCommand}
+          fastModeState={store.fastModeState}
+          onFastModeSwitch={handleFastModeSwitch}
+          onPlatformChange={handlePlatformChange}
+          {authOverview}
+          authSourceLabel={store.authSourceLabel}
+          authSourceCategory={store.authSourceCategory}
+          apiKeySource={store.apiKeySource}
+          onAuthModeChange={handleAuthModeChange}
+          {localProxyStatuses}
+          showAuthBadge={!welcomeVisible && store.useStreamSession}
+          onShortcutHelp={() => (shortcutHelpOpen = !shortcutHelpOpen)}
+          availableSkills={store.availableSkills}
+          {skillItems}
+          codexSkillItems={codexRuntimeSkills}
+          agents={preloadedAgents.map((a) => ({ name: a.name, description: a.description }))}
+          hasStash={!!stashedInput}
+          {userHistory}
+          runId={store.run?.id ?? ""}
+          initialDraft={promptDraftsByRun.get(store.run?.id ?? "")}
+          onDraftChange={savePromptDraft}
+          onRestoreStash={() => {
+            if (stashedInput) {
+              promptRef?.restoreSnapshot(stashedInput);
+              stashedInput = null;
+              showChatToast(t("toast_stashRestored"));
+              dbg("chat", "stash restored via badge click");
+            }
+          }}
+        />
+      {/key}
     {/if}
   </div>
 
