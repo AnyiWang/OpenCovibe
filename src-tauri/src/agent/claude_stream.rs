@@ -449,6 +449,20 @@ pub(crate) fn resolve_claude_path() -> String {
     if let Some(ref path) = *cached {
         return path.clone();
     }
+    // User-configured override wins over auto-detection (#155). Cached like the scan
+    // result; the settings save path invalidates the cache when it changes.
+    if let Some(custom) = crate::storage::settings::get_user_settings()
+        .claude_path
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+    {
+        log::debug!(
+            "[claude_stream] using custom claude path from settings: {}",
+            custom
+        );
+        *cached = Some(custom.clone());
+        return custom;
+    }
     let home = crate::storage::home_dir()
         .filter(|h| !h.is_empty())
         .map(PathBuf::from);
