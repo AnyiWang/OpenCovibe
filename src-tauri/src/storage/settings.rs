@@ -681,6 +681,14 @@ pub fn update_user_settings(patch: serde_json::Value) -> Result<UserSettings, St
     if let Some(v) = patch.get("onboarding_completed") {
         all.user.onboarding_completed = v.as_bool().unwrap_or(false);
     }
+    if let Some(v) = patch.get("claude_path") {
+        all.user.claude_path = v
+            .as_str()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        // The resolved-path cache must re-evaluate the override on the next spawn. (#155)
+        crate::agent::claude_stream::invalidate_claude_path_cache();
+    }
     all.user.updated_at = crate::models::now_iso();
     save(&all)?;
     Ok(all.user)

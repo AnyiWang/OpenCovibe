@@ -69,8 +69,10 @@ pub fn build_agent_command(
             if !prompt.is_empty() {
                 args.push(prompt.to_string());
             }
-            log::debug!("[spawn] claude command: claude {}", args.join(" "));
-            Ok(("claude".to_string(), args))
+            // Honor the custom claude path/program override (#155).
+            let program = crate::agent::claude_stream::resolve_claude_path();
+            log::debug!("[spawn] claude command: {} {}", program, args.join(" "));
+            Ok((program, args))
         }
         "codex" => {
             // `--search` is a TOP-LEVEL codex flag (NOT a `codex exec` flag — `codex exec

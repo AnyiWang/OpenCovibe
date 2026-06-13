@@ -779,6 +779,25 @@
   let cliConfigLoading = $state(false);
   let cliConfigError = $state("");
 
+  // Custom Claude CLI launch path/command (#155)
+  let claudePathInput = $state("");
+  let claudePathSaved = $state(false);
+  $effect(() => {
+    if (settings) claudePathInput = settings.claude_path ?? "";
+  });
+  async function saveClaudePath() {
+    const next = claudePathInput.trim();
+    if ((settings?.claude_path ?? "") === next) return;
+    try {
+      settings = await api.updateUserSettings({ claude_path: next });
+      claudePathSaved = true;
+      setTimeout(() => (claudePathSaved = false), 1500);
+      dbg("settings", "claude_path saved", { path: next });
+    } catch (e) {
+      dbgWarn("settings", "saveClaudePath failed", e);
+    }
+  }
+
   // CLI Config setting definitions
   const CLI_CONFIG_SETTINGS: CliConfigSettingDef[] = [
     // Behavior
@@ -3501,6 +3520,47 @@
           >
             {t("settings_cliConfig_claudeGroup")}
           </h2>
+          <!-- Claude CLI launch command/path (#155) -->
+          <Card class="p-6 space-y-3">
+            <div class="flex items-center justify-between">
+              <h2 class="text-sm font-semibold text-muted-foreground uppercase tracking-wider">
+                {t("settings_cliConfig_launch")}
+              </h2>
+              {#if claudePathSaved}
+                <span class="text-xs text-emerald-500 flex items-center gap-1 animate-fade-in">
+                  <svg
+                    class="h-3 w-3"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"><path d="M20 6 9 17l-5-5" /></svg
+                  >
+                  {t("settings_general_saved")}
+                </span>
+              {/if}
+            </div>
+            <div>
+              <p class="text-sm font-medium">{t("settings_cliConfig_claudePath")}</p>
+              <p class="text-xs text-muted-foreground">
+                {t("settings_cliConfig_claudePathDesc")}
+              </p>
+            </div>
+            <input
+              type="text"
+              bind:value={claudePathInput}
+              onblur={saveClaudePath}
+              onkeydown={(e) => {
+                if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+              }}
+              placeholder="claude"
+              spellcheck="false"
+              autocapitalize="off"
+              autocomplete="off"
+              class="w-full rounded-md border bg-transparent px-3 py-1.5 font-mono text-xs text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-primary"
+            />
+          </Card>
           <!-- Behavior -->
           <Card class="p-6 space-y-4">
             <h2 class="text-sm font-semibold text-muted-foreground uppercase tracking-wider">

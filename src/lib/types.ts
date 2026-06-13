@@ -176,6 +176,8 @@ export interface UserSettings {
   web_server_bind?: string;
   web_server_allowed_origins?: string[];
   web_server_tunnel_url?: string;
+  /** Custom path/program to launch the Claude CLI (default: auto-detect). (#155) */
+  claude_path?: string;
   updated_at: string;
 }
 
