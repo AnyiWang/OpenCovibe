@@ -306,6 +306,12 @@ pub fn run() {
             commands::preview::close_preview_window,
         ])
         .setup(move |app| {
+            // Recover the user's real shell PATH off the hot path, so CLI detection works
+            // when the app is launched from Finder/Dock (which provides only a minimal PATH).
+            // Spawning a shell can take a moment; do it on a background thread so startup
+            // isn't blocked and the cache is warm before the user reaches onboarding.
+            std::thread::spawn(crate::agent::claude_stream::prime_path_cache);
+
             // Set up broadcast emitter (requires AppHandle, so must be in setup)
             let broadcaster = web_server::broadcaster::EventBroadcaster::new();
             let writer = app.state::<Arc<EventWriter>>().inner().clone();

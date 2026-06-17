@@ -153,11 +153,135 @@ fn extra_path_dirs() -> Vec<PathBuf> {
     }
 }
 
+/// Cached login-shell PATH (Unix only).
+///
+/// GUI apps launched from Finder/Dock inherit only launchd's minimal PATH, not the
+/// PATH the user configured in their shell rc files (.zshrc/.bash_profile/config.fish).
+/// Many users install the Claude/Codex CLIs into a version-manager or custom npm-prefix
+/// bin dir that exists only on the shell PATH, so detection fails despite the CLI being
+/// installed. We recover the real PATH by asking the user's login shell once.
+#[cfg(not(windows))]
+static LOGIN_SHELL_PATH: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+
+/// Recover the user's interactive login-shell PATH. Cached after the first call.
+/// Returns None when `$SHELL` is unset/unsupported or on any failure (spawn error,
+/// timeout); callers then fall back to the inherited PATH + hardcoded dirs.
+#[cfg(not(windows))]
+fn login_shell_path() -> Option<String> {
+    LOGIN_SHELL_PATH.get_or_init(query_login_shell_path).clone()
+}
+
+/// Pull the value between the two `delim` markers, trimmed. The markers isolate the
+/// PATH from any banner/noise an rc file prints to stdout on startup.
+#[cfg(not(windows))]
+fn extract_delimited<'a>(out: &'a str, delim: &str) -> Option<&'a str> {
+    let start = out.find(delim)? + delim.len();
+    let rest = &out[start..];
+    let end = rest.find(delim)?;
+    Some(rest[..end].trim())
+}
+
+#[cfg(not(windows))]
+fn query_login_shell_path() -> Option<String> {
+    use std::io::Read;
+
+    let shell = std::env::var("SHELL").ok().filter(|s| !s.is_empty())?;
+    let shell_name = std::path::Path::new(&shell)
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_default();
+
+    const DELIM: &str = "__OCVB_PATH_DELIM__";
+
+    // Per-shell invocation to print PATH as a colon-joined string:
+    // - POSIX shells: `$PATH` is already colon-joined; -i -l source the rc files where
+    //   users export PATH (many guard the export with `[[ $- == *i* ]]`, hence -i).
+    // - fish: `$PATH` is a list and must be joined explicitly; config.fish is read on -l.
+    // Unknown shells are refused — safer than guessing flags that might hang.
+    let (flags, script): (&str, String) = match shell_name.as_str() {
+        "bash" | "zsh" | "sh" | "dash" | "ksh" => (
+            "-ilc",
+            format!("printf %s {DELIM}; printf %s \"$PATH\"; printf %s {DELIM}"),
+        ),
+        "fish" => (
+            "-lc",
+            format!("printf %s {DELIM}; string join : $PATH; printf %s {DELIM}"),
+        ),
+        _ => {
+            log::debug!("[path] unsupported login shell '{}', skipping", shell_name);
+            return None;
+        }
+    };
+
+    log::debug!("[path] querying login shell for PATH: {} {}", shell, flags);
+
+    let mut child = std::process::Command::new(&shell)
+        .arg(flags)
+        .arg(&script)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .hide_console()
+        .spawn()
+        .map_err(|e| log::warn!("[path] login shell spawn failed: {}", e))
+        .ok()?;
+
+    // std::process has no built-in timeout — read stdout on a worker thread, bound the wait.
+    let mut stdout = child.stdout.take()?;
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut buf = String::new();
+        let _ = stdout.read_to_string(&mut buf);
+        let _ = tx.send(buf);
+    });
+
+    let out = match rx.recv_timeout(std::time::Duration::from_secs(4)) {
+        Ok(o) => o,
+        Err(_) => {
+            log::warn!("[path] login shell PATH query timed out (4s), killing");
+            let _ = child.kill();
+            // Reap after kill — std's Child::drop neither kills nor waits, so without
+            // this the SIGKILL'd process lingers as a zombie until the app exits.
+            let _ = child.wait();
+            return None;
+        }
+    };
+    let _ = child.wait();
+
+    match extract_delimited(&out, DELIM).filter(|p| !p.is_empty()) {
+        Some(path) => {
+            log::debug!("[path] recovered login-shell PATH ({} chars)", path.len());
+            Some(path.to_string())
+        }
+        None => {
+            log::warn!("[path] login shell returned no usable PATH");
+            None
+        }
+    }
+}
+
+/// Warm the login-shell PATH cache off the hot path (call once at startup). No-op on Windows.
+pub fn prime_path_cache() {
+    #[cfg(not(windows))]
+    {
+        let _ = login_shell_path();
+    }
+}
+
 /// Build a PATH that includes common binary locations (cross-platform).
 pub fn augmented_path() -> String {
     let extra = extra_path_dirs();
     let current_path = std::env::var("PATH").unwrap_or_default();
     let existing: Vec<PathBuf> = std::env::split_paths(&current_path).collect();
+
+    // Recovered login-shell dirs (Unix GUI launch inherits only a minimal PATH).
+    // Empty on Windows and on any recovery failure.
+    #[cfg(not(windows))]
+    let login_dirs: Vec<PathBuf> = login_shell_path()
+        .map(|p| std::env::split_paths(&p).collect())
+        .unwrap_or_default();
+    #[cfg(windows)]
+    let login_dirs: Vec<PathBuf> = Vec::new();
 
     #[cfg(windows)]
     let eq = |a: &PathBuf, b: &PathBuf| {
@@ -167,8 +291,10 @@ pub fn augmented_path() -> String {
     #[cfg(not(windows))]
     let eq = |a: &PathBuf, b: &PathBuf| a == b;
 
+    // Hardcoded well-known dirs first, then recovered login-shell dirs. Both are
+    // existence-checked and de-duplicated against the inherited PATH (appended last).
     let mut parts: Vec<PathBuf> = Vec::new();
-    for dir in extra {
+    for dir in extra.into_iter().chain(login_dirs) {
         if dir.is_dir()
             && !parts.iter().any(|p| eq(p, &dir))
             && !existing.iter().any(|e| eq(e, &dir))
@@ -592,4 +718,49 @@ pub(crate) fn resolve_codex_path() -> String {
 pub fn invalidate_codex_path_cache() {
     *CODEX_PATH_CACHE.lock().unwrap() = None;
     log::debug!("[claude_stream] codex path cache invalidated");
+}
+
+#[cfg(test)]
+mod tests {
+    #[cfg(not(windows))]
+    use super::extract_delimited;
+
+    #[cfg(not(windows))]
+    #[test]
+    fn extract_delimited_pulls_value_between_markers() {
+        let d = "__OCVB_PATH_DELIM__";
+        // Banner noise before the first marker is ignored; value is trimmed.
+        let out = format!("rc-file banner\n{d} /usr/bin:/opt/homebrew/bin {d}");
+        assert_eq!(
+            extract_delimited(&out, d),
+            Some("/usr/bin:/opt/homebrew/bin")
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn extract_delimited_none_when_markers_missing_or_unpaired() {
+        let d = "__OCVB_PATH_DELIM__";
+        assert_eq!(extract_delimited("no markers here", d), None);
+        // A single marker (e.g. shell died mid-print) yields no closing delim → None.
+        assert_eq!(extract_delimited("__OCVB_PATH_DELIM__/usr/bin", d), None);
+    }
+
+    #[test]
+    fn augmented_path_only_adds_never_drops_inherited() {
+        use super::augmented_path;
+        let out = augmented_path();
+        assert!(!out.is_empty(), "augmented_path returned empty");
+        let dirs: Vec<_> = std::env::split_paths(&out).collect();
+        // Core safety invariant: the merge only prepends dirs, never drops an inherited
+        // PATH entry. (Global de-dup isn't asserted — the inherited tail is passed through
+        // verbatim, so any pre-existing dup in the runner's PATH would survive.)
+        for dir in std::env::split_paths(&std::env::var("PATH").unwrap_or_default()) {
+            assert!(
+                dirs.contains(&dir),
+                "inherited PATH entry dropped: {}",
+                dir.display()
+            );
+        }
+    }
 }
