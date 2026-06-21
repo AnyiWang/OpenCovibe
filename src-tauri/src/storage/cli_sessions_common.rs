@@ -76,9 +76,54 @@ pub struct SyncResult {
 
 // ── Shared helpers ──────────────────────────────────────────────────
 
-/// Encode cwd for Claude CLI directory naming: '/' and '\' → '-'.
+/// Encode cwd for Claude CLI directory naming: ':' '/' and '\' → '-'.
+///
+/// Mirrors Claude Code's project-dir scheme, which also collapses the Windows
+/// drive colon (e.g. `C:\Users\a` → `C--Users-a`, on disk as
+/// `~/.claude/projects/C--Users-a/`). This is only a fast-path optimization —
+/// callers fall back to a full scan when the encoded dir is absent, so paths
+/// containing other characters Claude rewrites (spaces, dots) still resolve.
 pub fn encode_cwd(cwd: &str) -> String {
-    cwd.replace(['/', '\\'], "-")
+    cwd.replace([':', '/', '\\'], "-")
+}
+
+/// Normalize a working directory for cross-platform equality comparison.
+///
+/// Mirrors the frontend `normalizeCwd` (src/lib/utils/sidebar-groups.ts) so
+/// Rust-side session discovery and the sidebar's folder grouping agree on what
+/// counts as "the same folder". Backslashes → forward slashes, a leading drive
+/// letter is uppercased, and trailing slashes are stripped (drive/UNC roots are
+/// preserved). Without this, a session whose JSONL stores `C:\Users\a\Work`
+/// never matches the frontend-normalized target `C:/Users/a/Work`, so Windows
+/// discovery silently returns nothing.
+pub fn normalize_cwd(cwd: &str) -> String {
+    let s = cwd.trim();
+    if s.is_empty() || s == "/" || s == "\\" {
+        return String::new();
+    }
+    // Windows: backslash → forward slash
+    let mut s = s.replace('\\', "/");
+    // Windows: uppercase a leading drive letter (c:/Repo → C:/Repo)
+    let b = s.as_bytes();
+    if b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':' {
+        let mut chars: Vec<char> = s.chars().collect();
+        chars[0] = chars[0].to_ascii_uppercase();
+        s = chars.into_iter().collect();
+    }
+    // Bare drive letter "C:" → "C:/"
+    if s.len() == 2 && s.as_bytes()[1] == b':' {
+        return format!("{}/", s);
+    }
+    // Preserve drive root "C:/"
+    if s.len() == 3 && s.as_bytes()[1] == b':' && s.as_bytes()[2] == b'/' {
+        return s;
+    }
+    // Preserve UNC root "//server" (strip a single trailing slash if present)
+    if s.starts_with("//") && s[2..].split('/').filter(|p| !p.is_empty()).count() == 1 {
+        return s.trim_end_matches('/').to_string();
+    }
+    // Strip trailing slashes
+    s.trim_end_matches('/').to_string()
 }
 
 /// SHA-256 hash of a string, returning first 12 hex chars.
