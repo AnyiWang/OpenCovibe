@@ -5056,7 +5056,7 @@
                       <div class="w-full py-2">
                         <div class="chat-content-width pl-7">
                           <div
-                            class="command-output rounded-lg border border-border/40 bg-[#1a1b26] px-4 py-3 text-sm overflow-x-auto"
+                            class="command-output rounded-lg border border-border/40 bg-muted dark:bg-[#1a1b26] px-4 py-3 text-sm overflow-x-auto"
                           >
                             {#if entry.content.includes("## Context Usage")}
                               <ContextUsageGrid text={entry.content} />
@@ -5068,7 +5068,7 @@
                               <ReleaseNotesCard text={entry.content} />
                             {:else if hasAnsiCodes(entry.content)}
                               <pre
-                                class="whitespace-pre font-mono text-xs leading-relaxed text-[#c0caf5] m-0">{@html ansiToHtml(
+                                class="whitespace-pre font-mono text-xs leading-relaxed text-foreground dark:text-[#c0caf5] m-0">{@html ansiToHtml(
                                   entry.content,
                                 )}</pre>
                             {:else}

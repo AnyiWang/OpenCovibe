@@ -6,50 +6,50 @@ function stripTags(html: string): string {
   return html.replace(/<[^>]*>/g, "");
 }
 
-/** Helper: check if a token has a specific color */
-function hasColor(html: string, text: string, color: string): boolean {
-  return html.includes(`color:${color}">${text}</span>`);
+/** Helper: check if a token is wrapped in a specific syntax class */
+function hasColor(html: string, text: string, cls: string): boolean {
+  return html.includes(`class="${cls}">${text}</span>`);
 }
 
 describe("colorizeCommand", () => {
   it("simple command: ls -la", () => {
     const html = colorizeCommand("ls -la");
-    expect(hasColor(html, "$", "#4ade80")).toBe(true); // prompt green
-    expect(hasColor(html, "ls", "#e5e7eb")).toBe(true); // command white
-    expect(hasColor(html, "-la", "#22d3ee")).toBe(true); // flag cyan
+    expect(hasColor(html, "$", "sh-prompt")).toBe(true); // prompt
+    expect(hasColor(html, "ls", "sh-command")).toBe(true); // command name
+    expect(hasColor(html, "-la", "sh-flag")).toBe(true); // flag
   });
 
   it("pipe: echo hello | grep h", () => {
     const html = colorizeCommand("echo hello | grep h");
-    expect(hasColor(html, "|", "#c084fc")).toBe(true); // pipe magenta
-    expect(hasColor(html, "echo", "#e5e7eb")).toBe(true); // first command
-    expect(hasColor(html, "grep", "#e5e7eb")).toBe(true); // command after pipe
+    expect(hasColor(html, "|", "sh-operator")).toBe(true); // pipe
+    expect(hasColor(html, "echo", "sh-command")).toBe(true); // first command
+    expect(hasColor(html, "grep", "sh-command")).toBe(true); // command after pipe
   });
 
   it("quoted strings", () => {
     const html = colorizeCommand('echo "hello world"');
-    expect(hasColor(html, "&quot;hello world&quot;", "#facc15")).toBe(true); // yellow
+    expect(hasColor(html, "&quot;hello world&quot;", "sh-string")).toBe(true);
   });
 
   it("flags: npm install --save-dev", () => {
     const html = colorizeCommand("npm install --save-dev");
-    expect(hasColor(html, "--save-dev", "#22d3ee")).toBe(true); // cyan
+    expect(hasColor(html, "--save-dev", "sh-flag")).toBe(true);
   });
 
   it("redirection: cat file > out.txt", () => {
     const html = colorizeCommand("cat file > out.txt");
-    expect(hasColor(html, "&gt;", "#c084fc")).toBe(true); // magenta
+    expect(hasColor(html, "&gt;", "sh-operator")).toBe(true);
   });
 
   it("chained commands: cd /tmp && ls", () => {
     const html = colorizeCommand("cd /tmp && ls");
-    expect(hasColor(html, "&amp;&amp;", "#c084fc")).toBe(true); // magenta
-    expect(hasColor(html, "ls", "#e5e7eb")).toBe(true); // command after &&
+    expect(hasColor(html, "&amp;&amp;", "sh-operator")).toBe(true);
+    expect(hasColor(html, "ls", "sh-command")).toBe(true); // command after &&
   });
 
   it("empty command: only $ prompt with trailing space", () => {
     const html = colorizeCommand("");
-    expect(hasColor(html, "$", "#4ade80")).toBe(true);
+    expect(hasColor(html, "$", "sh-prompt")).toBe(true);
     expect(stripTags(html)).toBe("$ ");
   });
 
@@ -69,9 +69,9 @@ describe("colorizeCommand", () => {
 
   it("env var assignment: FOO=1 BAR=2 npm run dev", () => {
     const html = colorizeCommand("FOO=1 BAR=2 npm run dev");
-    expect(hasColor(html, "FOO=1", "#22d3ee")).toBe(true); // assign cyan
-    expect(hasColor(html, "BAR=2", "#22d3ee")).toBe(true); // assign cyan
-    expect(hasColor(html, "npm", "#e5e7eb")).toBe(true); // command white
+    expect(hasColor(html, "FOO=1", "sh-assign")).toBe(true); // assign
+    expect(hasColor(html, "BAR=2", "sh-assign")).toBe(true); // assign
+    expect(hasColor(html, "npm", "sh-command")).toBe(true); // command name
   });
 
   it("complex syntax graceful degradation: $(date)", () => {
