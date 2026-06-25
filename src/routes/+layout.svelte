@@ -80,7 +80,16 @@
   let showSetupWizard = $state(false);
   let showAbout = $state(false);
   let showCliBrowser = $state(false);
+  // cwd the CLI session browser is scoped to: "/" = show all (toolbar button),
+  // or a specific folder when opened from the per-folder discovery banner.
+  let cliBrowserCwd = $state("/");
   let permissionsModalOpen = $state(false);
+
+  // Per-folder CLI session discovery (#folder-cli-discovery): when the active
+  // folder has Claude CLI sessions on disk that aren't imported yet, surface a
+  // banner so the user can review/import them. Counts refer to `discoveredCwd`.
+  let discoveredCwd = $state("");
+  let discoveredUnimported = $state(0);
 
   // Team store (shared via context with /teams page)
   const teamStore = new TeamStore();
@@ -1067,6 +1076,48 @@
     goto(`/chat?folder=${encodeURIComponent(cwd)}`);
   }
 
+  // Open the CLI session browser, optionally scoped to a folder's cwd.
+  // "/" keeps the original show-all behavior used by the toolbar button.
+  function openCliBrowser(cwd: string = "/") {
+    cliBrowserCwd = cwd || "/";
+    showCliBrowser = true;
+  }
+
+  // Count Claude CLI sessions on disk for `cwd` that aren't imported yet, so the
+  // sidebar can offer to surface them. Guards against races by stamping the
+  // result with the cwd it was requested for. Best-effort: errors leave the
+  // banner hidden rather than interrupting.
+  let discoverReqId = 0;
+  async function refreshFolderDiscovery(cwd: string) {
+    const target = normalizeCwd(cwd);
+    if (!target) {
+      discoveredCwd = "";
+      discoveredUnimported = 0;
+      return;
+    }
+    const reqId = ++discoverReqId;
+    try {
+      const result = await getTransport().invoke<{
+        sessions: { alreadyImported: boolean }[];
+      }>("discover_cli_sessions", { cwd: target, agent: "claude" });
+      if (reqId !== discoverReqId) return; // superseded by a newer folder
+      discoveredCwd = target;
+      discoveredUnimported = result.sessions.filter((s) => !s.alreadyImported).length;
+    } catch (e) {
+      if (reqId !== discoverReqId) return;
+      dbgWarn("layout", "folder CLI discovery failed", e);
+      discoveredCwd = target;
+      discoveredUnimported = 0;
+    }
+  }
+
+  // Re-discover whenever the active folder changes (chat page only).
+  $effect(() => {
+    const cwd = projectCwd;
+    if (!isChatPage) return;
+    refreshFolderDiscovery(cwd);
+  });
+
   function toggleProject(folderKey: string) {
     const next = new Set(expandedProjects);
     if (next.has(folderKey)) next.delete(folderKey);
@@ -1540,7 +1591,7 @@
           >
           <button
             class="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-sidebar-foreground hover:bg-sidebar-accent/50 transition-colors duration-150"
-            onclick={() => (showCliBrowser = true)}
+            onclick={() => openCliBrowser("/")}
             title={t("cliSync_title")}
           >
             <svg
@@ -2180,6 +2231,35 @@
             {:else}
               <!-- Project folder tree -->
               <div class="flex-1 overflow-y-auto px-2 py-1">
+                <!-- Un-imported on-disk CLI sessions for the active folder (#folder-cli-discovery) -->
+                {#if discoveredUnimported > 0 && discoveredCwd === normalizeCwd(projectCwd)}
+                  <button
+                    class="mb-1 flex w-full items-center gap-2 rounded-md border border-primary/30 bg-primary/10 px-2 py-1.5 text-left text-xs text-sidebar-foreground hover:bg-primary/20 transition-colors"
+                    onclick={() => openCliBrowser(projectCwd)}
+                    title={t("cliSync_discoverFolderHint")}
+                  >
+                    <svg
+                      class="h-3.5 w-3.5 shrink-0 text-primary"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      ><polyline points="22 12 16 12 14 15 10 15 8 12 2 12" /><path
+                        d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"
+                      /></svg
+                    >
+                    <span class="flex-1 min-w-0 truncate"
+                      >{t("cliSync_discoverFolderBanner", {
+                        count: String(discoveredUnimported),
+                      })}</span
+                    >
+                    <span class="shrink-0 font-medium text-primary"
+                      >{t("cliSync_discoverFolderAction")}</span
+                    >
+                  </button>
+                {/if}
                 {#each projectFolders as folder (folder.folderKey)}
                   <ProjectFolderItem
                     {folder}
@@ -2358,11 +2438,12 @@
 
 {#if showCliBrowser}
   <CliSessionBrowser
-    cwd="/"
+    cwd={cliBrowserCwd}
     onclose={() => (showCliBrowser = false)}
     onimported={(runId) => {
       showCliBrowser = false;
       loadRuns();
+      refreshFolderDiscovery(projectCwd);
       goto(`/chat?run=${runId}`);
     }}
   />

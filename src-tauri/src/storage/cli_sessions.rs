@@ -14,7 +14,7 @@ use std::io::{BufRead, BufReader, BufWriter, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 pub use crate::storage::cli_sessions_common::{
-    encode_cwd, CliSessionSummary, DiscoverResult, ImportResult, SyncResult,
+    encode_cwd, normalize_cwd, CliSessionSummary, DiscoverResult, ImportResult, SyncResult,
 };
 
 // ── Helpers ──────────────────────────────────────────────────────────
@@ -1020,10 +1020,12 @@ fn extract_summary(
         }
     }
 
-    // If cwd doesn't match target, skip (empty or "/" means show all)
+    // If cwd doesn't match target, skip (empty or "/" means show all).
+    // Compare normalized so a JSONL's native path (e.g. `C:\Users\a\Work`)
+    // matches the frontend-normalized target (`C:/Users/a/Work`) on Windows.
     let show_all = target_cwd.is_empty() || target_cwd == "/";
     let matched_cwd = match &cwd {
-        Some(c) if show_all || c == target_cwd => c.clone(),
+        Some(c) if show_all || normalize_cwd(c) == normalize_cwd(target_cwd) => c.clone(),
         _ => return Ok(None),
     };
 
@@ -1686,15 +1688,38 @@ mod tests {
         assert_eq!(encode_cwd("/Users/alice/project"), "-Users-alice-project");
         assert_eq!(encode_cwd("/"), "-");
         assert_eq!(encode_cwd("relative"), "relative");
-        // Windows paths
+        // Windows paths: the drive colon collapses to '-' too, matching Claude's
+        // on-disk project dir `~/.claude/projects/C--Users-alice-project/`.
         assert_eq!(
             encode_cwd("C:\\Users\\alice\\project"),
-            "C:-Users-alice-project"
+            "C--Users-alice-project"
         );
         assert_eq!(
             encode_cwd("C:/Users/alice/project"),
-            "C:-Users-alice-project"
+            "C--Users-alice-project"
         );
+    }
+
+    #[test]
+    fn test_normalize_cwd_matches_across_separators() {
+        // The core Windows bug: native JSONL path vs frontend-normalized target.
+        assert_eq!(
+            normalize_cwd("C:\\Users\\tashmatov\\Desktop\\Work\\ExperTwin"),
+            normalize_cwd("C:/Users/tashmatov/Desktop/Work/ExperTwin")
+        );
+        // Drive-letter case is normalized.
+        assert_eq!(normalize_cwd("c:\\Repo"), "C:/Repo");
+        // Trailing slashes stripped, but roots preserved.
+        assert_eq!(normalize_cwd("C:/Users/a/"), "C:/Users/a");
+        assert_eq!(normalize_cwd("C:"), "C:/");
+        assert_eq!(normalize_cwd("C:/"), "C:/");
+        // POSIX paths pass through; show-all sentinels collapse to empty.
+        assert_eq!(
+            normalize_cwd("/Users/alice/project"),
+            "/Users/alice/project"
+        );
+        assert_eq!(normalize_cwd("/"), "");
+        assert_eq!(normalize_cwd(""), "");
     }
 
     #[test]
