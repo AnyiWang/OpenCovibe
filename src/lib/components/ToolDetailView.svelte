@@ -615,30 +615,33 @@
       <div
         class="tool-terminal relative group/copy {outputExpanded ? '' : 'max-h-96 overflow-hidden'}"
       >
-        <div>{@html commandHtml}</div>
+        <!-- pr-12 reserves room so a long command's first line doesn't run under the copy button -->
+        <div class="pr-12">{@html commandHtml}</div>
         {#if bashResult}
           {#if bashResult.stdout}
             {#if stdoutHtml}
-              <div class="mt-1 text-neutral-300/80">{@html stdoutHtml}</div>
+              <div class="mt-1 text-foreground/80">{@html stdoutHtml}</div>
             {:else}
-              <div class="mt-1 text-neutral-300/80">{stdoutStripped}</div>
+              <div class="mt-1 text-foreground/80">{stdoutStripped}</div>
             {/if}
           {/if}
           {#if bashResult.stderr}
             {#if stderrHtml}
-              <div class="mt-1 text-red-400/80">{@html stderrHtml}</div>
+              <div class="mt-1 text-red-600 dark:text-red-400/80">{@html stderrHtml}</div>
             {:else}
-              <div class="mt-1 text-red-400/80">{stderrStripped}</div>
+              <div class="mt-1 text-red-600 dark:text-red-400/80">{stderrStripped}</div>
             {/if}
           {/if}
           {#if bashResult.interrupted}
-            <div class="mt-1 text-amber-400/80 text-[10px]">{t("tool_interrupted")}</div>
+            <div class="mt-1 text-amber-600 dark:text-amber-400/80 text-[10px]">
+              {t("tool_interrupted")}
+            </div>
           {/if}
         {:else if outputText}
           {#if outputHtml}
-            <div class="mt-1 text-neutral-300/80">{@html outputHtml}</div>
+            <div class="mt-1 text-foreground/80">{@html outputHtml}</div>
           {:else}
-            <div class="mt-1 text-neutral-300/80">{outputStripped}</div>
+            <div class="mt-1 text-foreground/80">{outputStripped}</div>
           {/if}
         {/if}
         {#if isInputStreaming || tool.status === "running"}
@@ -646,7 +649,7 @@
           ></span>
         {/if}
         <button
-          class="absolute top-1.5 right-1.5 text-xs text-neutral-500 hover:text-neutral-300 opacity-0 group-hover/copy:opacity-100 transition-opacity"
+          class="absolute top-1.5 right-1.5 text-xs text-muted-foreground hover:text-foreground opacity-0 group-hover/copy:opacity-100 transition-opacity"
           onclick={() => handleCopy(`$ ${tool.input?.command}\n${terminalPlainText}`)}
           >{copyFeedback ?? t("common_copy")}</button
         >

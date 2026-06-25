@@ -503,10 +503,12 @@
   font-size: inherit;
 }
 
-/* Tool terminal output (Bash, shell commands) */
+/* Tool terminal output (Bash, shell commands) — theme-aware surface.
+   Light: follows --muted/--foreground like other tool cards (Read/Edit/Grep).
+   Dark: keeps a deeper "terminal" black, matching .tool-code-block's dark override. */
 .tool-terminal {
-  background: hsl(0 0% 5%);
-  color: hsl(0 0% 85%);
+  background: hsl(var(--muted));
+  color: hsl(var(--foreground));
   font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
   font-size: 0.8125rem;
   line-height: 1.5;
@@ -515,6 +517,58 @@
   overflow-x: auto;
   white-space: pre-wrap;
   word-break: break-all;
+}
+
+.dark .tool-terminal {
+  background: hsl(0 0% 8%);
+  color: hsl(0 0% 85%);
+}
+
+/* Shell command syntax colors (colorizeCommand output) — theme-aware.
+   Light palette is darkened for contrast on the light surface; dark palette
+   keeps the original terminal-bright colors. */
+.sh-prompt {
+  color: #16a34a;
+}
+.sh-command {
+  color: #1f2937;
+}
+.sh-flag {
+  color: #0891b2;
+}
+.sh-string {
+  color: #a16207;
+}
+.sh-operator {
+  color: #9333ea;
+}
+.sh-assign {
+  color: #0891b2;
+}
+.sh-arg {
+  color: #4b5563;
+}
+
+.dark .sh-prompt {
+  color: #4ade80;
+}
+.dark .sh-command {
+  color: #e5e7eb;
+}
+.dark .sh-flag {
+  color: #22d3ee;
+}
+.dark .sh-string {
+  color: #facc15;
+}
+.dark .sh-operator {
+  color: #c084fc;
+}
+.dark .sh-assign {
+  color: #22d3ee;
+}
+.dark .sh-arg {
+  color: #9ca3af;
 }
 
 /* Diff view (Edit tool) */
