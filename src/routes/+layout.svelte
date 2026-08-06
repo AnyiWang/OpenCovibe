@@ -57,6 +57,9 @@
   import { TeamStore } from "$lib/stores/team-store.svelte";
   import { KeybindingStore } from "$lib/stores/keybindings.svelte";
   import { getTransport } from "$lib/transport";
+  // Build-time app version — fallback for the sidebar rail when the Tauri runtime
+  // getVersion() isn't available (web/remote mode). Bumped by the release script.
+  import { version as pkgVersion } from "../../package.json";
   import {
     t,
     LOCALE_REGISTRY,
@@ -81,6 +84,19 @@
   let showAbout = $state(false);
   let showCliBrowser = $state(false);
   let permissionsModalOpen = $state(false);
+
+  // Sidebar rail version. getVersion() is the installed app version (matches the About
+  // dialog — issue #178: the rail was hardcoded to "v0.1"); fall back to the build-time
+  // package version for non-Tauri (web/remote) mode.
+  let appVersion = $state(pkgVersion);
+  onMount(async () => {
+    try {
+      const { getVersion } = await import("@tauri-apps/api/app");
+      appVersion = await getVersion();
+    } catch {
+      // Non-Tauri context — keep the build-time fallback.
+    }
+  });
 
   // Team store (shared via context with /teams page)
   const teamStore = new TeamStore();
@@ -1401,7 +1417,7 @@
             <button
               class="text-xs text-muted-foreground hover:text-muted-foreground transition-colors cursor-pointer"
               onclick={() => (showAbout = true)}
-              title="About OpenCovibe">v0.1</button
+              title="About OpenCovibe">v{appVersion}</button
             >
           </div>
           <div class="relative mx-auto mb-0.5">
