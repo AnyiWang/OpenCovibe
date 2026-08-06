@@ -266,6 +266,15 @@ pub fn update_status(
         );
         if is_terminal {
             meta.ended_at = Some(now_iso());
+            // Terminal non-Failed states must not carry a stale error subtype:
+            // finalize_meta and the frontend resume-warning read result_subtype
+            // directly, and a mid-turn EOF (no clean idle in between) would
+            // otherwise leave an earlier turn's error in a Completed/Stopped
+            // run's meta. Failed keeps it — the failed branch persists the
+            // current error right after this call.
+            if status != RunStatus::Failed {
+                meta.result_subtype = None;
+            }
         } else {
             meta.ended_at = None;
         }
@@ -294,6 +303,22 @@ pub fn persist_result_error(
         meta.result_subtype = result_subtype;
         Ok(())
     })
+}
+
+/// Clear error_message/result_subtype only when present. persist_result_error
+/// rewrites the meta file unconditionally, so a per-turn clean idle must not
+/// call it — this keeps the write a no-op when there is nothing to clear.
+/// Returns Ok(()) regardless; the write is skipped inside.
+pub fn clear_result_error_if_present(id: &str) -> Result<(), String> {
+    let lock = meta_lock(id);
+    let _guard = lock.lock().map_err(|e| format!("meta lock: {e}"))?;
+    let mut meta = get_run(id).ok_or_else(|| format!("Run {} not found", id))?;
+    if meta.error_message.is_none() && meta.result_subtype.is_none() {
+        return Ok(());
+    }
+    meta.error_message = None;
+    meta.result_subtype = None;
+    save_meta(&meta)
 }
 
 pub fn list_runs() -> Vec<TaskRun> {

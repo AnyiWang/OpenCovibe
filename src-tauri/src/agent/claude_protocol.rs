@@ -1218,6 +1218,32 @@ impl ProtocolState {
                 }
             }
 
+            // ── user rejected a tool use ──
+            // The CLI emits this when the user (or, in our case, the app's quarantine
+            // interrupt) rejects the in-flight tool use. No tool_result will ever follow,
+            // so this maps to a terminal ToolEnd (status "rejected") instead of the Raw
+            // fallback — otherwise the tool card stays "running" forever and the chat
+            // tree breaks.
+            "user_rejected_tool_use" => {
+                let tool_use_id = str_field(raw, "tool_use_id").to_string();
+                let tool_name = str_field(raw, "tool_name").to_string();
+                log::debug!(
+                    "[protocol] user_rejected_tool_use: tool={}, id={}",
+                    tool_name,
+                    tool_use_id
+                );
+                events.push(BusEvent::ToolEnd {
+                    run_id: run_id.to_string(),
+                    tool_use_id,
+                    tool_name,
+                    output: Value::Null,
+                    status: "rejected".to_string(),
+                    duration_ms: None,
+                    parent_tool_use_id: parent_tool_use_id.clone(),
+                    tool_use_result: None,
+                });
+            }
+
             // ── tool progress (top-level event type) ──
             "tool_progress" => {
                 let tool_use_id = raw
@@ -1979,6 +2005,92 @@ mod tests {
             BusEvent::ToolEnd { status, .. } => assert_eq!(status, "error"),
             other => panic!("expected ToolEnd, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn test_user_rejected_tool_use() {
+        let mut ps = ProtocolState::new(false);
+        let raw = json!({
+            "type": "user_rejected_tool_use",
+            "tool_use_id": "tu-1",
+            "tool_name": "Bash",
+            "tool_input": {"command": "sleep 3600"}
+        });
+        let events = ps.map_event(RUN, &raw);
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            BusEvent::ToolEnd {
+                run_id,
+                tool_use_id,
+                tool_name,
+                status,
+                output,
+                duration_ms,
+                parent_tool_use_id,
+                tool_use_result,
+                ..
+            } => {
+                assert_eq!(run_id, RUN);
+                assert_eq!(tool_use_id, "tu-1");
+                assert_eq!(tool_name, "Bash");
+                assert_eq!(status, "rejected");
+                assert!(output.is_null());
+                assert!(duration_ms.is_none());
+                assert!(parent_tool_use_id.is_none());
+                assert!(tool_use_result.is_none());
+            }
+            other => panic!("expected ToolEnd, got {:?}", other),
+        }
+        // Mapped explicitly — must NOT land in the Raw fallback
+        assert_eq!(ps.stats.unknown_event_count, 0);
+    }
+
+    #[test]
+    fn test_user_rejected_tool_use_empty_id_dropped() {
+        // Consistent with ToolStart/ToolEnd: a rejection without a tool_use_id
+        // cannot be attached to a tool card → dropped at validation.
+        let mut ps = ProtocolState::new(false);
+        let raw = json!({
+            "type": "user_rejected_tool_use",
+            "tool_use_id": "",
+            "tool_name": "Bash",
+            "tool_input": {}
+        });
+        let events = ps.map_event(RUN, &raw);
+        assert_eq!(events.len(), 1);
+        let warn = validate_bus_event(&events[0]);
+        assert!(warn.is_some(), "empty tool_use_id should be invalid");
+        assert_eq!(warn.unwrap().field, "tool_use_id");
+    }
+
+    #[test]
+    fn test_user_rejected_tool_use_subagent() {
+        let mut ps = ProtocolState::new(false);
+        let raw = json!({
+            "type": "user_rejected_tool_use",
+            "tool_use_id": "tu-2",
+            "tool_name": "Task",
+            "tool_input": {},
+            "parent_tool_use_id": "tu-1"
+        });
+        let events = ps.map_event(RUN, &raw);
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            BusEvent::ToolEnd {
+                tool_use_id,
+                tool_name,
+                status,
+                parent_tool_use_id,
+                ..
+            } => {
+                assert_eq!(tool_use_id, "tu-2");
+                assert_eq!(tool_name, "Task");
+                assert_eq!(status, "rejected");
+                assert_eq!(parent_tool_use_id.as_deref(), Some("tu-1"));
+            }
+            other => panic!("expected ToolEnd, got {:?}", other),
+        }
+        assert_eq!(ps.stats.unknown_event_count, 0);
     }
 
     #[test]

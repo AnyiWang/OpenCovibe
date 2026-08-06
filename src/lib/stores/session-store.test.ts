@@ -6562,3 +6562,135 @@ describe("SessionStart sessionTitle auto-naming", () => {
     expect(api.renameRun).not.toHaveBeenCalled();
   });
 });
+
+// ── user_rejected_tool_use → ToolEnd(status "rejected") ──
+
+describe("rejected tool status (user_rejected_tool_use)", () => {
+  it("marks a running tool as rejected on tool_end with status rejected", () => {
+    const store = new SessionStore();
+    store.run = makeRun("run-rej-1");
+    store.phase = "running";
+    store.applyEvent({
+      type: "tool_start",
+      run_id: "run-rej-1",
+      tool_use_id: "tu-1",
+      tool_name: "Bash",
+      input: { command: "sleep 3600" },
+    } as BusEvent);
+    expect(store.timeline.find((e) => e.kind === "tool" && e.id === "tu-1")).toBeDefined();
+
+    store.applyEvent({
+      type: "tool_end",
+      run_id: "run-rej-1",
+      tool_use_id: "tu-1",
+      tool_name: "Bash",
+      // Rust side emits JSON null (BusEvent::ToolEnd output: Value::Null) —
+      // keep the true shape so null-safety regressions surface in tests.
+      output: null as unknown as Record<string, unknown>,
+      status: "rejected",
+    } as BusEvent);
+    const entry = store.timeline.find((e) => e.kind === "tool" && e.id === "tu-1") as Extract<
+      TimelineEntry,
+      { kind: "tool" }
+    >;
+    expect(entry.tool.status).toBe("rejected");
+    // Terminal state — the interrupted tool must NOT stay "running"
+    expect(entry.tool.status).not.toBe("running");
+  });
+
+  it("routes rejected tool_end into the subagent subTimeline", () => {
+    const store = new SessionStore();
+    store.run = makeRun("run-rej-2");
+    store.phase = "running";
+    store.applyEventBatch([
+      {
+        type: "tool_start",
+        run_id: "run-rej-2",
+        tool_use_id: "task-1",
+        tool_name: "Task",
+        input: {},
+      },
+      {
+        type: "tool_start",
+        run_id: "run-rej-2",
+        tool_use_id: "bash-1",
+        tool_name: "Bash",
+        input: { command: "ls" },
+        parent_tool_use_id: "task-1",
+      },
+    ] as BusEvent[]);
+    store.applyEvent({
+      type: "tool_end",
+      run_id: "run-rej-2",
+      tool_use_id: "bash-1",
+      tool_name: "Bash",
+      // Rust side emits JSON null (BusEvent::ToolEnd output: Value::Null) —
+      // keep the true shape so null-safety regressions surface in tests.
+      output: null as unknown as Record<string, unknown>,
+      status: "rejected",
+      parent_tool_use_id: "task-1",
+    } as BusEvent);
+    const taskEntry = store.timeline.find((e) => e.kind === "tool" && e.id === "task-1") as Extract<
+      TimelineEntry,
+      { kind: "tool" }
+    >;
+    expect(taskEntry.subTimeline).toBeDefined();
+    const child = taskEntry.subTimeline!.find((e) => e.kind === "tool" && e.id === "bash-1");
+    expect(child && child.kind === "tool" ? child.tool.status : undefined).toBe("rejected");
+  });
+
+  it("keeps an interrupted AskUserQuestion rejected (not ask_pending)", () => {
+    const store = new SessionStore();
+    store.run = makeRun("run-rej-3");
+    store.phase = "running";
+    store.applyEvent({
+      type: "tool_start",
+      run_id: "run-rej-3",
+      tool_use_id: "ask-1",
+      tool_name: "AskUserQuestion",
+      input: {},
+    } as BusEvent);
+    store.applyEvent({
+      type: "tool_end",
+      run_id: "run-rej-3",
+      tool_use_id: "ask-1",
+      tool_name: "AskUserQuestion",
+      // Rust side emits JSON null (BusEvent::ToolEnd output: Value::Null) —
+      // keep the true shape so null-safety regressions surface in tests.
+      output: null as unknown as Record<string, unknown>,
+      status: "rejected",
+    } as BusEvent);
+    const entry = store.timeline.find((e) => e.kind === "tool" && e.id === "ask-1") as Extract<
+      TimelineEntry,
+      { kind: "tool" }
+    >;
+    // Interrupted ≠ answerable again — must stay rejected, not flip to ask_pending
+    expect(entry.tool.status).toBe("rejected");
+  });
+
+  it("does NOT switch permissionMode to plan when EnterPlanMode is rejected", () => {
+    const store = new SessionStore();
+    store.run = makeRun("run-rej-4");
+    store.phase = "running";
+    store.permissionMode = "default";
+    store.applyEvent({
+      type: "tool_start",
+      run_id: "run-rej-4",
+      tool_use_id: "plan-1",
+      tool_name: "EnterPlanMode",
+      input: {},
+    } as BusEvent);
+    store.applyEvent({
+      type: "tool_end",
+      run_id: "run-rej-4",
+      tool_use_id: "plan-1",
+      tool_name: "EnterPlanMode",
+      // Rust side emits JSON null (BusEvent::ToolEnd output: Value::Null) —
+      // keep the true shape so null-safety regressions surface in tests.
+      output: null as unknown as Record<string, unknown>,
+      status: "rejected",
+    } as BusEvent);
+    // Whitelist "success" only — a rejected plan-mode entry must not flip the mode
+    expect(store.permissionMode).toBe("default");
+  });
+});

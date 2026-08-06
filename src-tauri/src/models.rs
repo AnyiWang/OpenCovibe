@@ -282,6 +282,9 @@ pub struct UserSettings {
     /// claude-tap script). Empty/None = auto-detect. (#155)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub claude_path: Option<String>,
+    /// User turn hard-timeout in minutes. None = default (30 min), Some(0) = disabled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_minutes: Option<u64>,
     pub updated_at: String,
 }
 
@@ -400,6 +403,7 @@ impl Default for UserSettings {
             web_server_allowed_origins: None,
             web_server_tunnel_url: None,
             claude_path: None,
+            timeout_minutes: None,
             updated_at: now_iso(),
         }
     }

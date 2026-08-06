@@ -689,6 +689,10 @@ pub fn update_user_settings(patch: serde_json::Value) -> Result<UserSettings, St
         // The resolved-path cache must re-evaluate the override on the next spawn. (#155)
         crate::agent::claude_stream::invalidate_claude_path_cache();
     }
+    if let Some(v) = patch.get("timeout_minutes") {
+        // null clears → default 30 min; Some(0) = disabled.
+        all.user.timeout_minutes = v.as_u64();
+    }
     all.user.updated_at = crate::models::now_iso();
     save(&all)?;
     Ok(all.user)

@@ -230,7 +230,8 @@ export function isToolTerminal(status: BusToolItem["status"]): boolean {
     status === "success" ||
     status === "error" ||
     status === "denied" ||
-    status === "permission_denied"
+    status === "permission_denied" ||
+    status === "rejected"
   );
 }
 

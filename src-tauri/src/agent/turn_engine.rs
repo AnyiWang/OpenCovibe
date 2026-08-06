@@ -164,10 +164,15 @@ pub const TICK_INTERVAL: Duration = Duration::from_millis(250);
 /// Rules:
 /// - quarantine → skip (turn is already None; quarantine has its own 10s deadline)
 /// - internal turn → skip (Draining phase depends on fixed deadline)
-/// - user/ralph turn → extend hard_deadline to now + USER_HARD_TIMEOUT
+/// - user/ralph turn → extend hard_deadline to now + user timeout
+///   (None = timeout disabled — no extend, tick never fires)
 ///
 /// Returns true if hard_deadline was extended.
-pub fn apply_activity_reset(quarantine: bool, active_turn: &mut Option<ActiveTurn>) -> bool {
+pub fn apply_activity_reset(
+    quarantine: bool,
+    user_hard_timeout: Option<Duration>,
+    active_turn: &mut Option<ActiveTurn>,
+) -> bool {
     if quarantine {
         return false;
     }
@@ -177,7 +182,10 @@ pub fn apply_activity_reset(quarantine: bool, active_turn: &mut Option<ActiveTur
     if matches!(turn.origin, TurnOrigin::Internal(_)) {
         return false;
     }
-    turn.hard_deadline = Instant::now() + USER_HARD_TIMEOUT;
+    let Some(timeout) = user_hard_timeout else {
+        return false;
+    };
+    turn.hard_deadline = Instant::now() + timeout;
     true
 }
 
@@ -223,7 +231,11 @@ mod tests {
             auto_ctx_id: 1,
         })));
         let before = turn.as_ref().unwrap().hard_deadline;
-        assert!(apply_activity_reset(false, &mut turn));
+        assert!(apply_activity_reset(
+            false,
+            Some(USER_HARD_TIMEOUT),
+            &mut turn
+        ));
         assert!(turn.as_ref().unwrap().hard_deadline > before);
     }
 
@@ -231,7 +243,11 @@ mod tests {
     fn activity_reset_ralph_turn_extends_deadline() {
         let mut turn = Some(make_turn(TurnOrigin::Ralph));
         let before = turn.as_ref().unwrap().hard_deadline;
-        assert!(apply_activity_reset(false, &mut turn));
+        assert!(apply_activity_reset(
+            false,
+            Some(USER_HARD_TIMEOUT),
+            &mut turn
+        ));
         assert!(turn.as_ref().unwrap().hard_deadline > before);
     }
 
@@ -241,7 +257,11 @@ mod tests {
             InternalJobKind::AutoContext,
         )));
         let before = turn.as_ref().unwrap().hard_deadline;
-        assert!(!apply_activity_reset(false, &mut turn));
+        assert!(!apply_activity_reset(
+            false,
+            Some(USER_HARD_TIMEOUT),
+            &mut turn
+        ));
         assert_eq!(turn.as_ref().unwrap().hard_deadline, before);
     }
 
@@ -251,13 +271,32 @@ mod tests {
             auto_ctx_id: 1,
         })));
         let before = turn.as_ref().unwrap().hard_deadline;
-        assert!(!apply_activity_reset(true, &mut turn));
+        assert!(!apply_activity_reset(
+            true,
+            Some(USER_HARD_TIMEOUT),
+            &mut turn
+        ));
         assert_eq!(turn.as_ref().unwrap().hard_deadline, before);
     }
 
     #[test]
     fn activity_reset_no_turn_returns_false() {
         let mut turn: Option<ActiveTurn> = None;
-        assert!(!apply_activity_reset(false, &mut turn));
+        assert!(!apply_activity_reset(
+            false,
+            Some(USER_HARD_TIMEOUT),
+            &mut turn
+        ));
+    }
+
+    #[test]
+    fn activity_reset_disabled_no_extend() {
+        // None = timeout disabled — deadline must stay put (tick gate never fires).
+        let mut turn = Some(make_turn(TurnOrigin::User(UserTurnKind::Normal {
+            auto_ctx_id: 1,
+        })));
+        let before = turn.as_ref().unwrap().hard_deadline;
+        assert!(!apply_activity_reset(false, None, &mut turn));
+        assert_eq!(turn.as_ref().unwrap().hard_deadline, before);
     }
 }
