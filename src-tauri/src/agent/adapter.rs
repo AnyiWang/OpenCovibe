@@ -679,6 +679,7 @@ mod tests {
             web_server_bind: None,
             web_server_allowed_origins: None,
             web_server_tunnel_url: None,
+            timeout_minutes: None,
             updated_at: String::new(),
         }
     }

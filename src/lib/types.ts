@@ -178,6 +178,8 @@ export interface UserSettings {
   web_server_tunnel_url?: string;
   /** Custom path/program to launch the Claude CLI (default: auto-detect). (#155) */
   claude_path?: string;
+  /** User turn hard-timeout in minutes. undefined = default (30 min), 0 = disabled. */
+  timeout_minutes?: number;
   updated_at: string;
 }
 
@@ -1201,7 +1203,8 @@ export interface BusToolItem {
     | "denied"
     | "ask_pending"
     | "permission_denied"
-    | "permission_prompt";
+    | "permission_prompt"
+    | "rejected";
   /** For permission_prompt status: the control_request ID needed to respond. */
   permission_request_id?: string;
   duration_ms?: number;

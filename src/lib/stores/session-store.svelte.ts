@@ -3418,7 +3418,9 @@ export class SessionStore {
             ? ("ask_pending" as const)
             : ev.status === "error"
               ? ("error" as const)
-              : ("success" as const);
+              : ev.status === "rejected"
+                ? ("rejected" as const) // user_rejected_tool_use → terminal rejected
+                : ("success" as const);
 
         // Subagent routing: update child tool inside parent's subTimeline
         if (ev.parent_tool_use_id) {
@@ -3529,7 +3531,9 @@ export class SessionStore {
         // Subagent EnterPlanMode should not change the parent session's mode.
         // replayOnly guard: replaying a historical session that ended mid-plan must not
         // pollute the current permissionMode (which is a user-level preference, not snapshot state).
-        if (!replayOnly && ev.status !== "error" && !ev.parent_tool_use_id) {
+        // Whitelist "success" only — a rejected EnterPlanMode/ExitPlanMode (e.g. interrupted
+        // via quarantine) must not flip the mode.
+        if (!replayOnly && ev.status === "success" && !ev.parent_tool_use_id) {
           if (ev.tool_name === "EnterPlanMode") {
             this.previousPermissionMode = this.permissionMode || "default";
             this.permissionMode = "plan";

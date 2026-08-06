@@ -4,12 +4,14 @@ use crate::agent::codex_appserver::CodexAppServer;
 use crate::agent::session_actor::{self, ActorCommand, AttachmentData, RalphCancelResult};
 use crate::agent::session_protocol::{CodexSkillRef, SessionProtocol, StartupCtx};
 use crate::agent::spawn_locks::SpawnLocks;
+use crate::agent::turn_engine::USER_HARD_TIMEOUT;
 use crate::models::ConversationRef;
 use crate::models::{BusEvent, RemoteHost, RunMeta, RunStatus, SessionMode, UserSettings};
 use crate::process_ext::HideConsole;
 use crate::storage;
 use crate::web_server::broadcaster::BroadcastEmitter;
 use std::sync::Arc;
+use std::time::Duration;
 use tauri::State;
 use tokio_util::sync::CancellationToken;
 
@@ -715,6 +717,15 @@ pub(crate) async fn start_session_impl(
     );
 
     // 8. Spawn actor
+    // Resolve the user turn hard-timeout from settings: 0 = disabled (None),
+    // absent = default 30 min, otherwise the configured minutes.
+    // saturating_mul: an absurd settings.json value must not panic the spawn
+    // (debug overflow-checked) or wrap to a tiny timeout (release) — clamp instead.
+    let user_hard_timeout = match user_settings.timeout_minutes {
+        Some(0) => None,
+        Some(minutes) => Some(Duration::from_secs(minutes.saturating_mul(60))),
+        None => Some(USER_HARD_TIMEOUT),
+    };
     let actor_handle = session_actor::spawn_actor(
         Arc::clone(emitter),
         sessions.clone(),
@@ -729,6 +740,7 @@ pub(crate) async fn start_session_impl(
         initial_auto_ctx_id,
         codex,
         codex_startup,
+        user_hard_timeout,
     );
     let cmd_tx = actor_handle.cmd_tx.clone();
     sessions.lock().await.insert(run_id.clone(), actor_handle);
@@ -1417,6 +1429,14 @@ pub(crate) async fn approve_session_tool_impl(
     );
 
     // 8b. Spawn actor
+    // Resolve user turn hard-timeout from settings (0 = disabled, absent = default 30 min).
+    // saturating_mul: an absurd settings.json value must not panic the spawn
+    // (debug overflow-checked) or wrap to a tiny timeout (release) — clamp instead.
+    let user_hard_timeout = match user.timeout_minutes {
+        Some(0) => None,
+        Some(minutes) => Some(Duration::from_secs(minutes.saturating_mul(60))),
+        None => Some(USER_HARD_TIMEOUT),
+    };
     let actor_handle = session_actor::spawn_actor(
         Arc::clone(emitter),
         sessions.clone(),
@@ -1431,6 +1451,7 @@ pub(crate) async fn approve_session_tool_impl(
         normal + 1,
         None, // Claude transport
         vec![],
+        user_hard_timeout,
     );
     sessions.lock().await.insert(run_id.clone(), actor_handle);
 

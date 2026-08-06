@@ -798,6 +798,38 @@
     }
   }
 
+  // Turn hard-timeout (minutes). Empty = default (30), 0 = disabled, N = N minutes.
+  let timeoutMinutesInput = $state("");
+  let timeoutSaved = $state(false);
+  $effect(() => {
+    if (settings) timeoutMinutesInput = settings.timeout_minutes?.toString() ?? "";
+  });
+  async function saveTimeoutMinutes() {
+    const trimmed = timeoutMinutesInput.trim();
+    // null clears the setting back to the default 30 min; 0 persists as "disabled".
+    const next: number | null = trimmed === "" ? null : Number(trimmed);
+    // The backend's as_u64() silently drops fractions/negatives → setting would
+    // reset to the default with the user's input lost — reject them here instead.
+    if (next !== null && (!Number.isInteger(next) || next < 0)) {
+      dbgWarn("settings", "timeout_minutes rejected (must be a non-negative integer)", {
+        value: next,
+      });
+      timeoutMinutesInput = settings?.timeout_minutes?.toString() ?? "";
+      return;
+    }
+    if ((settings?.timeout_minutes?.toString() ?? "") === (next?.toString() ?? "")) return;
+    try {
+      settings = await api.updateUserSettings({
+        timeout_minutes: next,
+      } as Partial<UserSettings>);
+      timeoutSaved = true;
+      setTimeout(() => (timeoutSaved = false), 1500);
+      dbg("settings", "timeout_minutes saved", { minutes: next });
+    } catch (e) {
+      dbgWarn("settings", "saveTimeoutMinutes failed", e);
+    }
+  }
+
   // CLI Config setting definitions
   const CLI_CONFIG_SETTINGS: CliConfigSettingDef[] = [
     // Behavior
@@ -3558,6 +3590,48 @@
               spellcheck="false"
               autocapitalize="off"
               autocomplete="off"
+              class="w-full rounded-md border bg-transparent px-3 py-1.5 font-mono text-xs text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-primary"
+            />
+          </Card>
+          <!-- Turn hard-timeout (minutes) -->
+          <Card class="p-6 space-y-3">
+            <div class="flex items-center justify-between">
+              <h2 class="text-sm font-semibold text-muted-foreground uppercase tracking-wider">
+                {t("settings_cliConfig_turnTimeout")}
+              </h2>
+              {#if timeoutSaved}
+                <span class="text-xs text-emerald-500 flex items-center gap-1 animate-fade-in">
+                  <svg
+                    class="h-3 w-3"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"><path d="M20 6 9 17l-5-5" /></svg
+                  >
+                  {t("settings_general_saved")}
+                </span>
+              {/if}
+            </div>
+            <div>
+              <p class="text-sm font-medium">{t("settings_cliConfig_turnTimeoutLabel")}</p>
+              <p class="text-xs text-muted-foreground">
+                {t("settings_cliConfig_turnTimeoutDesc")}
+              </p>
+            </div>
+            <!-- bind:value coerces number inputs to number/null — keep the raw
+                 string via oninput so .trim() in saveTimeoutMinutes stays valid -->
+            <input
+              type="number"
+              min="0"
+              value={timeoutMinutesInput}
+              oninput={(e) => (timeoutMinutesInput = e.currentTarget.value)}
+              onblur={saveTimeoutMinutes}
+              onkeydown={(e) => {
+                if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+              }}
+              placeholder={t("settings_cliConfig_turnTimeoutPlaceholder")}
               class="w-full rounded-md border bg-transparent px-3 py-1.5 font-mono text-xs text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-primary"
             />
           </Card>

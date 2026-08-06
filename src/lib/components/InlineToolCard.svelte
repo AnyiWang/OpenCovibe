@@ -241,7 +241,10 @@
   let statusKind = $derived(
     tool.status === "success"
       ? "done"
-      : tool.status === "error" || tool.status === "denied" || tool.status === "permission_denied"
+      : tool.status === "error" ||
+          tool.status === "denied" ||
+          tool.status === "permission_denied" ||
+          tool.status === "rejected"
         ? "error"
         : tool.status === "permission_prompt"
           ? "permission_prompt"

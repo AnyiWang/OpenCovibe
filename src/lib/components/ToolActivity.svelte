@@ -238,6 +238,7 @@
       case "error":
       case "denied":
       case "permission_denied":
+      case "rejected":
         return "error";
       case "ask_pending":
       case "permission_prompt":
@@ -895,7 +896,8 @@
               <div class="space-y-1.5">
                 {#each subagents as sa (sa.toolUseId)}
                   {@const isDone = sa.status === "success"}
-                  {@const isError = sa.status === "error" || sa.status === "denied"}
+                  {@const isError =
+                    sa.status === "error" || sa.status === "denied" || sa.status === "rejected"}
                   {@const isRunning = !isDone && !isError}
                   <button
                     class="w-full text-left rounded-md border border-border/50 bg-background/50 px-2.5 py-1.5 hover:bg-accent/30 transition-colors"

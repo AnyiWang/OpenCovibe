@@ -83,6 +83,58 @@ fn truncate_str(s: &str, max: usize) -> &str {
 /// Build a control_response payload for the CLI. HC#2: the `request_id` MUST be nested
 /// inside `response`, not at the top level. `Ok` → success with a response body; `Err` →
 /// error with a message (the correct reply for a request the app cannot fulfill).
+/// Decide whether a mapped event must reach the frontend while the actor is in
+/// quarantine. RunState turn-boundary events are handled separately (they lift
+/// the quarantine); everything else is suppressed as mid-turn noise — except
+/// ToolEnd: the interrupted tool must terminate in the chat tree, or its card
+/// stays "running" forever after a quarantine interrupt.
+fn quarantine_event_passthrough(event: &BusEvent) -> bool {
+    matches!(event, BusEvent::ToolEnd { .. })
+}
+
+/// Quarantine-lift recovery decision for a user turn. Returns
+/// (emit_state, clear_pending_interrupt, emit_error).
+///
+/// Internal turns emit nothing — the frontend never saw the turn start, so an
+/// idle there would be noise. For user turns, the CLI's result is the cancel
+/// ack for the quarantine interrupt, so its error is suppressed (mirrors the
+/// user-stop path) unless the state is a genuine "failed"; a stale user-stop
+/// flag must be dropped, or the next turn's failed result would be misread as
+/// an interrupt ack and silently swallowed.
+fn quarantine_lift_recovery(
+    from_internal: bool,
+    state: &str,
+    error: Option<&str>,
+    pending_interrupt: bool,
+) -> (bool, bool, Option<String>) {
+    if from_internal {
+        return (false, false, None);
+    }
+    let emit_error = if state == "failed" {
+        error.map(String::from)
+    } else {
+        None
+    };
+    (true, pending_interrupt, emit_error)
+}
+
+/// Decide what to persist to meta at user-turn idle, from the in-mem result
+/// subtype. Error subtypes persist subtype+message so finalize_meta at EOF can
+/// mark the run Failed; a clean result clears stale fields from an earlier
+/// turn instead — otherwise finalize_meta would wrongly mark a 0-exit run
+/// Failed. Mirrors the (previously dead) clear-on-running intent, moved to
+/// the point where the information is actually available.
+fn idle_error_persist(
+    result_subtype: Option<&str>,
+    error: Option<&str>,
+) -> (Option<String>, Option<String>) {
+    if result_subtype.is_some_and(|s| s.starts_with("error")) {
+        (error.map(String::from), result_subtype.map(String::from))
+    } else {
+        (None, None)
+    }
+}
+
 fn build_control_response(request_id: &str, outcome: Result<Value, String>) -> Value {
     let inner = match outcome {
         Ok(response) => serde_json::json!({
@@ -288,6 +340,10 @@ struct SessionActor {
     /// JSON parse failures in handle_stdout_line (before map_event).
     /// Complements ParserStats.parse_warn_count (field-level malformation).
     json_parse_fail_count: u32,
+    /// User turn hard-timeout override. None = timeout disabled (no quarantine
+    /// on silence); Some(d) = silence-quarantine after d. Default (30 min) is
+    /// resolved at spawn from the timeout_minutes setting.
+    user_hard_timeout: Option<Duration>,
 
     // ── Ralph Loop fields ──
     /// Ralph loop state (None = inactive / completed).
@@ -328,17 +384,20 @@ pub fn spawn_actor(
     // Codex app-server transport: the driver + its handshake messages. `None`/empty = Claude.
     codex: Option<CodexAppServer>,
     codex_startup: Vec<Value>,
+    // User turn hard timeout (None = disabled, resolved from timeout_minutes at spawn).
+    user_hard_timeout: Option<Duration>,
 ) -> SessionActorHandle {
     let tag = Arc::new(());
     let (cmd_tx, cmd_rx) = mpsc::channel::<ActorCommand>(64);
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
 
     log::debug!(
-        "[actor] spawn: run_id={}, is_resume={}, initial_turn_index={}, initial_auto_ctx_id={}",
+        "[actor] spawn: run_id={}, is_resume={}, initial_turn_index={}, initial_auto_ctx_id={}, user_hard_timeout={:?}",
         run_id,
         is_resume,
         initial_turn_index,
-        initial_auto_ctx_id
+        initial_auto_ctx_id,
+        user_hard_timeout
     );
 
     let actor = SessionActor {
@@ -374,6 +433,7 @@ pub fn spawn_actor(
         quarantine_from_internal: false,
         terminated: false,
         json_parse_fail_count: 0,
+        user_hard_timeout,
         ralph_loop: None,
         ralph_needs_dispatch: false,
         pending_interactive_request: None,
@@ -776,6 +836,13 @@ impl SessionActor {
             client_uuid: None,
             attachments: vec![],
         });
+        // New turn: drop error tracking from the last error result. The
+        // parser sets result_subtype/got_result_event only on error results and
+        // never clears them on success; a stale in-mem subtype would make this
+        // turn's idle re-persist the old error to meta and finalize_meta would
+        // wrongly mark a 0-exit run Failed at EOF.
+        self.protocol.got_result_event = false;
+        self.protocol.result_subtype = None;
         self.emit_state("running", None, None, false);
         self.persist_idle_running(RunStatus::Running);
 
@@ -790,7 +857,9 @@ impl SessionActor {
             phase: TurnPhase::Active,
             started_at: now,
             soft_deadline: now + USER_SOFT_TIMEOUT,
-            hard_deadline: now + USER_HARD_TIMEOUT,
+            // None (timeout disabled) falls back to the default deadline — the
+            // tick gate (user_hard_timeout.is_some()) keeps it from ever firing.
+            hard_deadline: now + self.user_hard_timeout.map_or(USER_HARD_TIMEOUT, |d| d),
             turn_index: ticket.turn_index,
         });
     }
@@ -940,6 +1009,11 @@ impl SessionActor {
             client_uuid: None,
             attachments: vec![],
         });
+        // New turn: drop error tracking from the last error result — same
+        // rationale as start_user_turn; a stale subtype would re-persist the old
+        // error at this turn's idle and mark a 0-exit run Failed at EOF.
+        self.protocol.got_result_event = false;
+        self.protocol.result_subtype = None;
         self.emit_state("running", None, None, false);
         self.persist_idle_running(RunStatus::Running);
 
@@ -950,7 +1024,9 @@ impl SessionActor {
             phase: TurnPhase::Active,
             started_at: now,
             soft_deadline: now + USER_SOFT_TIMEOUT,
-            hard_deadline: now + USER_HARD_TIMEOUT,
+            // None (timeout disabled) falls back to the default deadline — the
+            // tick gate (user_hard_timeout.is_some()) keeps it from ever firing.
+            hard_deadline: now + self.user_hard_timeout.map_or(USER_HARD_TIMEOUT, |d| d),
             turn_index,
         });
 
@@ -1203,8 +1279,8 @@ impl SessionActor {
             }
         }
         // User turns: typically don't time out (CLI manages its own flow)
-        // but hard_deadline provides a safety net
-        else if now >= turn.hard_deadline {
+        // but hard_deadline provides a safety net. Disabled (None) never fires.
+        else if self.user_hard_timeout.is_some() && now >= turn.hard_deadline {
             log::warn!(
                 "[turn] user hard timeout: entering quarantine for run_id={} (turn_seq={}), pending_request={:?}",
                 self.run_id,
@@ -1811,7 +1887,11 @@ impl SessionActor {
     /// and routes its events / lifecycle / interactive / thread-id signals into the *shared*
     /// turn engine (`end_turn_and_dispatch`, `emit_state`) — no Claude control protocol.
     async fn handle_codex_line(&mut self, text: &str) {
-        apply_activity_reset(self.quarantine_until_result, &mut self.active_turn);
+        apply_activity_reset(
+            self.quarantine_until_result,
+            self.user_hard_timeout,
+            &mut self.active_turn,
+        );
 
         let parsed = self.codex.as_mut().unwrap().parse_line(&self.run_id, text);
 
@@ -1947,7 +2027,11 @@ impl SessionActor {
         };
 
         // Activity-based deadline reset for user/ralph turns.
-        if apply_activity_reset(self.quarantine_until_result, &mut self.active_turn) {
+        if apply_activity_reset(
+            self.quarantine_until_result,
+            self.user_hard_timeout,
+            &mut self.active_turn,
+        ) {
             log::trace!(
                 "[turn] activity reset: hard_deadline extended for run_id={}",
                 self.run_id
@@ -1981,7 +2065,13 @@ impl SessionActor {
                     self.protocol.stats.invalid_tool_count += 1;
                     continue;
                 }
-                if let BusEvent::RunState { state, .. } = event {
+                if let BusEvent::RunState {
+                    state,
+                    exit_code,
+                    error,
+                    ..
+                } = event
+                {
                     // HC #17: Only lift on turn-boundary states
                     if state == "idle" || state == "failed" {
                         log::debug!(
@@ -1989,16 +2079,58 @@ impl SessionActor {
                             state,
                             self.run_id
                         );
+                        let from_internal = self.quarantine_from_internal;
                         self.quarantine_until_result = false;
                         self.quarantine_deadline = None;
                         self.interrupt_sent_for_quarantine = false;
                         self.quarantine_from_internal = false;
                         self.protocol.set_pending_slash_command(None);
-                        // Don't emit quarantine RunState to frontend (it was an internal turn)
+                        let (emit, clear_interrupt, emit_error) = quarantine_lift_recovery(
+                            from_internal,
+                            state,
+                            error.as_deref(),
+                            self.pending_interrupt,
+                        );
+                        if clear_interrupt {
+                            self.pending_interrupt = false;
+                        }
+                        if emit {
+                            // Mirror the normal user-turn RunState path (emit_state +
+                            // idle meta) so the frontend phase recovers from the
+                            // interrupted turn. The result lifting quarantine is the
+                            // cancel ack for the quarantine interrupt — clear the
+                            // in-mem error tracking like the user-stop path does,
+                            // or a stale error subtype would be re-persisted to meta
+                            // at the next turn's idle and finalize_meta would mark
+                            // the run Failed at EOF.
+                            self.protocol.got_result_event = false;
+                            self.protocol.result_subtype = None;
+                            self.emit_state(state, *exit_code, emit_error, false);
+                            if state == "idle" {
+                                self.persist_idle_running(RunStatus::Idle);
+                                // Clean-idle lift: the interrupted turn is a cancel
+                                // ack, not an error — clear stale meta error fields,
+                                // since this path bypasses the idle handler that
+                                // does it for normal turns.
+                                if let Err(e) =
+                                    storage::runs::clear_result_error_if_present(&self.run_id)
+                                {
+                                    log::warn!("[actor] failed to clear stale meta error: {}", e);
+                                }
+                            }
+                        }
                         // Just try to dispatch next queued item
                         self.try_dispatch().await;
                         return;
                     }
+                }
+                // Tool termination must reach the frontend even during quarantine —
+                // the interrupted tool would otherwise stay "running" forever in the
+                // chat tree (the quarantine swallow is meant for mid-turn noise,
+                // not terminal tool states).
+                if quarantine_event_passthrough(event) {
+                    self.persist_and_emit(event);
+                    continue;
                 }
             }
             // Everything else during quarantine → swallow
@@ -2112,27 +2244,29 @@ impl SessionActor {
 
                     if emit_state == "idle" {
                         self.persist_idle_running(RunStatus::Idle);
-                        // If the result event indicated an error, persist subtype+message
-                        // to meta so finalize_meta on EOF can mark the run Failed.
-                        let had_result_error = self
-                            .protocol
-                            .result_subtype
-                            .as_deref()
-                            .map(|s| s.starts_with("error"))
-                            .unwrap_or(false);
-                        if had_result_error {
-                            log::debug!(
-                                "[actor] persisting idle-with-error: subtype={:?}, error={:?}",
-                                self.protocol.result_subtype,
-                                emit_error
-                            );
-                            if let Err(e) = storage::runs::persist_result_error(
+                        // Persist error details from this turn's result to meta (so
+                        // finalize_meta on EOF can mark the run Failed) — or, on a
+                        // clean result, clear stale error fields from an earlier
+                        // turn. The turn-start reset above guarantees the in-mem
+                        // subtype is this turn's, never a stale one.
+                        let (idle_error, idle_subtype) = idle_error_persist(
+                            self.protocol.result_subtype.as_deref(),
+                            emit_error.as_deref(),
+                        );
+                        let idle_persist = if idle_subtype.is_some() {
+                            storage::runs::persist_result_error(
                                 &self.run_id,
-                                emit_error.clone(),
-                                self.protocol.result_subtype.clone(),
-                            ) {
-                                log::warn!("[actor] failed to persist result error: {}", e);
-                            }
+                                idle_error,
+                                idle_subtype,
+                            )
+                        } else {
+                            // Clean result — drop stale fields from an earlier turn
+                            // without rewriting meta when there are none (the
+                            // unconditional persist would rewrite per turn).
+                            storage::runs::clear_result_error_if_present(&self.run_id)
+                        };
+                        if let Err(e) = idle_persist {
+                            log::warn!("[actor] failed to persist idle error state: {}", e);
                         }
                     }
 
@@ -2751,34 +2885,11 @@ impl SessionActor {
                 }
             }
 
-            // Clear error fields on new turn
-            if new_state == "running" {
-                if let Err(e) = runs::with_meta(&self.run_id, |meta| {
-                    if meta.error_message.is_some() || meta.result_subtype.is_some() {
-                        meta.error_message = None;
-                        meta.result_subtype = None;
-                        log::debug!(
-                            "[actor] cleared error_message/result_subtype for new turn: run={}",
-                            self.run_id
-                        );
-                    }
-                    Ok(())
-                }) {
-                    log::warn!(
-                        "[actor] clear error fields failed: run={} err={}",
-                        self.run_id,
-                        e
-                    );
-                }
-                // Also reset the in-mem error tracking. The parser sets result_subtype
-                // only on error results and never clears it on success (see claude_protocol
-                // test "success doesn't set got_result_event"). Without this, a stale error
-                // subtype from an earlier turn survives into a later successful turn and
-                // gets re-persisted at that turn's idle (had_result_error), making
-                // finalize_meta on EOF wrongly mark a 0-exit run as Failed. Mirrors the
-                // meta clear above and the interrupt path's reset.
-                self.protocol.result_subtype = None;
-            }
+            // Note: no error-field clearing on "running" here — every
+            // emit_state("running") caller passes update_meta=false, so a clear
+            // under this gate would be dead code (it was: SF2). The real reset
+            // lives at turn start (in-mem) and at clean idle (meta) in
+            // handle_stdout_line / start_user_turn.
 
             // Persist result error details on failed
             if new_state == "failed" {
@@ -3230,5 +3341,126 @@ mod tests {
         assert_eq!(strip_ansi(input), "2026-06-03 ERROR codex_core: failed");
         // Plain text is unchanged.
         assert_eq!(strip_ansi("no codes here"), "no codes here");
+    }
+
+    #[test]
+    fn quarantine_passes_tool_end_through() {
+        use super::quarantine_event_passthrough;
+        // user_rejected_tool_use (and any terminal tool state) must reach the
+        // frontend during quarantine — regression guard for the timeout fix.
+        let ev = BusEvent::ToolEnd {
+            run_id: "r".to_string(),
+            tool_use_id: "tu-1".to_string(),
+            tool_name: "Bash".to_string(),
+            output: serde_json::Value::Null,
+            status: "rejected".to_string(),
+            duration_ms: None,
+            parent_tool_use_id: None,
+            tool_use_result: None,
+        };
+        assert!(quarantine_event_passthrough(&ev));
+    }
+
+    #[test]
+    fn quarantine_swallows_mid_turn_events() {
+        use super::quarantine_event_passthrough;
+        let cases = vec![
+            BusEvent::ToolStart {
+                run_id: "r".to_string(),
+                tool_use_id: "tu-1".to_string(),
+                tool_name: "Bash".to_string(),
+                input: serde_json::Value::Null,
+                parent_tool_use_id: None,
+            },
+            BusEvent::MessageDelta {
+                run_id: "r".to_string(),
+                text: "hi".to_string(),
+                parent_tool_use_id: None,
+            },
+            BusEvent::Raw {
+                run_id: "r".to_string(),
+                source: "claude_x".to_string(),
+                data: serde_json::Value::Null,
+            },
+        ];
+        for ev in &cases {
+            assert!(
+                !quarantine_event_passthrough(ev),
+                "mid-turn event must not pass quarantine: {:?}",
+                ev
+            );
+        }
+    }
+
+    #[test]
+    fn quarantine_lift_emits_idle_for_user_turn() {
+        use super::quarantine_lift_recovery;
+        // User turn (quarantine_from_internal=false) → emit idle, suppress the
+        // cancel-ack error, drop the stale user-stop flag.
+        let (emit, clear, error) =
+            quarantine_lift_recovery(false, "idle", Some("cancel ack"), true);
+        assert!(emit);
+        assert!(clear);
+        assert_eq!(error, None);
+    }
+
+    #[test]
+    fn quarantine_lift_common_case() {
+        use super::quarantine_lift_recovery;
+        // Typical quarantine: user turn, no pending user-stop flag, cancel-ack
+        // idle — emit plain idle, nothing to clean up.
+        let (emit, clear, error) = quarantine_lift_recovery(false, "idle", Some("ack"), false);
+        assert!(emit);
+        assert!(!clear);
+        assert_eq!(error, None);
+    }
+
+    #[test]
+    fn quarantine_lift_suppresses_internal_turns() {
+        use super::quarantine_lift_recovery;
+        let (emit, clear, error) = quarantine_lift_recovery(true, "idle", Some("err"), true);
+        assert!(!emit);
+        assert!(!clear);
+        assert_eq!(error, None);
+    }
+
+    #[test]
+    fn quarantine_lift_keeps_error_on_failed() {
+        use super::quarantine_lift_recovery;
+        // A genuine "failed" keeps its message — only the idle cancel-ack is
+        // suppressed.
+        let (emit, clear, error) = quarantine_lift_recovery(false, "failed", Some("boom"), false);
+        assert!(emit);
+        assert!(!clear);
+        assert_eq!(error.as_deref(), Some("boom"));
+    }
+
+    #[test]
+    fn idle_error_persist_keeps_error_subtype() {
+        use super::idle_error_persist;
+        // Error result → subtype+message persist so finalize_meta marks the run Failed.
+        let (err, subtype) = idle_error_persist(Some("error_max_turns"), Some("max turns hit"));
+        assert_eq!(err.as_deref(), Some("max turns hit"));
+        assert_eq!(subtype.as_deref(), Some("error_max_turns"));
+    }
+
+    #[test]
+    fn idle_error_persist_clears_on_clean_result() {
+        use super::idle_error_persist;
+        // Clean result → clear tuple, so a stale meta error from an earlier turn
+        // is dropped instead of re-persisted.
+        let (err, subtype) = idle_error_persist(None, None);
+        assert_eq!(err, None);
+        assert_eq!(subtype, None);
+    }
+
+    #[test]
+    fn idle_error_persist_ignores_non_error_subtype() {
+        use super::idle_error_persist;
+        // Subtypes not starting with "error" (defensive; the parser only sets
+        // error ones today) behave like a clean result.
+        let (err, subtype) = idle_error_persist(Some("success"), Some("done"));
+        assert_eq!(err, None);
+        assert_eq!(subtype, None);
     }
 }
