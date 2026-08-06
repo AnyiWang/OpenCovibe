@@ -153,7 +153,7 @@ pub async fn get_cli_info(cache: &CliInfoCache, force: bool) -> Result<CliInfo, 
         "[control] got {} models, {} commands, current_model={:?}",
         cli_info.models.len(),
         cli_info.commands.len(),
-        &cli_info.current_model
+        cli_info.current_model
     );
 
     // Update cache

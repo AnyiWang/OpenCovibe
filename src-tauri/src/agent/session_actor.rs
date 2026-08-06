@@ -2545,7 +2545,7 @@ impl SessionActor {
                 &format!(
                     "{}: {} needs input",
                     truncate_str(&self.run_id, 8),
-                    &mcp_server_name
+                    mcp_server_name
                 ),
             );
         } else if subtype == "can_use_tool" {
@@ -2613,7 +2613,7 @@ impl SessionActor {
                 &format!(
                     "{} wants to use: {}",
                     truncate_str(&self.run_id, 8),
-                    &tool_label
+                    tool_label
                 ),
             );
         } else {

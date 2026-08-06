@@ -1123,10 +1123,7 @@ fn find_git_root(cwd: &std::path::Path) -> Option<std::path::PathBuf> {
         if dir.join(".git").exists() {
             return Some(dir.to_path_buf());
         }
-        match dir.parent() {
-            Some(parent) => dir = parent,
-            None => return None,
-        }
+        dir = dir.parent()?;
     }
 }
 
