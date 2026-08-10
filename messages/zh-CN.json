@@ -931,6 +931,7 @@
   "history_allAgents": "所有代理",
 
   "common_allow": "允许",
+  "common_alwaysAllowTool": "始终允许 {tool}",
   "common_deny": "拒绝",
   "common_denied": "已拒绝",
   "common_save": "保存",

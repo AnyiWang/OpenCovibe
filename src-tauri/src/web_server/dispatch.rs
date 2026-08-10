@@ -1076,11 +1076,16 @@ pub async fn dispatch_command(
                 .and_then(|v| v.as_str())
                 .map(String::from);
             let interrupt = params.get("interrupt").and_then(|v| v.as_bool());
+            let remember_tool = params
+                .get("remember_tool")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
             log::debug!(
-                "[dispatch] respond_permission: run_id={}, req_id={}, behavior={}",
+                "[dispatch] respond_permission: run_id={}, req_id={}, behavior={}, remember_tool={}",
                 run_id,
                 request_id,
-                behavior
+                behavior,
+                remember_tool
             );
             let cmd_tx = {
                 let map = state.sessions.lock().await;
@@ -1115,6 +1120,7 @@ pub async fn dispatch_command(
                 .send(ActorCommand::RespondPermission {
                     request_id,
                     response,
+                    remember_tool,
                     reply: reply_tx,
                 })
                 .await

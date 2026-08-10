@@ -931,6 +931,7 @@
   "history_allAgents": "All Agents",
 
   "common_allow": "Allow",
+  "common_alwaysAllowTool": "Always allow {tool}",
   "common_deny": "Deny",
   "common_denied": "Denied",
   "common_save": "Save",

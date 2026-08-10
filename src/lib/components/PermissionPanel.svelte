@@ -19,6 +19,7 @@
       updatedInput?: Record<string, unknown>,
       denyMessage?: string,
       interrupt?: boolean,
+      rememberTool?: boolean,
     ) => void | Promise<void>;
     agentDisplayName?: string;
   } = $props();
@@ -45,9 +46,10 @@
     updatedInput?: Record<string, unknown>,
     denyMessage?: string,
     interrupt?: boolean,
+    rememberTool?: boolean,
   ) {
     if (submittingAll || submittingIds.has(requestId)) return;
-    dbg("PermissionPanel", "respondSingle", { requestId, behavior });
+    dbg("PermissionPanel", "respondSingle", { requestId, behavior, rememberTool });
     markSubmitting(requestId);
     try {
       await onPermissionRespond(
@@ -57,6 +59,7 @@
         updatedInput,
         denyMessage,
         interrupt,
+        rememberTool,
       );
     } catch (e) {
       dbgWarn("PermissionPanel", "respondSingle failed", { requestId, reason: e });
@@ -161,6 +164,21 @@
               disabled={busy}
               onclick={() => respondSingle(item.requestId, "allow", undefined, item.tool.input)}
               >{t("common_allow")}</button
+            >
+            <button
+              class="rounded-md border border-emerald-600/40 bg-emerald-600/10 px-3 py-1.5 text-xs font-medium text-emerald-600 dark:text-emerald-400 hover:bg-emerald-600/20 transition-all disabled:opacity-50"
+              disabled={busy}
+              title={t("common_alwaysAllowTool", { tool: item.tool.tool_name })}
+              onclick={() =>
+                respondSingle(
+                  item.requestId,
+                  "allow",
+                  undefined,
+                  item.tool.input,
+                  undefined,
+                  undefined,
+                  true,
+                )}>{t("common_alwaysAllowTool", { tool: item.tool.tool_name })}</button
             >
             <button
               class="rounded-md border border-border px-4 py-1.5 text-xs font-medium text-foreground hover:bg-accent transition-all disabled:opacity-50"

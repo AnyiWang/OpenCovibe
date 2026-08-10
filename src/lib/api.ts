@@ -650,6 +650,7 @@ export async function respondPermission(
   updatedInput?: Record<string, unknown>,
   denyMessage?: string,
   interrupt?: boolean,
+  rememberTool?: boolean,
 ): Promise<void> {
   dbg("api", "respondPermission", {
     runId,
@@ -659,6 +660,7 @@ export async function respondPermission(
     updatedInput,
     denyMessage,
     interrupt,
+    rememberTool,
   });
   return invoke("respond_permission", {
     runId,
@@ -668,6 +670,7 @@ export async function respondPermission(
     updatedInput: updatedInput ?? null,
     denyMessage: denyMessage ?? null,
     interrupt: interrupt ?? null,
+    rememberTool: rememberTool ?? null,
   });
 }
 

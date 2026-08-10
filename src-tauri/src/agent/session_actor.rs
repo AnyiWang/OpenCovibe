@@ -26,7 +26,7 @@ use crate::storage;
 use crate::storage::runs;
 use crate::web_server::broadcaster::BroadcastEmitter;
 use serde_json::Value;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
@@ -229,6 +229,9 @@ pub enum ActorCommand {
     RespondPermission {
         request_id: String,
         response: Value,
+        /// When true and the response allows, remember the request's tool for the
+        /// rest of this session so future prompts for that tool auto-allow.
+        remember_tool: bool,
         reply: oneshot::Sender<Result<(), String>>,
     },
     /// Cancel a pending control_request (top-level message type, not a control_request subtype).
@@ -356,6 +359,12 @@ struct SessionActor {
     /// Set when emitting PermissionPrompt / HookCallback(PreToolUse) / ElicitationPrompt.
     /// Cleared when the response is received. Retained during quarantine for diagnostics.
     pending_interactive_request: Option<PendingInteractiveRequest>,
+
+    /// Tool names the user chose to "remember" via an allow response. While a tool
+    /// is in this set, future `can_use_tool` prompts for it are auto-allowed for the
+    /// rest of this session instead of prompting again. Session-scoped only —
+    /// not persisted across runs.
+    remembered_tools: HashSet<String>,
 }
 
 // ── Spawn entry point ──
@@ -437,6 +446,7 @@ pub fn spawn_actor(
         ralph_loop: None,
         ralph_needs_dispatch: false,
         pending_interactive_request: None,
+        remembered_tools: HashSet::new(),
     };
 
     let join_handle = tokio::spawn(async move {
@@ -510,8 +520,8 @@ impl SessionActor {
                             let r = self.handle_send_control_async(request).await;
                             let _ = reply.send(r);
                         }
-                        Some(ActorCommand::RespondPermission { request_id, response, reply }) => {
-                            let r = self.handle_respond_permission(&request_id, response).await;
+                        Some(ActorCommand::RespondPermission { request_id, response, remember_tool, reply }) => {
+                            let r = self.handle_respond_permission(&request_id, response, remember_tool).await;
                             let _ = reply.send(r);
                         }
                         Some(ActorCommand::CancelControlRequest { request_id, reply }) => {
@@ -1761,12 +1771,33 @@ impl SessionActor {
         &mut self,
         request_id: &str,
         response: Value,
+        remember_tool: bool,
     ) -> Result<(), String> {
         log::debug!(
-            "[actor] respond_permission: run_id={}, req_id={}",
+            "[actor] respond_permission: run_id={}, req_id={}, remember_tool={}",
             self.run_id,
             request_id,
+            remember_tool,
         );
+        // If asked to remember, and this is an allow, record the request's tool so future
+        // prompts for it auto-allow. Read the tool name from the pending request (matched
+        // by request_id) before clearing it.
+        if remember_tool && response.get("behavior").and_then(|v| v.as_str()) == Some("allow") {
+            if let Some(tool) = self
+                .pending_interactive_request
+                .as_ref()
+                .filter(|req| req.request_id == request_id && req.subtype == "can_use_tool")
+                .map(|req| req.detail.clone())
+            {
+                if self.remembered_tools.insert(tool.clone()) {
+                    log::info!(
+                        "[actor] remembering tool '{}' for run_id={} — future prompts auto-allow",
+                        tool,
+                        self.run_id,
+                    );
+                }
+            }
+        }
         self.clear_pending_interactive_request(request_id);
         self.write_interactive_response(PendingKind::Permission, request_id, response)
             .await
@@ -2584,6 +2615,30 @@ impl SessionActor {
                 .and_then(|v| v.as_array())
                 .cloned()
                 .unwrap_or_default();
+
+            // Auto-allow if the user previously chose to remember this tool this session.
+            // Respond directly to the CLI and skip the prompt entirely.
+            if self.remembered_tools.contains(&tool_name) {
+                log::debug!(
+                    "[actor] auto-allowing remembered tool '{}': run_id={}, req_id={}",
+                    tool_name,
+                    self.run_id,
+                    request_id
+                );
+                let response = serde_json::json!({
+                    "behavior": "allow",
+                    "updatedInput": tool_input,
+                });
+                if let Err(e) = self.write_control_response(&request_id, response).await {
+                    log::warn!(
+                        "[actor] auto-allow write failed for tool '{}', req_id={}: {}",
+                        tool_name,
+                        request_id,
+                        e
+                    );
+                }
+                return;
+            }
 
             log::debug!(
                 "[actor] permission prompt: run_id={}, req_id={}, tool={}, reason={}, parent={:?}, suggestions={}",
