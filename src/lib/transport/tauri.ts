@@ -24,7 +24,11 @@ export class TauriTransport implements Transport {
     return true;
   }
 
-  subscribeRun(_runId: string, _lastSeq?: number): void {
+  async subscribeRun(
+    _runId: string,
+    _lastSeq?: number,
+    _recovery?: "history" | "live",
+  ): Promise<void> {
     // No-op: Tauri receives all events via app.emit(), no explicit subscription needed
   }
 

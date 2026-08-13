@@ -89,36 +89,39 @@ impl BroadcastEmitter {
     /// A-class: persist to events.jsonl + Tauri emit + broadcast with seq.
     /// This is the ONLY entry point for bus-event emission.
     pub fn persist_and_emit(&self, run_id: &str, event: &BusEvent) {
-        let ts = crate::models::now_iso();
-        match self.writer.write_bus_event_with_ts(run_id, event, &ts) {
-            Ok(seq) => {
-                log::trace!(
-                    "[emitter] persist_and_emit: run_id={}, seq={}, type={:?}",
-                    run_id,
-                    seq,
-                    event_type_name(event)
-                );
-                let _ = self.app.emit("bus-event", event);
-                let payload = match serde_json::to_value(event) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        log::error!("[emitter] serialize bus-event failed: {}", e);
-                        return;
-                    }
-                };
-                self.broadcaster.send_a(BroadcastMsg {
-                    event_name: "bus-event".to_string(),
-                    payload,
-                    seq: Some(seq),
-                    run_id: Some(run_id.to_string()),
-                });
-            }
-            Err(e) => {
-                log::warn!("[emitter] persist failed for run_id={}: {}", run_id, e);
-                // Still emit to Tauri even if persist failed
-                let _ = self.app.emit("bus-event", event);
-            }
+        if let Err(error) = self.persist_and_emit_durable(run_id, event) {
+            log::warn!("[emitter] persist failed for run_id={}: {}", run_id, error);
+            // Non-critical telemetry keeps the existing realtime degradation behavior. Callers
+            // whose correctness depends on persistence use `persist_and_emit_durable` directly.
+            let _ = self.app.emit("bus-event", event);
         }
+    }
+
+    /// Persist an A-class fact before publishing it and return its durable sequence number.
+    pub fn persist_and_emit_durable(&self, run_id: &str, event: &BusEvent) -> Result<u64, String> {
+        let ts = crate::models::now_iso();
+        let seq = self.writer.write_bus_event_with_ts(run_id, event, &ts)?;
+        log::trace!(
+            "[emitter] persist_and_emit: run_id={}, seq={}, type={:?}",
+            run_id,
+            seq,
+            event_type_name(event)
+        );
+        let mut payload =
+            serde_json::to_value(event).map_err(|e| format!("serialize bus-event failed: {e}"))?;
+        if let Some(object) = payload.as_object_mut() {
+            // Tauri has no subscription replay envelope, so carry the same durable checkpoint
+            // that WebSocket clients receive. This closes load/catch-up dedup on desktop.
+            object.insert("_seq".to_string(), Value::Number(seq.into()));
+        }
+        let _ = self.app.emit("bus-event", &payload);
+        self.broadcaster.send_a(BroadcastMsg {
+            event_name: "bus-event".to_string(),
+            payload,
+            seq: Some(seq),
+            run_id: Some(run_id.to_string()),
+        });
+        Ok(seq)
     }
 
     /// B-class: Tauri emit + broadcast (no persist, no seq).
@@ -195,6 +198,9 @@ fn event_type_name(event: &BusEvent) -> &'static str {
         BusEvent::ToolUseSummary { .. } => "tool_use_summary",
         BusEvent::FilesPersisted { .. } => "files_persisted",
         BusEvent::ControlCancelled { .. } => "control_cancelled",
+        BusEvent::InteractionResponseStarted { .. } => "interaction_response_started",
+        BusEvent::InteractionResponseFailed { .. } => "interaction_response_failed",
+        BusEvent::InteractionResolved { .. } => "interaction_resolved",
         BusEvent::CommandOutput { .. } => "command_output",
         BusEvent::ElicitationPrompt { .. } => "elicitation_prompt",
         BusEvent::RateLimitEvent { .. } => "rate_limit_event",

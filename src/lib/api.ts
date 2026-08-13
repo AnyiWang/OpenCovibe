@@ -47,6 +47,11 @@ import type {
   CodexAuthResult,
   ThreadGoal,
   GoalStatus,
+  HistorySummary,
+  HistoryPage,
+  HistoryContentChunk,
+  SubHistoryPage,
+  BusEventPage,
 } from "./types";
 
 // Runs
@@ -619,12 +624,63 @@ export async function getBusEvents(id: string, sinceSeq?: number): Promise<BusEv
   return invoke<BusEvent[]>("get_bus_events", { id, sinceSeq });
 }
 
-export async function getToolResult(
+export async function getBusEventsPage(
+  id: string,
+  sinceSeq: number,
+  offset?: number,
+): Promise<BusEventPage> {
+  dbg("api", "getBusEventsPage", { id, sinceSeq, offset });
+  return invoke<BusEventPage>("get_bus_events_page", { id, sinceSeq, offset: offset ?? null });
+}
+
+export async function getHistorySummary(runId: string, refresh = false): Promise<HistorySummary> {
+  dbg("api", "getHistorySummary", { runId, refresh });
+  return invoke<HistorySummary>("get_history_summary", { runId, refresh });
+}
+
+export async function getHistoryPage(
   runId: string,
-  toolUseId: string,
-): Promise<Record<string, unknown> | null> {
-  dbg("api", "getToolResult", { runId, toolUseId });
-  return invoke<Record<string, unknown> | null>("get_tool_result", { runId, toolUseId });
+  generationId: string,
+  beforeCursor?: string,
+): Promise<HistoryPage> {
+  dbg("api", "getHistoryPage", { runId, generationId, beforeCursor });
+  return invoke<HistoryPage>("get_history_page", {
+    runId,
+    generationId,
+    beforeCursor: beforeCursor ?? null,
+  });
+}
+
+export async function getHistoryContentChunk(
+  runId: string,
+  generationId: string,
+  contentId: string,
+  offset: number,
+  maxBytes = 256 * 1024,
+): Promise<HistoryContentChunk> {
+  dbg("api", "getHistoryContentChunk", { runId, generationId, contentId, offset, maxBytes });
+  return invoke<HistoryContentChunk>("get_history_content_chunk", {
+    runId,
+    generationId,
+    contentId,
+    offset,
+    maxBytes,
+  });
+}
+
+export async function getSubhistoryPage(
+  runId: string,
+  generationId: string,
+  subHistoryId: string,
+  beforeCursor?: string,
+): Promise<SubHistoryPage> {
+  dbg("api", "getSubhistoryPage", { runId, generationId, subHistoryId, beforeCursor });
+  return invoke<SubHistoryPage>("get_subhistory_page", {
+    runId,
+    generationId,
+    subHistoryId,
+    beforeCursor: beforeCursor ?? null,
+  });
 }
 
 export async function forkSession(runId: string): Promise<string> {

@@ -65,6 +65,8 @@ pub struct CodexSkillRef {
 pub enum PendingKind {
     /// Command / file / permission approval → `respond_permission`.
     Permission,
+    /// Claude hook callback approval. Codex does not currently emit this request kind.
+    Hook,
     /// MCP elicitation → `respond_elicitation`.
     Elicitation,
     /// Multiple-choice `request_user_input` → `respond_user_input`.
@@ -78,14 +80,6 @@ pub enum PendingKind {
 pub struct PendingInteractive {
     pub request_id: String,
     pub kind: PendingKind,
-}
-
-/// A prepared response to a server-initiated interactive request. The primary response resolves
-/// the pending request; an optional interrupt is generated only after that response is committed.
-#[derive(Debug)]
-pub struct InteractiveResponse {
-    pub primary: Value,
-    pub interrupt_after_commit: bool,
 }
 
 /// Turn-boundary signal extracted from a wire line, mapped by the actor to `RunState` and
@@ -115,8 +109,10 @@ pub struct ParsedLine {
     /// where `request_id` is the frontend control request id and `value` is the JSON-RPC
     /// `result` (or `error`). The actor routes it to the matching `control_waiter`.
     pub control_response: Option<(String, Value)>,
-    /// JSON-RPC frames the protocol must send immediately without waiting for frontend input.
-    /// Codex uses this for autonomous metadata reads such as spawned-thread identity lookup.
+    /// Wire frames the transport wants written back to the child immediately, without a user
+    /// in the loop — e.g. a JSON-RPC error reply to an unknown server-request, or
+    /// an autonomous `thread/read`. The actor flushes these to stdin after parse_line. The
+    /// Claude transport never sets this.
     pub outbound: Vec<Value>,
 }
 
@@ -124,7 +120,7 @@ pub struct ParsedLine {
 /// four seams: spawn (startup), user message (frame_user_turn), each stdout line
 /// (parse_line), and each interactive response (frame_response) / stop (frame_interrupt).
 ///
-/// Each `frame_*` prepares JSON values to write as newline-delimited lines to stdin.
+/// Each `frame_*` returns the JSON value(s) to write as newline-delimited lines to stdin.
 pub trait SessionProtocol: Send {
     /// Messages to send immediately after spawn, before the first user turn
     /// (e.g. Codex `initialize` + `thread/start`|`thread/resume`).
@@ -153,19 +149,16 @@ pub trait SessionProtocol: Send {
     /// Parse one stdout line into events + lifecycle/interactive/thread-id signals.
     fn parse_line(&mut self, run_id: &str, line: &str) -> ParsedLine;
 
-    /// Prepare the user's response to a pending interactive request without consuming it.
-    /// The actor commits the request only after the primary frame is written and flushed.
+    /// Frame the user's response to a pending interactive request. Unknown or mismatched
+    /// request ids are errors, never empty success.
     fn frame_response(
-        &self,
+        &mut self,
         kind: PendingKind,
         request_id: &str,
         response: Value,
-    ) -> Result<InteractiveResponse, String>;
+    ) -> Result<Vec<Value>, String>;
 
-    /// Prepare cancellation of a pending interactive request without consuming it.
-    /// The actor commits the request only after the cancellation frame is written and flushed.
-    fn frame_cancel(&self, request_id: &str) -> Result<Value, String>;
-
-    /// Consume a response prepared by [`SessionProtocol::frame_response`] after delivery.
-    fn commit_response(&mut self, request_id: &str) -> bool;
+    /// Validate an interactive response without consuming its pending request. The actor calls
+    /// this before persisting durable intent so a persistence failure remains safely retryable.
+    fn validate_response(&self, kind: PendingKind, request_id: &str) -> Result<(), String>;
 }

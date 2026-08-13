@@ -16,6 +16,11 @@ interface PendingRequest {
   reject: (error: Error) => void;
 }
 
+interface SubscriptionAttempt {
+  epoch: number;
+  promise: Promise<void>;
+}
+
 export class WsTransport implements Transport {
   private ws: WebSocket | null = null;
   private reqId = 0;
@@ -25,9 +30,18 @@ export class WsTransport implements Transport {
   private lastSeq = new Map<string, number>();
   /** Runs we've subscribed to on the server */
   private subscribedRuns = new Set<string>();
+  /** Runs that must be acknowledged again on the next healthy connection */
+  private needsResubscribe = new Set<string>();
+  /** Full reload keeps intent but suspends replay until history establishes a new checkpoint */
+  private suspendedRuns = new Set<string>();
+  /** New sessions have no history owner, so initial failures retry on reconnect from seq 0 */
+  private liveRecoveryRuns = new Set<string>();
+  private subscriptionEpochs = new Map<string, number>();
+  private subscriptionAttempts = new Map<string, SubscriptionAttempt>();
   private reconnectDelay = 1000;
   private shouldReconnect = true;
   private connectPromise: Promise<void> | null = null;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
   private buildWsUrl(): string {
     const loc = window.location;
@@ -40,20 +54,41 @@ export class WsTransport implements Transport {
   private connect(): Promise<void> {
     if (this.connectPromise) return this.connectPromise;
 
-    this.connectPromise = new Promise<void>((resolve, reject) => {
+    const attempt = new Promise<void>((resolve, reject) => {
       const url = this.buildWsUrl();
       dbg("transport", "ws.connecting", { url });
 
       const ws = new WebSocket(url);
       this.ws = ws;
+      let settled = false;
+      const timeout = setTimeout(() => {
+        if (this.ws === ws && ws.readyState === WebSocket.CONNECTING) {
+          settle(new Error("WebSocket connection timeout"));
+          ws.close();
+        }
+      }, 10000);
+
+      const settle = (error?: Error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        if (this.connectPromise === attempt) this.connectPromise = null;
+        if (error) reject(error);
+        else resolve();
+      };
 
       ws.onopen = () => {
+        if (this.ws !== ws) {
+          ws.close();
+          settle(new Error("WebSocket connection superseded"));
+          return;
+        }
         dbg("transport", "ws.connected");
         this.reconnectDelay = 1000;
-        this.connectPromise = null;
-        // Re-subscribe to all previously subscribed runs
+        settle();
+        // Only runs acknowledged on a previous connection need automatic replay. A first-time
+        // subscribe waiting on this connection resumes through its own subscribeRun call.
         this.resubscribeAll();
-        resolve();
       };
 
       ws.onmessage = (ev) => {
@@ -66,8 +101,13 @@ export class WsTransport implements Transport {
 
       ws.onclose = (ev) => {
         dbg("transport", "ws.closed", { code: ev.code, reason: ev.reason });
-        this.connectPromise = null;
+        settle(new Error(`WebSocket closed before connection opened (code ${ev.code})`));
+        if (this.ws !== ws) return;
         this.ws = null;
+
+        for (const runId of this.subscribedRuns) {
+          if (!this.suspendedRuns.has(runId)) this.needsResubscribe.add(runId);
+        }
 
         // Reject all pending requests
         for (const [id, req] of this.pending) {
@@ -79,31 +119,42 @@ export class WsTransport implements Transport {
           // Auth failure — stop reconnecting, redirect to login
           dbgWarn("transport", "ws.authFailure, redirecting to /login");
           this.shouldReconnect = false;
+          if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+          this.reconnectTimer = null;
           window.location.href = "/login";
           return;
         }
 
-        if (this.shouldReconnect) {
-          const delay = Math.min(this.reconnectDelay, 30000);
-          dbg("transport", "ws.reconnecting", { delay });
-          setTimeout(() => {
-            this.reconnectDelay = Math.min(this.reconnectDelay * 2, 30000);
-            this.ensureConnected();
-          }, delay);
-        }
+        this.scheduleReconnect();
       };
-
-      // Timeout for initial connection
-      setTimeout(() => {
-        if (ws.readyState === WebSocket.CONNECTING) {
-          ws.close();
-          this.connectPromise = null;
-          reject(new Error("WebSocket connection timeout"));
-        }
-      }, 10000);
     });
 
-    return this.connectPromise;
+    this.connectPromise = attempt;
+    void attempt.then(
+      () => {
+        if (this.connectPromise === attempt) this.connectPromise = null;
+      },
+      (error) => {
+        if (this.connectPromise === attempt) this.connectPromise = null;
+        dbgWarn("transport", "ws.connectFailed", error);
+        this.scheduleReconnect();
+      },
+    );
+    return attempt;
+  }
+
+  private scheduleReconnect(): void {
+    if (!this.shouldReconnect || this.reconnectTimer) return;
+    const delay = Math.min(this.reconnectDelay, 30000);
+    dbg("transport", "ws.reconnecting", { delay });
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      this.reconnectDelay = Math.min(this.reconnectDelay * 2, 30000);
+      void this.ensureConnected().catch((error) => {
+        dbgWarn("transport", "ws.reconnectFailed", error);
+        this.scheduleReconnect();
+      });
+    }, delay);
   }
 
   private async ensureConnected(): Promise<void> {
@@ -113,39 +164,100 @@ export class WsTransport implements Transport {
 
   /** Re-subscribe all tracked runs after reconnect */
   private resubscribeAll(): void {
-    for (const runId of this.subscribedRuns) {
+    for (const runId of [...this.needsResubscribe]) {
+      if (!this.subscribedRuns.has(runId) || this.suspendedRuns.has(runId)) {
+        this.needsResubscribe.delete(runId);
+        continue;
+      }
       const lastSeq = this.lastSeq.get(runId) ?? 0;
+      const epoch = this.subscriptionEpochs.get(runId);
+      if (epoch === undefined) continue;
       dbg("transport", "ws.resubscribe", { runId, lastSeq });
-      this.sendRaw({
-        id: `req_${++this.reqId}`,
-        method: "_subscribe",
-        params: { run_id: runId, last_seq: lastSeq },
+      void this.confirmSubscription(runId, lastSeq, epoch).catch((error) => {
+        dbgWarn("transport", "ws.resubscribeFailed", { runId, error });
       });
     }
   }
 
   /** Subscribe to a run's real-time events on the server */
-  subscribeRun(runId: string, lastSeq = 0): void {
-    this.subscribedRuns.add(runId);
+  async subscribeRun(
+    runId: string,
+    lastSeq = 0,
+    recovery: "history" | "live" = "history",
+  ): Promise<void> {
     // Monotonic: prevent checkpoint regression (e.g. accidental lastSeq=0 overwrites)
     const prev = this.lastSeq.get(runId) ?? 0;
     const effectiveSeq = Math.max(prev, lastSeq);
-    this.lastSeq.set(runId, effectiveSeq);
+    const epoch = (this.subscriptionEpochs.get(runId) ?? 0) + 1;
     dbg("transport", "ws.subscribeRun", { runId, lastSeq, effectiveSeq });
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      this.sendRaw({
-        id: `req_${++this.reqId}`,
-        method: "_subscribe",
-        params: { run_id: runId, last_seq: effectiveSeq },
-      });
+    this.subscribedRuns.add(runId);
+    this.lastSeq.set(runId, effectiveSeq);
+    this.subscriptionEpochs.set(runId, epoch);
+    if (recovery === "live") this.liveRecoveryRuns.add(runId);
+    else this.liveRecoveryRuns.delete(runId);
+    this.suspendedRuns.delete(runId);
+    this.needsResubscribe.delete(runId);
+    try {
+      await this.ensureConnected();
+      if (this.subscriptionEpochs.get(runId) !== epoch || !this.subscribedRuns.has(runId)) {
+        throw new Error(`WebSocket subscription cancelled: ${runId}`);
+      }
+      await this.confirmSubscription(runId, effectiveSeq, epoch);
+    } catch (error) {
+      if (this.subscriptionEpochs.get(runId) === epoch && this.subscribedRuns.has(runId)) {
+        if (this.liveRecoveryRuns.has(runId)) {
+          // A new session has no history owner to retry for it. Preserve the seq-0 intent until a
+          // reconnect acknowledges it; subsequent live events advance the checkpoint normally.
+          this.suspendedRuns.delete(runId);
+          this.needsResubscribe.add(runId);
+        } else {
+          // The explicit caller owns history buffering and retries. Keep its intent, but suspend
+          // automatic replay until that caller establishes a fresh checkpoint on a later attempt.
+          this.needsResubscribe.delete(runId);
+          this.suspendedRuns.add(runId);
+        }
+      }
+      throw error;
     }
+  }
+
+  private confirmSubscription(runId: string, lastSeq: number, epoch: number): Promise<void> {
+    const existing = this.subscriptionAttempts.get(runId);
+    if (existing?.epoch === epoch) return existing.promise;
+
+    const promise = this.request("_subscribe", { run_id: runId, last_seq: lastSeq })
+      .then(() => {
+        if (this.subscriptionEpochs.get(runId) !== epoch || !this.subscribedRuns.has(runId)) {
+          throw new Error(`WebSocket subscription cancelled: ${runId}`);
+        }
+        this.needsResubscribe.delete(runId);
+        dbg("transport", "ws.subscribeConfirmed", { runId, lastSeq, epoch });
+      })
+      .catch((error) => {
+        if (this.subscriptionEpochs.get(runId) === epoch && this.subscribedRuns.has(runId)) {
+          this.needsResubscribe.add(runId);
+          // An error/timeout is acknowledgement-ambiguous. Closing discards the server's
+          // connection-local checkpoint; the desired subscription survives for the next retry.
+          this.ws?.close();
+        }
+        throw error;
+      })
+      .finally(() => {
+        const current = this.subscriptionAttempts.get(runId);
+        if (current?.epoch === epoch) this.subscriptionAttempts.delete(runId);
+      });
+    this.subscriptionAttempts.set(runId, { epoch, promise });
+    return promise;
   }
 
   /** Unsubscribe from a run's events */
   unsubscribeRun(runId: string): void {
-    if (!this.subscribedRuns.has(runId)) return;
     this.subscribedRuns.delete(runId);
     this.lastSeq.delete(runId);
+    this.needsResubscribe.delete(runId);
+    this.suspendedRuns.delete(runId);
+    this.liveRecoveryRuns.delete(runId);
+    this.subscriptionEpochs.set(runId, (this.subscriptionEpochs.get(runId) ?? 0) + 1);
     dbg("transport", "ws.unsubscribeRun", { runId });
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.sendRaw({
@@ -158,8 +270,46 @@ export class WsTransport implements Transport {
 
   private sendRaw(obj: Record<string, unknown>): void {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify(obj));
+      try {
+        this.ws.send(JSON.stringify(obj));
+      } catch (error) {
+        dbgWarn("transport", "ws.sendFailed", error);
+        this.ws.close();
+      }
     }
+  }
+
+  private request(method: string, params: Record<string, unknown>): Promise<unknown> {
+    const id = `req_${++this.reqId}`;
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error(`WebSocket request timed out: ${method}`));
+      }, 15000);
+      this.pending.set(id, {
+        resolve: (value) => {
+          clearTimeout(timeout);
+          resolve(value);
+        },
+        reject: (error) => {
+          clearTimeout(timeout);
+          reject(error);
+        },
+      });
+      if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+        try {
+          this.ws.send(JSON.stringify({ id, method, params }));
+        } catch (error) {
+          const pending = this.pending.get(id);
+          this.pending.delete(id);
+          pending?.reject(error instanceof Error ? error : new Error(String(error)));
+        }
+      } else {
+        const pending = this.pending.get(id);
+        this.pending.delete(id);
+        pending?.reject(new Error("WebSocket not connected"));
+      }
+    });
   }
 
   private handleMessage(raw: string): void {
@@ -197,7 +347,11 @@ export class WsTransport implements Transport {
         if (reloadRunId) {
           dbgWarn("transport", "ws._full_reload", { reloadRunId });
           this.lastSeq.delete(reloadRunId);
-          this.subscribedRuns.delete(reloadRunId);
+          this.needsResubscribe.delete(reloadRunId);
+          // Full reload transfers recovery ownership to the history loader. Clear any previous
+          // new-session policy so a concurrent subscribe failure cannot lift this suspension.
+          this.liveRecoveryRuns.delete(reloadRunId);
+          this.suspendedRuns.add(reloadRunId);
           const handlers = this.listeners.get("_full_reload");
           if (handlers) {
             for (const handler of handlers) handler({ run_id: reloadRunId });

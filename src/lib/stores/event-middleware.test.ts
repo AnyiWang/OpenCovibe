@@ -22,7 +22,7 @@ const mockTransport = {
     _unlistenSpies.push(unlisten);
     return unlisten;
   }),
-  subscribeRun: vi.fn(),
+  subscribeRun: vi.fn().mockResolvedValue(undefined),
   unsubscribeRun: vi.fn(),
   invoke: vi.fn(),
 };
@@ -68,7 +68,7 @@ function mockStore() {
     applyEventBatch: vi.fn(),
     applyHookEvent: vi.fn(),
     applyHookUsage: vi.fn(),
-    loadRun: vi.fn().mockResolvedValue(undefined),
+    loadRun: vi.fn().mockResolvedValue(true),
   };
 }
 
@@ -189,6 +189,23 @@ describe("EventMiddleware", () => {
   // ── Microbatching ──
 
   describe("microbatching", () => {
+    it("buffers live events until history load commits and filters persisted sequences", async () => {
+      await mw.start();
+      const store = mockStore();
+      mw.subscribeCurrent("run-1", store as any);
+      const token = mw.beginHistoryLoad("run-1", store as any);
+      const old = makeBusEvent("run-1", "message_delta", { text: "old", _seq: 4 });
+      const fresh = makeBusEvent("run-1", "message_delta", { text: "fresh", _seq: 6 });
+
+      fireBusEvent(old);
+      fireBusEvent(fresh);
+      vi.advanceTimersByTime(16);
+      expect(store.applyEventBatch).not.toHaveBeenCalled();
+
+      mw.finishHistoryLoad("run-1", store as any, token, 5);
+      expect(store.applyEvent).toHaveBeenCalledWith(fresh);
+    });
+
     it("batches multiple events within 16ms into applyEventBatch", async () => {
       await mw.start();
       const store = mockStore();
@@ -246,6 +263,23 @@ describe("EventMiddleware", () => {
 
       expect(store1.applyEvent).not.toHaveBeenCalled();
       expect(store2.applyEvent).toHaveBeenCalledOnce();
+    });
+
+    it("subscribeCurrent cancels the previous run's active history load", async () => {
+      await mw.start();
+      const store1 = mockStore();
+      const store2 = mockStore();
+      mw.subscribeCurrent("run-1", store1 as any);
+      const token = mw.beginHistoryLoad("run-1", store1 as any);
+      fireBusEvent(makeBusEvent("run-1", "message_delta", { text: "stale" }));
+
+      mw.subscribeCurrent("run-2", store2 as any);
+      mw.finishHistoryLoad("run-1", store1 as any, token, 0);
+      vi.advanceTimersByTime(16);
+
+      expect(store1.applyEvent).not.toHaveBeenCalled();
+      expect(store1.applyEventBatch).not.toHaveBeenCalled();
+      expect(mockTransport.unsubscribeRun).toHaveBeenCalledWith("run-1");
     });
 
     it("unsubscribe clears buffer and prevents delivery", async () => {
@@ -532,23 +566,29 @@ describe("EventMiddleware", () => {
       expect(store.loadRun).not.toHaveBeenCalled();
     });
 
-    it("debounces consecutive _full_reload for same run_id", async () => {
+    it("serializes consecutive _full_reload requests for the same run_id", async () => {
       await mw.start();
       const store = mockStore();
+      let finishReload!: (loaded: boolean) => void;
+      store.loadRun.mockImplementation(
+        () =>
+          new Promise<boolean>((resolve) => {
+            finishReload = resolve;
+          }),
+      );
       mw.subscribeCurrent("run-1", store as any);
 
       fireFullReload("run-1");
       expect(store.loadRun).toHaveBeenCalledTimes(1);
 
-      // Second fire while first is still in-flight → debounced
+      // Second fire while first is in-flight queues exactly one follow-up reload.
+      fireFullReload("run-1");
       fireFullReload("run-1");
       expect(store.loadRun).toHaveBeenCalledTimes(1);
 
-      // Flush the promise (.finally clears _reloadingRuns)
+      finishReload(true);
       await Promise.resolve();
-
-      // Now debounce is cleared, should accept again
-      fireFullReload("run-1");
+      await Promise.resolve();
       expect(store.loadRun).toHaveBeenCalledTimes(2);
     });
 
@@ -564,6 +604,50 @@ describe("EventMiddleware", () => {
 
       expect(store1.loadRun).toHaveBeenCalledTimes(1);
       expect(store2.loadRun).toHaveBeenCalledTimes(1);
+    });
+
+    it("retries bounded reload failures and succeeds on the third attempt", async () => {
+      await mw.start();
+      const store = mockStore();
+      store.loadRun.mockResolvedValueOnce(false).mockRejectedValueOnce(new Error("read failed"));
+      mw.subscribeCurrent("run-1", store as any);
+
+      fireFullReload("run-1");
+      await vi.runAllTimersAsync();
+
+      expect(store.loadRun).toHaveBeenCalledTimes(3);
+      expect(mockTransport.unsubscribeRun).not.toHaveBeenCalledWith("run-1");
+    });
+
+    it("unsubscribes after bounded reload attempts are exhausted", async () => {
+      await mw.start();
+      const store = mockStore();
+      store.loadRun.mockResolvedValue(false);
+      mw.subscribeCurrent("run-1", store as any);
+      mockTransport.unsubscribeRun.mockClear();
+
+      fireFullReload("run-1");
+      await vi.runAllTimersAsync();
+
+      expect(store.loadRun).toHaveBeenCalledTimes(3);
+      expect(mockTransport.unsubscribeRun).toHaveBeenCalledWith("run-1");
+    });
+
+    it("does not retry or unsubscribe after destroy", async () => {
+      await mw.start();
+      const store = mockStore();
+      store.loadRun.mockResolvedValue(false);
+      mw.subscribeCurrent("run-1", store as any);
+
+      fireFullReload("run-1");
+      await Promise.resolve();
+      expect(store.loadRun).toHaveBeenCalledTimes(1);
+      mw.destroy();
+      mockTransport.unsubscribeRun.mockClear();
+      await vi.runAllTimersAsync();
+
+      expect(store.loadRun).toHaveBeenCalledTimes(1);
+      expect(mockTransport.unsubscribeRun).not.toHaveBeenCalled();
     });
 
     it("destroy() clears _full_reload unlisten", async () => {

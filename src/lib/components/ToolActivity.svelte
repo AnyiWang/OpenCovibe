@@ -63,8 +63,9 @@
     cwd?: string;
     /** Run id — when it changes the preview is cleared. */
     runId?: string;
-    /** Remote run flag — disables file preview (file APIs are local-only). */
+    /** Remote run flag — routes file preview through SSH instead of local file APIs. */
     isRemote?: boolean;
+    /** Remote host name (when isRemote) — used to read files/diff over SSH. */
     /** External request to open preview for a path (auto-switches to files tab). */
     requestedPreviewPath?: string | null;
   } = $props();
@@ -236,12 +237,14 @@
       case "running":
         return "running";
       case "error":
+      case "response_failed":
       case "denied":
       case "permission_denied":
       case "rejected":
         return "error";
       case "ask_pending":
       case "permission_prompt":
+      case "response_pending":
         return "other";
       default:
         return "other";

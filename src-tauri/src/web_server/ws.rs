@@ -7,6 +7,7 @@ use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::fmt;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -16,8 +17,6 @@ use crate::web_server::state::AppState;
 
 /// Max events to buffer during replay before triggering _full_reload
 const REPLAY_BUFFER_CAPACITY: usize = 4096;
-/// Minimum interval between _full_reload signals per run (seconds)
-const FULL_RELOAD_COOLDOWN_SECS: u64 = 30;
 
 type WsSink = Arc<Mutex<futures_util::stream::SplitSink<WebSocket, Message>>>;
 
@@ -50,6 +49,38 @@ struct BufferedEvent {
     seq: u64,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum ReplayError {
+    ProjectionRequired(String),
+    Catchup(String),
+    SendFailed,
+}
+
+impl ReplayError {
+    fn catchup(error: String) -> Self {
+        if error.contains(crate::storage::events::HISTORY_PROJECTION_REQUIRED) {
+            Self::ProjectionRequired(error)
+        } else {
+            Self::Catchup(error)
+        }
+    }
+}
+
+impl fmt::Display for ReplayError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ProjectionRequired(error) | Self::Catchup(error) => formatter.write_str(error),
+            Self::SendFailed => formatter.write_str("WS send failed during replay"),
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum FlushError {
+    Overflow,
+    SendFailed,
+}
+
 /// Per-connection WS session state
 struct WsSession {
     /// run_id → last_seq checkpoint for each subscribed run
@@ -58,8 +89,8 @@ struct WsSession {
     replay_buffer: HashMap<String, Vec<BufferedEvent>>,
     /// run_id set currently being replayed (reentry guard)
     replaying: std::collections::HashSet<String>,
-    /// Timestamp of last _full_reload signal per run_id (cooldown)
-    full_reload_cooldown: HashMap<String, std::time::Instant>,
+    /// Runs waiting for the client to rebuild history and subscribe again
+    full_reload_pending: std::collections::HashSet<String>,
 }
 
 impl WsSession {
@@ -68,29 +99,45 @@ impl WsSession {
             subscriptions: HashMap::new(),
             replay_buffer: HashMap::new(),
             replaying: std::collections::HashSet::new(),
-            full_reload_cooldown: HashMap::new(),
+            full_reload_pending: std::collections::HashSet::new(),
+        }
+    }
+
+    fn begin_full_reload(&mut self, run_id: &str) -> bool {
+        self.replay_buffer.remove(run_id);
+        self.replaying.remove(run_id);
+        // Keep the subscription active while the client rebuilds history so live events enter
+        // its history-load buffer and are deduplicated against the rebuilt checkpoint.
+        self.full_reload_pending.insert(run_id.to_string())
+    }
+
+    fn complete_replay(&mut self, run_id: &str, last_replayed_seq: u64) {
+        if let Some(checkpoint) = self.subscriptions.get_mut(run_id) {
+            *checkpoint = (*checkpoint).max(last_replayed_seq);
         }
     }
 }
 
 /// Send an RPC result response over WebSocket
-async fn send_result(ws_tx: &WsSink, id: &Option<String>, result: Value) {
+async fn send_result(ws_tx: &WsSink, id: &Option<String>, result: Value) -> Result<(), ()> {
     let resp = json!({"id": id, "result": result});
-    let _ = ws_tx
+    ws_tx
         .lock()
         .await
         .send(Message::Text(resp.to_string()))
-        .await;
+        .await
+        .map_err(|_| ())
 }
 
 /// Send an RPC error response over WebSocket
-async fn send_error(ws_tx: &WsSink, id: &Option<String>, error: &str) {
+async fn send_error(ws_tx: &WsSink, id: &Option<String>, error: &str) -> Result<(), ()> {
     let resp = json!({"id": id, "error": error});
-    let _ = ws_tx
+    ws_tx
         .lock()
         .await
         .send(Message::Text(resp.to_string()))
-        .await;
+        .await
+        .map_err(|_| ())
 }
 
 /// Handle a single WebSocket connection
@@ -112,7 +159,7 @@ async fn handle_ws(socket: WebSocket, state: AppState, auth_subject: auth::WsAut
     let state_for_read = state.clone();
 
     // Task: forward A-class broadcast events to WS client
-    let a_forward = tokio::spawn(async move {
+    let mut a_forward = tokio::spawn(async move {
         loop {
             match a_rx.recv().await {
                 Ok(msg) => {
@@ -199,7 +246,9 @@ async fn handle_ws(socket: WebSocket, state: AppState, auth_subject: auth::WsAut
                     // Mark only non-already-replaying runs (avoid conflicting replays)
                     let mut runs_to_replay = Vec::new();
                     for (run_id, last_seq) in &subs {
-                        if !sess.replaying.contains(run_id.as_str()) {
+                        if !sess.replaying.contains(run_id.as_str())
+                            && !sess.full_reload_pending.contains(run_id.as_str())
+                        {
                             sess.replaying.insert(run_id.clone());
                             sess.replay_buffer.entry(run_id.clone()).or_default();
                             runs_to_replay.push((run_id.clone(), *last_seq));
@@ -207,23 +256,49 @@ async fn handle_ws(socket: WebSocket, state: AppState, auth_subject: auth::WsAut
                     }
                     drop(sess);
 
+                    let mut failed_runs = std::collections::HashSet::new();
                     for (run_id, last_seq) in &runs_to_replay {
-                        if let Err(e) =
-                            replay_events(&state_for_read, &ws_tx_a, &session_a, run_id, *last_seq)
-                                .await
-                        {
-                            log::error!("[ws] catchup replay failed for run={}: {}", run_id, e);
+                        match replay_events(&state_for_read, &ws_tx_a, run_id, *last_seq).await {
+                            Ok(last_replayed_seq) => {
+                                advance_checkpoint(&session_a, run_id, last_replayed_seq).await;
+                            }
+                            Err(ReplayError::SendFailed) => {
+                                log::error!("[ws] catchup replay send failed for run={}", run_id);
+                                return;
+                            }
+                            Err(error) => {
+                                log::error!(
+                                    "[ws] catchup replay failed for run={}: {}",
+                                    run_id,
+                                    error
+                                );
+                                failed_runs.insert(run_id.clone());
+                                if send_full_reload(&ws_tx_a, &session_a, run_id)
+                                    .await
+                                    .is_err()
+                                {
+                                    return;
+                                }
+                            }
                         }
                     }
 
                     // Flush buffers after replay
                     for (run_id, _) in &runs_to_replay {
-                        if let Err(overflow) =
-                            flush_replay_buffer(&ws_tx_a, &session_a, run_id).await
-                        {
-                            if overflow {
-                                send_full_reload(&ws_tx_a, &session_a, run_id).await;
+                        if failed_runs.contains(run_id) {
+                            continue;
+                        }
+                        match flush_replay_buffer(&ws_tx_a, &session_a, run_id).await {
+                            Err(FlushError::Overflow) => {
+                                if send_full_reload(&ws_tx_a, &session_a, run_id)
+                                    .await
+                                    .is_err()
+                                {
+                                    return;
+                                }
                             }
+                            Err(FlushError::SendFailed) => return,
+                            Ok(()) => {}
                         }
                     }
                 }
@@ -233,7 +308,7 @@ async fn handle_ws(socket: WebSocket, state: AppState, auth_subject: auth::WsAut
     });
 
     // Task: forward B-class broadcast events to WS client
-    let b_forward = tokio::spawn(async move {
+    let mut b_forward = tokio::spawn(async move {
         loop {
             match b_rx.recv().await {
                 Ok(msg) => {
@@ -277,7 +352,7 @@ async fn handle_ws(socket: WebSocket, state: AppState, auth_subject: auth::WsAut
     let session_cmd = session.clone();
     let state_cmd = state.clone();
 
-    let cmd_loop = tokio::spawn(async move {
+    let mut cmd_loop = tokio::spawn(async move {
         while let Some(Ok(msg)) = ws_rx.next().await {
             match msg {
                 Message::Text(text) => {
@@ -285,7 +360,12 @@ async fn handle_ws(socket: WebSocket, state: AppState, auth_subject: auth::WsAut
                     let parsed: Value = match serde_json::from_str(text_str) {
                         Ok(v) => v,
                         Err(e) => {
-                            send_error(&ws_tx_cmd, &None, &format!("invalid JSON: {}", e)).await;
+                            if send_error(&ws_tx_cmd, &None, &format!("invalid JSON: {}", e))
+                                .await
+                                .is_err()
+                            {
+                                break;
+                            }
                             continue;
                         }
                     };
@@ -305,7 +385,12 @@ async fn handle_ws(socket: WebSocket, state: AppState, auth_subject: auth::WsAut
                                 params.get("last_seq").and_then(|v| v.as_u64()).unwrap_or(0);
 
                             if run_id.is_empty() {
-                                send_error(&ws_tx_cmd, &id, "run_id required").await;
+                                if send_error(&ws_tx_cmd, &id, "run_id required")
+                                    .await
+                                    .is_err()
+                                {
+                                    break;
+                                }
                                 continue;
                             }
 
@@ -323,6 +408,8 @@ async fn handle_ws(socket: WebSocket, state: AppState, auth_subject: auth::WsAut
                                 let old_seq = sess.subscriptions.get(run_id).copied().unwrap_or(0);
                                 let effective_seq = old_seq.max(last_seq);
                                 sess.subscriptions.insert(run_id.to_string(), effective_seq);
+                                // A fresh subscribe acknowledges the preceding _full_reload.
+                                sess.full_reload_pending.remove(run_id);
                                 if !already {
                                     sess.replaying.insert(run_id.to_string());
                                     sess.replay_buffer.entry(run_id.to_string()).or_default();
@@ -336,51 +423,85 @@ async fn handle_ws(socket: WebSocket, state: AppState, auth_subject: auth::WsAut
                                     "[ws] _subscribe: already replaying run={}, checkpoint updated",
                                     run_id
                                 );
-                                send_result(
+                                if send_result(
                                     &ws_tx_cmd,
                                     &id,
                                     json!({"status": "already_replaying"}),
                                 )
-                                .await;
+                                .await
+                                .is_err()
+                                {
+                                    break;
+                                }
                                 continue;
                             }
 
                             // Replay events since effective_seq (not last_seq — avoids re-sending)
-                            if let Err(e) = replay_events(
-                                &state_cmd,
-                                &ws_tx_cmd,
-                                &session_cmd,
-                                run_id,
-                                effective_seq,
-                            )
-                            .await
+                            match replay_events(&state_cmd, &ws_tx_cmd, run_id, effective_seq).await
                             {
-                                log::error!("[ws] replay failed for run={}: {}", run_id, e);
-                                // Clean up replay state so run isn't stuck
-                                let mut sess = session_cmd.lock().await;
-                                sess.replay_buffer.remove(run_id);
-                                sess.replaying.remove(run_id);
-                                drop(sess);
-                                send_error(&ws_tx_cmd, &id, "replay failed").await;
-                                continue;
+                                Ok(last_replayed_seq) => {
+                                    advance_checkpoint(&session_cmd, run_id, last_replayed_seq)
+                                        .await;
+                                }
+                                Err(ReplayError::SendFailed) => break,
+                                Err(error) => {
+                                    log::error!("[ws] replay failed for run={}: {}", run_id, error);
+                                    // History may have completed before this replay. Rebuild it for
+                                    // both projection gaps and ordinary persistence/read failures.
+                                    if send_full_reload(&ws_tx_cmd, &session_cmd, run_id)
+                                        .await
+                                        .is_err()
+                                    {
+                                        break;
+                                    }
+                                    if send_error(&ws_tx_cmd, &id, &error.to_string())
+                                        .await
+                                        .is_err()
+                                    {
+                                        break;
+                                    }
+                                    continue;
+                                }
                             }
 
                             // Flush buffer after replay
                             match flush_replay_buffer(&ws_tx_cmd, &session_cmd, run_id).await {
-                                Err(true) => {
+                                Err(FlushError::Overflow) => {
                                     // Buffer overflow — send _full_reload
-                                    send_full_reload(&ws_tx_cmd, &session_cmd, run_id).await;
+                                    if send_full_reload(&ws_tx_cmd, &session_cmd, run_id)
+                                        .await
+                                        .is_err()
+                                    {
+                                        break;
+                                    }
+                                    if send_error(
+                                        &ws_tx_cmd,
+                                        &id,
+                                        "replay buffer overflow; full reload required",
+                                    )
+                                    .await
+                                    .is_err()
+                                    {
+                                        break;
+                                    }
+                                    continue;
                                 }
-                                Err(false) => {
+                                Err(FlushError::SendFailed) => {
                                     log::error!(
                                         "[ws] flush_replay_buffer send error for run={}",
                                         run_id
                                     );
+                                    break;
                                 }
                                 Ok(()) => {}
                             }
 
-                            send_result(&ws_tx_cmd, &id, json!({"ok": true})).await;
+                            if send_result(&ws_tx_cmd, &id, json!({"ok": true}))
+                                .await
+                                .is_err()
+                            {
+                                break;
+                            }
                         }
                         "_unsubscribe" => {
                             let run_id =
@@ -392,18 +513,27 @@ async fn handle_ws(socket: WebSocket, state: AppState, auth_subject: auth::WsAut
                             sess.subscriptions.remove(run_id);
                             sess.replay_buffer.remove(run_id);
                             sess.replaying.remove(run_id);
-                            sess.full_reload_cooldown.remove(run_id);
+                            sess.full_reload_pending.remove(run_id);
+                            drop(sess);
 
-                            send_result(&ws_tx_cmd, &id, json!({"ok": true})).await;
+                            if send_result(&ws_tx_cmd, &id, json!({"ok": true}))
+                                .await
+                                .is_err()
+                            {
+                                break;
+                            }
                         }
                         _ => {
                             // Dispatch to command handler
                             let result =
                                 dispatch::dispatch_command(method, params, &state_cmd).await;
 
-                            match result {
+                            let sent = match result {
                                 Ok(value) => send_result(&ws_tx_cmd, &id, value).await,
                                 Err(err) => send_error(&ws_tx_cmd, &id, &err).await,
+                            };
+                            if sent.is_err() {
+                                break;
                             }
                         }
                     }
@@ -427,7 +557,7 @@ async fn handle_ws(socket: WebSocket, state: AppState, auth_subject: auth::WsAut
     let state_hb = state.clone();
     let ws_tx_hb = ws_tx.clone();
 
-    let heartbeat_task = tokio::spawn(async move {
+    let mut heartbeat_task = tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(300));
         let session_token_ver = state_hb
             .token_version
@@ -501,13 +631,19 @@ async fn handle_ws(socket: WebSocket, state: AppState, auth_subject: auth::WsAut
 
     // Wait for any task to finish (client disconnect or channel close)
     tokio::select! {
-        _ = a_forward => {},
-        _ = b_forward => {},
-        _ = cmd_loop => {},
-        _ = heartbeat_task => {
+        _ = &mut a_forward => {},
+        _ = &mut b_forward => {},
+        _ = &mut cmd_loop => {},
+        _ = &mut heartbeat_task => {
             log::debug!("[ws] heartbeat/shutdown triggered connection close");
         },
     }
+    // A send failure in any task must close the whole connection. Detached siblings would keep
+    // the split socket alive and leave the client in an unacknowledged partial-replay state.
+    a_forward.abort();
+    b_forward.abort();
+    cmd_loop.abort();
+    heartbeat_task.abort();
 
     log::debug!("[ws] connection closed");
 }
@@ -515,12 +651,11 @@ async fn handle_ws(socket: WebSocket, state: AppState, auth_subject: auth::WsAut
 /// Flush the replay buffer for a run: send buffered events with seq > checkpoint,
 /// update checkpoint monotonically, then clear replay state.
 ///
-/// Returns Ok(()) on success, Err(true) on buffer overflow, Err(false) on send failure.
 async fn flush_replay_buffer(
     ws_tx: &WsSink,
     session: &Arc<Mutex<WsSession>>,
     run_id: &str,
-) -> Result<(), bool> {
+) -> Result<(), FlushError> {
     let mut total_flushed = 0u64;
     let mut max_seq = 0u64;
 
@@ -552,7 +687,7 @@ async fn flush_replay_buffer(
                     run_id,
                     buffer.len()
                 );
-                return Err(true);
+                return Err(FlushError::Overflow);
             }
 
             let checkpoint = sess.subscriptions.get(run_id).copied().unwrap_or(0);
@@ -569,7 +704,7 @@ async fn flush_replay_buffer(
             if ws_tx.lock().await.send(Message::Text(text)).await.is_err() {
                 let mut sess = session.lock().await;
                 sess.replaying.remove(run_id);
-                return Err(false);
+                return Err(FlushError::SendFailed);
             }
             max_seq = max_seq.max(event.seq);
             total_flushed += 1;
@@ -596,22 +731,17 @@ async fn flush_replay_buffer(
     Ok(())
 }
 
-/// Send a _full_reload event to the client, respecting cooldown.
-async fn send_full_reload(ws_tx: &WsSink, session: &Arc<Mutex<WsSession>>, run_id: &str) {
+/// Send one _full_reload event and wait for a fresh subscription before sending another.
+async fn send_full_reload(
+    ws_tx: &Arc<Mutex<impl futures_util::Sink<Message> + Unpin>>,
+    session: &Arc<Mutex<WsSession>>,
+    run_id: &str,
+) -> Result<(), ()> {
     let mut sess = session.lock().await;
-
-    // Check cooldown
-    if let Some(last) = sess.full_reload_cooldown.get(run_id) {
-        if last.elapsed().as_secs() < FULL_RELOAD_COOLDOWN_SECS {
-            log::debug!(
-                "[ws] _full_reload cooldown active for run={}, skipping",
-                run_id
-            );
-            return;
-        }
+    if !sess.begin_full_reload(run_id) {
+        log::debug!("[ws] _full_reload already pending for run={}", run_id);
+        return Ok(());
     }
-    sess.full_reload_cooldown
-        .insert(run_id.to_string(), std::time::Instant::now());
     drop(sess);
 
     let envelope = json!({
@@ -619,47 +749,174 @@ async fn send_full_reload(ws_tx: &WsSink, session: &Arc<Mutex<WsSession>>, run_i
         "run_id": run_id,
     });
     log::debug!("[ws] sending _full_reload for run={}", run_id);
-    let _ = ws_tx
+    ws_tx
         .lock()
         .await
         .send(Message::Text(envelope.to_string()))
-        .await;
+        .await
+        .map_err(|_| ())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{send_full_reload, BufferedEvent, ReplayError, WsSession};
+    use futures_util::Sink;
+    use serde_json::json;
+    use std::pin::Pin;
+    use std::sync::Arc;
+    use std::task::{Context, Poll};
+    use tokio::sync::Mutex;
+
+    struct FailingSink;
+
+    impl Sink<axum::extract::ws::Message> for FailingSink {
+        type Error = ();
+
+        fn poll_ready(
+            self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Err(()))
+        }
+
+        fn start_send(
+            self: Pin<&mut Self>,
+            _item: axum::extract::ws::Message,
+        ) -> Result<(), Self::Error> {
+            Err(())
+        }
+
+        fn poll_flush(
+            self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Err(()))
+        }
+
+        fn poll_close(
+            self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    #[test]
+    fn projection_required_replay_error_forces_full_reload() {
+        assert!(matches!(
+            ReplayError::catchup(
+                "HISTORY_PROJECTION_REQUIRED: bus event 9 exceeds catch-up page limit".to_string()
+            ),
+            ReplayError::ProjectionRequired(_)
+        ));
+        assert!(matches!(
+            ReplayError::catchup("catch-up page cursor did not advance".to_string()),
+            ReplayError::Catchup(_)
+        ));
+    }
+
+    #[test]
+    fn full_reload_cleanup_preserves_live_subscription() {
+        let mut session = WsSession::new();
+        session.subscriptions.insert("run-1".to_string(), 41);
+        session.replaying.insert("run-1".to_string());
+        session.replay_buffer.insert(
+            "run-1".to_string(),
+            vec![BufferedEvent {
+                envelope: json!({"event":"bus-event"}),
+                seq: 42,
+            }],
+        );
+
+        assert!(session.begin_full_reload("run-1"));
+
+        assert_eq!(session.subscriptions.get("run-1"), Some(&41));
+        assert!(!session.replaying.contains("run-1"));
+        assert!(!session.replay_buffer.contains_key("run-1"));
+        assert!(!session.begin_full_reload("run-1"));
+        session.full_reload_pending.remove("run-1");
+        assert!(session.begin_full_reload("run-1"));
+    }
+
+    #[test]
+    fn checkpoint_advances_only_after_replay_is_complete() {
+        let mut session = WsSession::new();
+        session.subscriptions.insert("run-1".to_string(), 41);
+        session.replaying.insert("run-1".to_string());
+        session.replay_buffer.insert(
+            "run-1".to_string(),
+            vec![BufferedEvent {
+                envelope: json!({"event":"bus-event"}),
+                seq: 43,
+            }],
+        );
+
+        // Sending part of a replay does not mutate the durable resume checkpoint.
+        assert_eq!(session.subscriptions.get("run-1"), Some(&41));
+        session.begin_full_reload("run-1");
+        assert_eq!(session.subscriptions.get("run-1"), Some(&41));
+
+        session.full_reload_pending.remove("run-1");
+        session.complete_replay("run-1", 43);
+        assert_eq!(session.subscriptions.get("run-1"), Some(&43));
+    }
+
+    #[tokio::test]
+    async fn full_reload_send_failure_is_reported() {
+        let sink = Arc::new(Mutex::new(FailingSink));
+        let session = Arc::new(Mutex::new(WsSession::new()));
+        session
+            .lock()
+            .await
+            .subscriptions
+            .insert("run-1".to_string(), 41);
+
+        assert!(send_full_reload(&sink, &session, "run-1").await.is_err());
+        assert!(session.lock().await.full_reload_pending.contains("run-1"));
+    }
 }
 
 /// Replay A-class events from events.jsonl since `last_seq` for a given run.
 async fn replay_events(
     _state: &AppState,
     ws_tx: &WsSink,
-    session: &Arc<Mutex<WsSession>>,
     run_id: &str,
     last_seq: u64,
-) -> Result<(), String> {
-    // list_bus_events already filters by since_seq > last_seq
-    let events = crate::storage::events::list_bus_events(run_id, Some(last_seq));
+) -> Result<u64, ReplayError> {
+    let mut replayed = 0usize;
+    let mut last_replayed_seq = last_seq;
+    let mut page_seq = last_seq;
+    let mut page_offset = None;
+    loop {
+        let page = crate::storage::events::list_bus_events_page(run_id, page_seq, page_offset)
+            .map_err(ReplayError::catchup)?;
+        for event in &page.events {
+            let seq = event.get("_seq").and_then(|v| v.as_u64()).unwrap_or(0);
 
-    let replayed = events.len();
-    for event in &events {
-        let seq = event.get("_seq").and_then(|v| v.as_u64()).unwrap_or(0);
+            let envelope = json!({
+                "event": "bus-event",
+                "seq": seq,
+                "run_id": run_id,
+                "payload": event,
+            });
 
-        let envelope = json!({
-            "event": "bus-event",
-            "seq": seq,
-            "run_id": run_id,
-            "payload": event,
-        });
-
-        let text = envelope.to_string();
-        if ws_tx.lock().await.send(Message::Text(text)).await.is_err() {
-            return Err("WS send failed during replay".to_string());
-        }
-
-        // Update checkpoint (monotonic)
-        if seq > 0 {
-            let mut sess = session.lock().await;
-            if let Some(cp) = sess.subscriptions.get_mut(run_id) {
-                *cp = (*cp).max(seq);
+            let text = envelope.to_string();
+            if ws_tx.lock().await.send(Message::Text(text)).await.is_err() {
+                return Err(ReplayError::SendFailed);
             }
+            last_replayed_seq = last_replayed_seq.max(seq);
+            replayed += 1;
         }
+        if !page.has_more {
+            break;
+        }
+        if page.last_seq <= page_seq {
+            return Err(ReplayError::Catchup(
+                "catch-up page cursor did not advance".to_string(),
+            ));
+        }
+        page_offset = Some(page.next_offset);
+        page_seq = page.last_seq;
     }
 
     log::debug!(
@@ -669,5 +926,10 @@ async fn replay_events(
         replayed
     );
 
-    Ok(())
+    Ok(last_replayed_seq)
+}
+
+async fn advance_checkpoint(session: &Arc<Mutex<WsSession>>, run_id: &str, last_replayed_seq: u64) {
+    let mut sess = session.lock().await;
+    sess.complete_replay(run_id, last_replayed_seq);
 }

@@ -1820,5 +1820,19 @@
   "scheduled_tasks_cancelTimeout": "仍未取消，请重试",
   "scheduled_tasks_waitForTurn": "等待当前回合结束",
   "scheduled_tasks_oneShot": "单次",
-  "scheduled_tasks_expiryNote": "任务 7 天后由 CLI 自动过期"
+  "scheduled_tasks_expiryNote": "任务 7 天后由 CLI 自动过期",
+  "interaction_responsePending": "响应已发送，正在等待投递确认。",
+  "interaction_responseFailed": "无法确认响应是否成功投递，请检查会话状态后再继续。",
+  "historyContent_window": "当前显示从第 {offset} 字节开始的有界窗口",
+  "historyContent_preview": "当前为预览 · 共 {bytes} 字节",
+  "historyContent_loading": "加载中…",
+  "historyContent_loaded": "已显示全部已加载分块",
+  "historyContent_retry": "重试加载",
+  "historyContent_loadNext": "加载下一分块",
+  "historyContent_thinking": "完整思考内容",
+  "historyContent_toolInput": "完整工具输入",
+  "historyContent_toolOutput": "完整工具输出",
+  "historyContent_toolResult": "完整工具结果",
+  "historyContent_unavailable": "旧版工具详情无法完整加载",
+  "historySub_loadEarlier": "加载更早的子代理历史"
 }

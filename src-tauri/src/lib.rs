@@ -79,6 +79,14 @@ pub fn run() {
 
     log::info!("OpenCovibe Desktop starting");
 
+    // All storage modules use process-local writer locks. Hold the OS lock before any startup
+    // reconciliation touches data so a second backend cannot allocate duplicate event sequences
+    // or clean a history generation that this process is serving.
+    let data_dir_lock = storage::DataDirLock::acquire().unwrap_or_else(|error| {
+        log::error!("[app] data writer lock failed: {error}");
+        panic!("{error}");
+    });
+
     // Set up Windows Job Object so child processes are killed on crash/force-quit.
     // No-op on non-Windows.
     process_ext::setup_job_kill_on_close();
@@ -131,6 +139,7 @@ pub fn run() {
         .manage(crate::storage::events::global_writer())
         .manage(SpawnLocks::new())
         .manage(ShutdownGate::new())
+        .manage(data_dir_lock)
         .manage(cancel_token)
         .manage(ws_shutdown_sender)
         .manage(shared_token_version)
@@ -207,6 +216,11 @@ pub fn run() {
             commands::session::send_session_control,
             commands::session::broadcast_mcp_toggle,
             commands::session::get_bus_events,
+            commands::session::get_bus_events_page,
+            commands::history_pages::get_history_summary,
+            commands::history_pages::get_history_page,
+            commands::history_pages::get_history_content_chunk,
+            commands::history_pages::get_subhistory_page,
             commands::session::fork_session,
             commands::session::side_question,
             commands::session::start_ralph_loop,

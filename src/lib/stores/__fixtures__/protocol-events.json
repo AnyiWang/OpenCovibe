@@ -138,6 +138,33 @@
     "parent_thread_id": "root"
   },
   {
+    "type": "interaction_response_started",
+    "run_id": "run-1",
+    "request_id": "req-started-1",
+    "interaction_kind": "permission",
+    "resolution": "deny"
+  },
+  {
+    "type": "interaction_response_failed",
+    "run_id": "run-1",
+    "request_id": "req-failed-1",
+    "interaction_kind": "elicitation",
+    "error": "CLI stdin closed"
+  },
+  {
+    "type": "interaction_response_started",
+    "run_id": "run-1",
+    "request_id": "req-user-input-1",
+    "interaction_kind": "user_input"
+  },
+  {
+    "type": "interaction_resolved",
+    "run_id": "run-1",
+    "request_id": "req-resolved-1",
+    "interaction_kind": "permission",
+    "resolution": "allow"
+  },
+  {
     "type": "message_complete",
     "run_id": "run-1",
     "message_id": "msg-1",
