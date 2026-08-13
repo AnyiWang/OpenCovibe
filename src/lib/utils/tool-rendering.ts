@@ -652,6 +652,230 @@ export function getToolDetail(input: Record<string, unknown> | undefined): strin
   );
 }
 
+type PermissionTranslate = (key: string, params?: Record<string, string>) => string;
+
+type PermissionTarget = {
+  display: string;
+  identity: string;
+  fullyConsumed: boolean;
+};
+
+const PERMISSION_PROFILE_KEYS = new Set(["network", "fileSystem"]);
+const NETWORK_PERMISSION_KEYS = new Set(["enabled"]);
+const FILE_SYSTEM_PERMISSION_KEYS = new Set(["read", "write", "entries", "globScanMaxDepth"]);
+const FILE_SYSTEM_ENTRY_KEYS = new Set(["access", "path"]);
+const PATH_TARGET_KEYS = new Set(["type", "path"]);
+const GLOB_TARGET_KEYS = new Set(["type", "pattern"]);
+const SPECIAL_TARGET_KEYS = new Set(["type", "value"]);
+const SPECIAL_KIND_KEYS = new Set(["kind"]);
+const PROJECT_ROOTS_KEYS = new Set(["kind", "subpath"]);
+const UNKNOWN_SPECIAL_KEYS = new Set(["kind", "path", "subpath"]);
+
+function hasOnlyKeys(value: Record<string, unknown>, allowed: ReadonlySet<string>): boolean {
+  return Object.keys(value).every((key) => allowed.has(key));
+}
+
+/** Format every target in a Codex permission-profile request for approval UI display. */
+export function getPermissionProfileDetails(
+  input: Record<string, unknown> | undefined,
+  t: PermissionTranslate,
+): string[] {
+  if (!input?.permissions || typeof input.permissions !== "object") return [];
+  const permissions = input.permissions as Record<string, unknown>;
+  const details: string[] = [];
+  let profileFullyConsumed = hasOnlyKeys(permissions, PERMISSION_PROFILE_KEYS);
+  const seenAccessTargets = new Set<string>();
+  const addAccessDetail = (access: "read" | "write" | "deny", target: PermissionTarget): void => {
+    const key = `${access}\0${target.identity}`;
+    if (!seenAccessTargets.has(key)) {
+      seenAccessTargets.add(key);
+      details.push(formatPermissionAccess(access, target.display, t));
+    }
+    if (!target.fullyConsumed) profileFullyConsumed = false;
+  };
+
+  const networkValue = permissions.network;
+  if (networkValue != null) {
+    if (typeof networkValue !== "object" || Array.isArray(networkValue)) {
+      profileFullyConsumed = false;
+    } else {
+      const network = networkValue as Record<string, unknown>;
+      if (!hasOnlyKeys(network, NETWORK_PERMISSION_KEYS)) profileFullyConsumed = false;
+      if (network.enabled === true) details.push(t("perm_networkAccess"));
+      if (network.enabled != null && typeof network.enabled !== "boolean") {
+        profileFullyConsumed = false;
+      }
+    }
+  }
+
+  const fileSystemValue = permissions.fileSystem;
+  if (fileSystemValue != null) {
+    if (typeof fileSystemValue !== "object" || Array.isArray(fileSystemValue)) {
+      profileFullyConsumed = false;
+    } else {
+      const fileSystem = fileSystemValue as Record<string, unknown>;
+      if (!hasOnlyKeys(fileSystem, FILE_SYSTEM_PERMISSION_KEYS)) {
+        profileFullyConsumed = false;
+      }
+
+      for (const access of ["read", "write"] as const) {
+        const paths = fileSystem[access];
+        if (paths == null) continue;
+        if (!Array.isArray(paths)) {
+          profileFullyConsumed = false;
+          continue;
+        }
+        for (const path of paths) {
+          const target = formatPermissionTarget(path, t);
+          if (target) addAccessDetail(access, target);
+          else profileFullyConsumed = false;
+        }
+      }
+
+      const entries = fileSystem.entries;
+      if (entries != null) {
+        if (!Array.isArray(entries)) {
+          profileFullyConsumed = false;
+        } else {
+          for (const entry of entries) {
+            if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+              profileFullyConsumed = false;
+              continue;
+            }
+            const item = entry as Record<string, unknown>;
+            if (!hasOnlyKeys(item, FILE_SYSTEM_ENTRY_KEYS)) profileFullyConsumed = false;
+            if (item.access !== "read" && item.access !== "write" && item.access !== "deny") {
+              profileFullyConsumed = false;
+              continue;
+            }
+            const target = formatPermissionTarget(item.path, t);
+            if (target) addAccessDetail(item.access, target);
+            else profileFullyConsumed = false;
+          }
+        }
+      }
+
+      const globScanMaxDepth = fileSystem.globScanMaxDepth;
+      if (
+        typeof globScanMaxDepth === "number" &&
+        Number.isInteger(globScanMaxDepth) &&
+        globScanMaxDepth > 0
+      ) {
+        details.push(t("perm_globDepth", { depth: String(globScanMaxDepth) }));
+      } else if (globScanMaxDepth != null) {
+        profileFullyConsumed = false;
+      }
+    }
+  }
+
+  const hasRecognizedProfileDetail = details.length > 0;
+  if (!profileFullyConsumed || !hasRecognizedProfileDetail) {
+    details.push(t("perm_rawProfile", { profile: JSON.stringify(permissions) }));
+  }
+  const cwd = typeof input.cwd === "string" ? input.cwd : undefined;
+  if (cwd) details.push(t("perm_workingDirectory", { path: cwd }));
+  return details;
+}
+
+function formatPermissionAccess(
+  access: "read" | "write" | "deny",
+  target: string,
+  t: PermissionTranslate,
+) {
+  const key =
+    access === "read"
+      ? "perm_readTarget"
+      : access === "write"
+        ? "perm_writeTarget"
+        : "perm_denyTarget";
+  return t(key, { target });
+}
+
+function formatPermissionTarget(
+  value: unknown,
+  t: PermissionTranslate,
+): PermissionTarget | undefined {
+  if (typeof value === "string") {
+    return { display: value, identity: `path:${value}`, fullyConsumed: true };
+  }
+  if (!value || typeof value !== "object") return undefined;
+  const target = value as Record<string, unknown>;
+  if (target.type === "path" && typeof target.path === "string") {
+    return {
+      display: target.path,
+      identity: `path:${target.path}`,
+      fullyConsumed: hasOnlyKeys(target, PATH_TARGET_KEYS),
+    };
+  }
+  if (target.type === "glob_pattern" && typeof target.pattern === "string") {
+    return {
+      display: t("perm_globTarget", { pattern: target.pattern }),
+      identity: `glob:${target.pattern}`,
+      fullyConsumed: hasOnlyKeys(target, GLOB_TARGET_KEYS),
+    };
+  }
+  if (target.type !== "special" || !target.value || typeof target.value !== "object") {
+    const raw = JSON.stringify(target);
+    return {
+      display: t("perm_unknownTarget", { target: raw }),
+      identity: `unknown:${raw}`,
+      fullyConsumed: false,
+    };
+  }
+  const special = target.value as Record<string, unknown>;
+  const targetFullyConsumed = hasOnlyKeys(target, SPECIAL_TARGET_KEYS);
+  if (
+    special.kind === "root" ||
+    special.kind === "minimal" ||
+    special.kind === "tmpdir" ||
+    special.kind === "slash_tmp"
+  ) {
+    const translationKey = {
+      root: "perm_specialRoot",
+      minimal: "perm_specialMinimal",
+      tmpdir: "perm_specialTmpdir",
+      slash_tmp: "perm_specialSlashTmp",
+    }[special.kind];
+    return {
+      display: t(translationKey),
+      identity: `special:${special.kind}`,
+      fullyConsumed: targetFullyConsumed && hasOnlyKeys(special, SPECIAL_KIND_KEYS),
+    };
+  }
+  if (special.kind === "project_roots") {
+    const validSubpath = special.subpath == null || typeof special.subpath === "string";
+    const subpath = typeof special.subpath === "string" ? special.subpath : undefined;
+    return {
+      display:
+        subpath !== undefined
+          ? t("perm_specialProjectSubpath", { path: subpath })
+          : t("perm_specialProjectRoots"),
+      identity: `special:project_roots:${subpath ?? ""}`,
+      fullyConsumed:
+        targetFullyConsumed && validSubpath && hasOnlyKeys(special, PROJECT_ROOTS_KEYS),
+    };
+  }
+  if (special.kind === "unknown" && typeof special.path === "string") {
+    const validSubpath = special.subpath == null || typeof special.subpath === "string";
+    const subpath = typeof special.subpath === "string" ? special.subpath : undefined;
+    return {
+      display:
+        subpath !== undefined
+          ? t("perm_unknownSubpath", { path: special.path, subpath })
+          : special.path,
+      identity: `special:unknown:${special.path}:${subpath ?? ""}`,
+      fullyConsumed:
+        targetFullyConsumed && validSubpath && hasOnlyKeys(special, UNKNOWN_SPECIAL_KEYS),
+    };
+  }
+  const raw = JSON.stringify(target);
+  return {
+    display: t("perm_unknownTarget", { target: raw }),
+    identity: `unknown:${raw}`,
+    fullyConsumed: false,
+  };
+}
+
 /** Format a permission suggestion label for display.
  *  Requires a `t` translation function since this runs outside Svelte component context. */
 export function formatSuggestionLabel(

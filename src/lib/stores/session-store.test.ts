@@ -2554,7 +2554,7 @@ describe("SessionStore reducer", () => {
           run_id: "run-1",
           tool_use_id: "tool-1",
           tool_name: "Bash",
-          input: { command: "npm test" },
+          input: { command: "npm test", description: "stale input" },
         },
         {
           type: "permission_prompt",
@@ -2562,7 +2562,7 @@ describe("SessionStore reducer", () => {
           request_id: "req-1",
           tool_name: "Bash",
           tool_use_id: "tool-1",
-          tool_input: { command: "npm test" },
+          tool_input: { command: "npm test -- --run", cwd: "/project" },
           decision_reason: "needs approval",
           suggestions: [{ type: "addRules", rules: ["Bash(npm test)"], behavior: "allow" }],
         },
@@ -2573,9 +2573,53 @@ describe("SessionStore reducer", () => {
         { kind: "tool" }
       >;
       expect(entry.tool.status).toBe("permission_prompt");
+      expect(entry.tool.input).toEqual({ command: "npm test -- --run", cwd: "/project" });
+      expect(entry.tool.permission_reason).toBe("needs approval");
       expect(entry.tool.suggestions).toEqual([
         { type: "addRules", rules: ["Bash(npm test)"], behavior: "allow" },
       ]);
+    });
+
+    it("a later permission_prompt clears stale suggestions", () => {
+      store.run = makeRun("run-1");
+      store.phase = "running";
+      store.applyEventBatch([
+        {
+          type: "tool_start",
+          run_id: "run-1",
+          tool_use_id: "tool-1",
+          tool_name: "Bash",
+          input: { command: "npm test" },
+        },
+        {
+          type: "permission_prompt",
+          run_id: "run-1",
+          request_id: "req-1",
+          tool_name: "Bash",
+          tool_use_id: "tool-1",
+          tool_input: { command: "npm test" },
+          decision_reason: "first request",
+          suggestions: [{ type: "addRules", rules: ["Bash(npm test)"], behavior: "allow" }],
+        },
+        {
+          type: "permission_prompt",
+          run_id: "run-1",
+          request_id: "req-2",
+          tool_name: "Bash",
+          tool_use_id: "tool-1",
+          tool_input: { command: "npm test -- --run" },
+          decision_reason: "second request",
+        },
+      ] as BusEvent[]);
+
+      const entry = store.timeline.find((e) => e.kind === "tool" && e.id === "tool-1") as Extract<
+        TimelineEntry,
+        { kind: "tool" }
+      >;
+      expect(entry.tool.permission_request_id).toBe("req-2");
+      expect(entry.tool.permission_reason).toBe("second request");
+      expect(entry.tool.input).toEqual({ command: "npm test -- --run" });
+      expect(entry.tool.suggestions).toEqual([]);
     });
 
     it("permission_prompt merges suggestions in subTimeline (fallback path)", () => {
@@ -2629,6 +2673,26 @@ describe("SessionStore reducer", () => {
       expect(bashInSub.tool.suggestions).toEqual([
         { type: "addRules", rules: ["Bash(rm -rf /)"], behavior: "allow" },
       ]);
+
+      store.applyEvent({
+        type: "permission_prompt",
+        run_id: "run-8",
+        tool_use_id: "bash-child",
+        tool_name: "Bash",
+        tool_input: { command: "rm -rf /tmp/cache" },
+        request_id: "req-2",
+        decision_reason: "second request",
+      } as BusEvent);
+      const updatedTask = store.timeline.find(
+        (e) => e.kind === "tool" && e.id === "task-parent",
+      ) as Extract<TimelineEntry, { kind: "tool" }>;
+      const updatedBash = updatedTask.subTimeline!.find(
+        (e) => e.kind === "tool" && e.id === "bash-child",
+      ) as Extract<TimelineEntry, { kind: "tool" }>;
+      expect(updatedBash.tool.input).toEqual({ command: "rm -rf /tmp/cache" });
+      expect(updatedBash.tool.permission_request_id).toBe("req-2");
+      expect(updatedBash.tool.permission_reason).toBe("second request");
+      expect(updatedBash.tool.suggestions).toEqual([]);
     });
 
     it("run_state idle resolves stale permission_prompt to error", () => {
@@ -2667,7 +2731,7 @@ describe("SessionStore reducer", () => {
   });
 
   describe("resolvePermissionAllow", () => {
-    it("switches permission_prompt to running, preserves permission_request_id", () => {
+    it("keeps an approved executable tool running and preserves permission_request_id", () => {
       store.run = makeRun("run-1");
       store.phase = "running";
       const events: BusEvent[] = [
@@ -2703,6 +2767,43 @@ describe("SessionStore reducer", () => {
       >;
       expect(after.tool.status).toBe("running");
       expect(after.tool.permission_request_id).toBe("req-1");
+    });
+
+    it("completes RequestPermissions on allow and keeps it successful after idle", () => {
+      store.run = makeRun("run-1");
+      store.phase = "running";
+      store.applyEventBatch([
+        {
+          type: "tool_start",
+          run_id: "run-1",
+          tool_use_id: "permissions-1",
+          tool_name: "RequestPermissions",
+          input: { permissions: { network: { enabled: true } }, cwd: "/project" },
+        },
+        {
+          type: "permission_prompt",
+          run_id: "run-1",
+          request_id: "req-permissions",
+          tool_name: "RequestPermissions",
+          tool_use_id: "permissions-1",
+          tool_input: { permissions: { network: { enabled: true } }, cwd: "/project" },
+          decision_reason: "Needs network access",
+        },
+      ] as BusEvent[]);
+
+      store.resolvePermissionAllow("req-permissions");
+
+      let entry = store.timeline.find(
+        (candidate) => candidate.kind === "tool" && candidate.id === "permissions-1",
+      ) as Extract<TimelineEntry, { kind: "tool" }>;
+      expect(entry.tool.status).toBe("success");
+
+      store.applyEvent({ type: "run_state", run_id: "run-1", state: "idle" } as BusEvent);
+
+      entry = store.timeline.find(
+        (candidate) => candidate.kind === "tool" && candidate.id === "permissions-1",
+      ) as Extract<TimelineEntry, { kind: "tool" }>;
+      expect(entry.tool.status).toBe("success");
     });
 
     it("skips AskUserQuestion tools", () => {
@@ -2778,6 +2879,46 @@ describe("SessionStore reducer", () => {
       ) as Extract<TimelineEntry, { kind: "tool" }>;
       expect(child.tool.status).toBe("running");
       expect(child.tool.permission_request_id).toBe("req-sub");
+    });
+
+    it("completes RequestPermissions in a subTimeline", () => {
+      store.run = makeRun("run-1");
+      store.phase = "running";
+      store.timeline = [
+        {
+          kind: "tool",
+          id: "task-parent",
+          anchorId: "task-parent",
+          ts: new Date().toISOString(),
+          tool: {
+            tool_use_id: "task-parent",
+            tool_name: "Task",
+            status: "running",
+            input: {},
+          },
+          subTimeline: [
+            {
+              kind: "tool",
+              id: "permissions-child",
+              anchorId: "permissions-child",
+              ts: new Date().toISOString(),
+              tool: {
+                tool_use_id: "permissions-child",
+                tool_name: "RequestPermissions",
+                status: "permission_prompt",
+                permission_request_id: "req-permissions-sub",
+                input: { permissions: { network: { enabled: true } } },
+              },
+            },
+          ],
+        },
+      ] as TimelineEntry[];
+
+      store.resolvePermissionAllow("req-permissions-sub");
+
+      const parent = store.timeline[0] as Extract<TimelineEntry, { kind: "tool" }>;
+      const child = parent.subTimeline![0] as Extract<TimelineEntry, { kind: "tool" }>;
+      expect(child.tool.status).toBe("success");
     });
 
     it("skips AskUserQuestion in subTimeline", () => {

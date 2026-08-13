@@ -18,6 +18,7 @@
     shouldShowSubTimeline as _shouldShow,
     getToolRenderLevel,
     getToolDetail,
+    getPermissionProfileDetails,
     isToolTerminal,
     formatSuggestionLabel as _fmtSuggestion,
   } from "$lib/utils/tool-rendering";
@@ -204,6 +205,12 @@
 
   // Extract a human-readable detail from tool input (file path, command, pattern, etc.)
   let detail = $derived(getToolDetail(tool.input));
+  let permissionDetails = $derived(
+    getPermissionProfileDetails(
+      tool.input,
+      t as (key: string, params?: Record<string, string>) => string,
+    ),
+  );
 
   let planLabel = $derived(planFileName(detail));
   let displayDetail = $derived(planLabel ? t("inline_planLabel", { name: planLabel }) : detail);
@@ -1519,9 +1526,20 @@
             {t("inline_agentWantsToUse", { agent: agentDisplayName ?? "Claude" })}
             <strong>{tool.tool_name}</strong>
           </p>
-          {#if detail}
+          {#if tool.permission_reason}
+            <p class="mb-2 whitespace-pre-wrap break-words text-xs text-foreground/80">
+              {t("perm_requestReason", { reason: tool.permission_reason })}
+            </p>
+          {/if}
+          {#if permissionDetails.length > 0}
+            <ul class="mb-2 space-y-1 text-xs text-muted-foreground">
+              {#each permissionDetails as permissionDetail}
+                <li class="whitespace-pre-wrap break-all">• {permissionDetail}</li>
+              {/each}
+            </ul>
+          {:else if detail}
             <p
-              class="text-xs text-muted-foreground mb-2 truncate"
+              class="text-xs text-muted-foreground mb-2 whitespace-pre-wrap break-all"
               style:direction={isPathLikeDetail ? "rtl" : undefined}
               style:text-align={isPathLikeDetail ? "left" : undefined}
             >

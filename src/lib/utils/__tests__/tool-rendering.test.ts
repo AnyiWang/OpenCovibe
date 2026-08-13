@@ -16,6 +16,7 @@ import {
   applyPlanEditsForward,
   getToolRenderLevel,
   getToolDetail,
+  getPermissionProfileDetails,
   isSubagentTool,
   friendlyToolName,
 } from "../tool-rendering";
@@ -979,6 +980,111 @@ describe("getToolDetail scheduling extractor", () => {
   it("returns empty string for empty input", () => {
     expect(getToolDetail({})).toBe("");
     expect(getToolDetail(undefined)).toBe("");
+  });
+});
+
+describe("getPermissionProfileDetails", () => {
+  const t = (key: string, params?: Record<string, string>) =>
+    `${key}${params ? `:${JSON.stringify(params)}` : ""}`;
+
+  it("lists network, legacy paths, and cwd separately", () => {
+    expect(
+      getPermissionProfileDetails(
+        {
+          cwd: "/project",
+          permissions: {
+            network: { enabled: true },
+            fileSystem: { read: ["/docs"], write: ["/project", "/shared"] },
+          },
+        },
+        t,
+      ),
+    ).toEqual([
+      "perm_networkAccess",
+      'perm_readTarget:{"target":"/docs"}',
+      'perm_writeTarget:{"target":"/project"}',
+      'perm_writeTarget:{"target":"/shared"}',
+      'perm_workingDirectory:{"path":"/project"}',
+    ]);
+  });
+
+  it("renders path, glob, and every stable special target", () => {
+    const entries = [
+      { access: "read", path: { type: "path", path: "/exact" } },
+      { access: "write", path: { type: "glob_pattern", pattern: "**/*.log" } },
+      { access: "read", path: { type: "special", value: { kind: "root" } } },
+      { access: "read", path: { type: "special", value: { kind: "minimal" } } },
+      { access: "write", path: { type: "special", value: { kind: "tmpdir" } } },
+      { access: "write", path: { type: "special", value: { kind: "slash_tmp" } } },
+      {
+        access: "write",
+        path: { type: "special", value: { kind: "project_roots", subpath: "cache" } },
+      },
+      {
+        access: "deny",
+        path: { type: "special", value: { kind: "unknown", path: "/private", subpath: "x" } },
+      },
+    ];
+    const result = getPermissionProfileDetails(
+      { permissions: { fileSystem: { entries, globScanMaxDepth: 4 } } },
+      t,
+    );
+    expect(result).toHaveLength(9);
+    expect(result.join("\n")).toContain("perm_specialRoot");
+    expect(result.join("\n")).toContain("perm_specialProjectSubpath");
+    expect(result.join("\n")).toContain("perm_globTarget");
+    expect(result.at(-1)).toBe('perm_globDepth:{"depth":"4"}');
+  });
+
+  it("shows the raw profile when no known field can be rendered", () => {
+    expect(
+      getPermissionProfileDetails({ cwd: "/project", permissions: { future: true } }, t),
+    ).toEqual([
+      'perm_rawProfile:{"profile":"{\\"future\\":true}"}',
+      'perm_workingDirectory:{"path":"/project"}',
+    ]);
+  });
+
+  it("shows recognized details and the raw profile when fields are not fully understood", () => {
+    const permissions = {
+      network: { enabled: true, futureMode: "x" },
+      futureGrant: { enabled: true },
+    };
+    expect(getPermissionProfileDetails({ cwd: "/project", permissions }, t)).toEqual([
+      "perm_networkAccess",
+      `perm_rawProfile:${JSON.stringify({ profile: JSON.stringify(permissions) })}`,
+      'perm_workingDirectory:{"path":"/project"}',
+    ]);
+  });
+
+  it("deduplicates equivalent legacy and entries paths", () => {
+    expect(
+      getPermissionProfileDetails(
+        {
+          permissions: {
+            fileSystem: {
+              write: ["/project"],
+              entries: [{ access: "write", path: { type: "path", path: "/project" } }],
+            },
+          },
+        },
+        t,
+      ),
+    ).toEqual(['perm_writeTarget:{"target":"/project"}']);
+  });
+
+  it.each([0, -1, 1.5])(
+    "shows the raw profile for malformed globScanMaxDepth %s",
+    (globScanMaxDepth) => {
+      const permissions = { fileSystem: { globScanMaxDepth } };
+      expect(getPermissionProfileDetails({ permissions }, t)).toEqual([
+        `perm_rawProfile:${JSON.stringify({ profile: JSON.stringify(permissions) })}`,
+      ]);
+    },
+  );
+
+  it("does not let cwd replace a more useful generic tool detail", () => {
+    expect(getToolDetail({ cwd: "/project", query: "needle" })).toBe("needle");
   });
 });
 

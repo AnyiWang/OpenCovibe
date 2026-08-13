@@ -2839,11 +2839,18 @@ export class SessionStore {
   /** Unified permission resolution: traverses ALL timeline + subTimeline entries
    *  (no early return) to handle duplicate requestId entries from fallback/synthetic sources.
    *  - "deny" → permission_denied
-   *  - "allow" → running (skips AskUserQuestion to avoid double-submit) */
+   *  - "allow" → success for RequestPermissions, running for executable tools
+   *  AskUserQuestion is skipped on allow to avoid double-submit. RequestPermissions has no
+   *  subsequent item lifecycle events, so the approval itself completes that synthetic card. */
   private _resolvePermission(action: "allow" | "deny", requestId: string): void {
     dbg("store", `resolvePermission${action === "allow" ? "Allow" : "Deny"}`, { requestId });
-    const targetStatus = action === "allow" ? ("running" as const) : ("permission_denied" as const);
     const skipAsk = action === "allow";
+    const resolvedStatus = (toolName: string) =>
+      action === "deny"
+        ? ("permission_denied" as const)
+        : toolName === "RequestPermissions"
+          ? ("success" as const)
+          : ("running" as const);
     let changed = false;
     const u = [...this.timeline];
     for (let i = 0; i < u.length; i++) {
@@ -2854,7 +2861,10 @@ export class SessionStore {
         entry.tool.permission_request_id === requestId
       ) {
         if (!(skipAsk && entry.tool.tool_name === "AskUserQuestion")) {
-          u[i] = { ...entry, tool: { ...entry.tool, status: targetStatus } };
+          u[i] = {
+            ...entry,
+            tool: { ...entry.tool, status: resolvedStatus(entry.tool.tool_name) },
+          };
           changed = true;
         }
       }
@@ -2869,7 +2879,10 @@ export class SessionStore {
             sub.tool.permission_request_id === requestId &&
             !(skipAsk && sub.tool.tool_name === "AskUserQuestion")
           ) {
-            newSub[j] = { ...sub, tool: { ...sub.tool, status: targetStatus } };
+            newSub[j] = {
+              ...sub,
+              tool: { ...sub.tool, status: resolvedStatus(sub.tool.tool_name) },
+            };
             subChanged = true;
           }
         }
@@ -3820,11 +3833,11 @@ export class SessionStore {
               ev.tool_use_id,
               (t) => ({
                 ...t,
+                input: ev.tool_input as Record<string, unknown>,
                 status: "permission_prompt" as const,
                 permission_request_id: ev.request_id,
-                ...(ev.suggestions && ev.suggestions.length > 0
-                  ? { suggestions: ev.suggestions }
-                  : {}),
+                permission_reason: ev.decision_reason,
+                suggestions: ev.suggestions ?? [],
               }),
               ctx,
             )
@@ -3848,12 +3861,11 @@ export class SessionStore {
             ...old,
             tool: {
               ...old.tool,
+              input: ev.tool_input as Record<string, unknown>,
               status: "permission_prompt",
               permission_request_id: ev.request_id,
-              // Merge suggestions from permission_prompt event (CLI provides these)
-              ...(ev.suggestions && ev.suggestions.length > 0
-                ? { suggestions: ev.suggestions }
-                : {}),
+              permission_reason: ev.decision_reason,
+              suggestions: ev.suggestions ?? [],
             },
           };
           if (ctx) {
@@ -3874,11 +3886,11 @@ export class SessionStore {
             ev.tool_use_id,
             (t) => ({
               ...t,
+              input: ev.tool_input as Record<string, unknown>,
               status: "permission_prompt" as const,
               permission_request_id: ev.request_id,
-              ...(ev.suggestions && ev.suggestions.length > 0
-                ? { suggestions: ev.suggestions }
-                : {}),
+              permission_reason: ev.decision_reason,
+              suggestions: ev.suggestions ?? [],
             }),
             ctx,
           );
@@ -3899,9 +3911,8 @@ export class SessionStore {
                 input: ev.tool_input as Record<string, unknown>,
                 status: "permission_prompt",
                 permission_request_id: ev.request_id,
-                ...(ev.suggestions && ev.suggestions.length > 0
-                  ? { suggestions: ev.suggestions }
-                  : {}),
+                permission_reason: ev.decision_reason,
+                suggestions: ev.suggestions ?? [],
               },
               ts: eventTs(ev),
             };
