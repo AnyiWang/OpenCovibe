@@ -4,6 +4,26 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>OpenCovibe</title>
+    <script>
+      // Apply the persisted app theme before Svelte mounts so Windows WebView does not flash the
+      // default dark surface while a light or high-contrast preference is being restored.
+      try {
+        const savedMode = localStorage.getItem("ocv:theme");
+        const mode = ["dark", "light", "high-contrast", "system"].includes(savedMode)
+          ? savedMode
+          : "dark";
+        const systemDark =
+          typeof window.matchMedia === "function"
+            ? window.matchMedia("(prefers-color-scheme: dark)").matches
+            : true;
+        const dark = mode === "dark" || (mode === "system" && systemDark);
+        document.documentElement.classList.toggle("dark", dark);
+        document.documentElement.classList.toggle("theme-high-contrast", mode === "high-contrast");
+        document.documentElement.style.colorScheme = dark ? "dark" : "light";
+      } catch {
+        // Storage can be unavailable in a restricted WebView; the static `dark` class is safe.
+      }
+    </script>
     <style>
       #app-splash {
         position: fixed;

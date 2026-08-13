@@ -4,49 +4,51 @@
  * Supports: 8 standard colors, bright variants, bold, dim, italic, underline, reset.
  */
 
-// Standard ANSI color names → CSS classes (we use Tailwind-compatible names)
+// Standard ANSI colors use semantic classes so light, dark, and high-contrast themes can provide
+// readable palettes. Extended 256-color values remain inline because they are output-defined.
 const FG_COLORS: Record<number, string> = {
-  30: "#6b7280", // black (gray-500 for visibility on dark bg)
-  31: "#ef4444", // red
-  32: "#22c55e", // green
-  33: "#eab308", // yellow
-  34: "#3b82f6", // blue
-  35: "#a855f7", // magenta
-  36: "#06b6d4", // cyan
-  37: "#d1d5db", // white (gray-300)
-  // Bright variants
-  90: "#9ca3af", // bright black (gray-400)
-  91: "#f87171", // bright red
-  92: "#4ade80", // bright green
-  93: "#facc15", // bright yellow
-  94: "#60a5fa", // bright blue
-  95: "#c084fc", // bright magenta
-  96: "#22d3ee", // bright cyan
-  97: "#f3f4f6", // bright white
+  30: "ansi-fg-black",
+  31: "ansi-fg-red",
+  32: "ansi-fg-green",
+  33: "ansi-fg-yellow",
+  34: "ansi-fg-blue",
+  35: "ansi-fg-magenta",
+  36: "ansi-fg-cyan",
+  37: "ansi-fg-white",
+  90: "ansi-fg-bright-black",
+  91: "ansi-fg-bright-red",
+  92: "ansi-fg-bright-green",
+  93: "ansi-fg-bright-yellow",
+  94: "ansi-fg-bright-blue",
+  95: "ansi-fg-bright-magenta",
+  96: "ansi-fg-bright-cyan",
+  97: "ansi-fg-bright-white",
 };
 
 const BG_COLORS: Record<number, string> = {
-  40: "#374151",
-  41: "#991b1b",
-  42: "#166534",
-  43: "#854d0e",
-  44: "#1e3a5f",
-  45: "#6b21a8",
-  46: "#155e75",
-  47: "#e5e7eb",
-  100: "#4b5563",
-  101: "#b91c1c",
-  102: "#15803d",
-  103: "#a16207",
-  104: "#1d4ed8",
-  105: "#7e22ce",
-  106: "#0891b2",
-  107: "#f9fafb",
+  40: "ansi-bg-black",
+  41: "ansi-bg-red",
+  42: "ansi-bg-green",
+  43: "ansi-bg-yellow",
+  44: "ansi-bg-blue",
+  45: "ansi-bg-magenta",
+  46: "ansi-bg-cyan",
+  47: "ansi-bg-white",
+  100: "ansi-bg-bright-black",
+  101: "ansi-bg-bright-red",
+  102: "ansi-bg-bright-green",
+  103: "ansi-bg-bright-yellow",
+  104: "ansi-bg-bright-blue",
+  105: "ansi-bg-bright-magenta",
+  106: "ansi-bg-bright-cyan",
+  107: "ansi-bg-bright-white",
 };
 
 interface Style {
-  fg?: string;
-  bg?: string;
+  fgClass?: string;
+  bgClass?: string;
+  fgColor?: string;
+  bgColor?: string;
   bold?: boolean;
   dim?: boolean;
   italic?: boolean;
@@ -54,18 +56,40 @@ interface Style {
 }
 
 function styleToAttrs(s: Style): string {
+  const classes = [s.fgClass, s.bgClass].filter(Boolean);
   const parts: string[] = [];
-  if (s.fg) parts.push(`color:${s.fg}`);
-  if (s.bg) parts.push(`background-color:${s.bg}`);
+  if (s.fgColor) parts.push(`color:${s.fgColor}`);
+  if (s.bgColor) parts.push(`background-color:${s.bgColor}`);
   if (s.bold) parts.push("font-weight:bold");
   if (s.dim) parts.push("opacity:0.6");
   if (s.italic) parts.push("font-style:italic");
   if (s.underline) parts.push("text-decoration:underline");
-  return parts.length > 0 ? ` style="${parts.join(";")}"` : "";
+  const classAttr = classes.length > 0 ? ` class="${classes.join(" ")}"` : "";
+  const styleAttr = parts.length > 0 ? ` style="${parts.join(";")}"` : "";
+  return `${classAttr}${styleAttr}`;
 }
 
 function hasStyle(s: Style): boolean {
-  return !!(s.fg || s.bg || s.bold || s.dim || s.italic || s.underline);
+  return !!(
+    s.fgClass ||
+    s.bgClass ||
+    s.fgColor ||
+    s.bgColor ||
+    s.bold ||
+    s.dim ||
+    s.italic ||
+    s.underline
+  );
+}
+
+function clearForeground(style: Style): void {
+  delete style.fgClass;
+  delete style.fgColor;
+}
+
+function clearBackground(style: Style): void {
+  delete style.bgClass;
+  delete style.bgColor;
 }
 
 /**
@@ -122,8 +146,8 @@ export function ansiToHtml(input: string): string {
       const code = codes[i];
       if (code === 0) {
         // Reset all
-        delete style.fg;
-        delete style.bg;
+        clearForeground(style);
+        clearBackground(style);
         delete style.bold;
         delete style.dim;
         delete style.italic;
@@ -144,20 +168,30 @@ export function ansiToHtml(input: string): string {
       } else if (code === 24) {
         delete style.underline;
       } else if (code === 39) {
-        delete style.fg;
+        clearForeground(style);
       } else if (code === 49) {
-        delete style.bg;
+        clearBackground(style);
       } else if (FG_COLORS[code]) {
-        style.fg = FG_COLORS[code];
+        clearForeground(style);
+        style.fgClass = FG_COLORS[code];
       } else if (BG_COLORS[code]) {
-        style.bg = BG_COLORS[code];
+        clearBackground(style);
+        style.bgClass = BG_COLORS[code];
       } else if (code === 38 && codes[i + 1] === 5) {
-        // 256-color foreground: \e[38;5;Nm — map to approximate hex
-        style.fg = color256ToHex(codes[i + 2] ?? 0);
+        // 256-color foreground: indices 0-15 share the theme-aware standard palette.
+        clearForeground(style);
+        const colorIndex = codes[i + 2] ?? 0;
+        const standardCode = colorIndex < 8 ? 30 + colorIndex : 90 + colorIndex - 8;
+        if (colorIndex < 16) style.fgClass = FG_COLORS[standardCode];
+        else style.fgColor = color256ToHex(colorIndex);
         i += 2;
       } else if (code === 48 && codes[i + 1] === 5) {
         // 256-color background
-        style.bg = color256ToHex(codes[i + 2] ?? 0);
+        clearBackground(style);
+        const colorIndex = codes[i + 2] ?? 0;
+        const standardCode = colorIndex < 8 ? 40 + colorIndex : 100 + colorIndex - 8;
+        if (colorIndex < 16) style.bgClass = BG_COLORS[standardCode];
+        else style.bgColor = color256ToHex(colorIndex);
         i += 2;
       }
     }

@@ -46,6 +46,9 @@
   import { IS_WINDOWS } from "$lib/utils/platform";
   import { t, LOCALE_REGISTRY, currentLocale, switchLocale } from "$lib/i18n/index.svelte";
   import { getTransport } from "$lib/transport";
+  import { THEME_CONTEXT, THEME_MODES, type ThemeController } from "$lib/utils/theme";
+
+  const themeController = getContext<ThemeController>(THEME_CONTEXT);
 
   // ── Tab state ──
   type SettingsTab = "general" | "connection" | "cli-config" | "shortcuts" | "remote" | "debug";
@@ -1875,6 +1878,33 @@
               </span>
             {/if}
           </div>
+          <div class="flex items-center justify-between gap-4">
+            <div>
+              <p class="text-sm font-medium">{t("settings_general_appTheme")}</p>
+              <p class="text-xs text-muted-foreground">{t("settings_general_appThemeDesc")}</p>
+            </div>
+            <div class="flex flex-wrap justify-end gap-1.5">
+              {#each THEME_MODES as mode (mode)}
+                <button
+                  class="rounded-md border px-3 py-1.5 text-xs transition-all duration-150
+                  {themeController.mode === mode
+                    ? 'bg-primary text-primary-foreground'
+                    : 'hover:bg-accent'}"
+                  aria-pressed={themeController.mode === mode}
+                  onclick={() => themeController.setMode(mode)}
+                >
+                  {mode === "dark"
+                    ? t("settings_general_appThemeDark")
+                    : mode === "light"
+                      ? t("settings_general_appThemeLight")
+                      : mode === "high-contrast"
+                        ? t("settings_general_appThemeHighContrast")
+                        : t("settings_general_appThemeSystem")}
+                </button>
+              {/each}
+            </div>
+          </div>
+          <div class="border-t border-border/50"></div>
           <div class="flex items-center justify-between gap-4">
             <div>
               <p class="text-sm font-medium">{t("settings_general_uiZoom")}</p>
