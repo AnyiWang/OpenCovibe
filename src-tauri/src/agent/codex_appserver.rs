@@ -44,6 +44,9 @@ struct PendingServerReq {
     /// Raw json-rpc id to echo in the response.
     raw_id: Value,
     method: String,
+    /// Requested grant profile for `item/permissions/requestApproval`. Codex requires the
+    /// response to echo only the subset the user granted; command/file approvals use decisions.
+    requested_permissions: Option<Value>,
 }
 
 pub struct CodexAppServer {
@@ -405,14 +408,26 @@ impl SessionProtocol for CodexAppServer {
     fn frame_interrupt(&mut self) -> Vec<Value> {
         let thread_id = match &self.thread_id {
             Some(t) => t.clone(),
-            None => return vec![],
+            None => {
+                log::warn!("[codex_appserver] frame_interrupt before thread/started — dropping");
+                return vec![];
+            }
+        };
+        // Codex 0.147 requires both ids. Without an active turn there is nothing valid to
+        // interrupt, and sending only threadId is rejected by the stable app-server schema.
+        let turn_id = match &self.active_turn_id {
+            Some(t) => t.clone(),
+            None => {
+                log::warn!("[codex_appserver] frame_interrupt with no active turn — dropping");
+                return vec![];
+            }
         };
         let id = self.next_id();
         vec![json!({
             "jsonrpc": "2.0",
             "id": id,
             "method": "turn/interrupt",
-            "params": { "threadId": thread_id }
+            "params": { "threadId": thread_id, "turnId": turn_id }
         })]
     }
 
@@ -531,17 +546,39 @@ impl SessionProtocol for CodexAppServer {
         };
         let result = match kind {
             PendingKind::Permission => {
-                // respond_permission sends {behavior: "allow"|"deny"} → Codex decision.
                 let behavior = response
                     .get("behavior")
                     .and_then(|v| v.as_str())
                     .unwrap_or("deny");
-                let decision = if behavior == "allow" {
-                    "accept"
+                if pending.method == M_PERM_APPROVAL {
+                    // Permission-profile requests use a granted subset, not the decision enum
+                    // used by command/file approvals. An empty profile denies every request.
+                    let permissions = if behavior == "allow" {
+                        pending
+                            .requested_permissions
+                            .clone()
+                            .unwrap_or_else(|| json!({}))
+                    } else {
+                        json!({})
+                    };
+                    log::debug!(
+                        "[codex_appserver] permissions response: request_id={}, behavior={}",
+                        request_id,
+                        behavior
+                    );
+                    json!({ "permissions": permissions, "scope": "turn" })
                 } else {
-                    "decline"
-                };
-                json!({ "decision": decision })
+                    // A deny-and-stop action maps to Codex's cancel decision for command/file
+                    // approvals. Plain deny keeps the current turn alive with decline.
+                    let decision = if behavior == "allow" {
+                        "accept"
+                    } else if response.get("interrupt").and_then(Value::as_bool) == Some(true) {
+                        "cancel"
+                    } else {
+                        "decline"
+                    };
+                    json!({ "decision": decision })
+                }
             }
             PendingKind::Elicitation => {
                 // respond_elicitation sends {action, content?}.
@@ -562,8 +599,20 @@ impl SessionProtocol for CodexAppServer {
                 build_user_input_result(&response)
             }
         };
-        let _ = pending.method; // method retained for diagnostics/future shape variance.
-        vec![json!({ "jsonrpc": "2.0", "id": pending.raw_id, "result": result })]
+        let mut frames = vec![json!({
+            "jsonrpc": "2.0",
+            "id": pending.raw_id,
+            "result": result
+        })];
+        // The permission-profile response has no cancel decision. Preserve the UI's
+        // deny-and-stop contract by denying the grant first, then interrupting the active turn.
+        if pending.method == M_PERM_APPROVAL
+            && response.get("behavior").and_then(Value::as_str) != Some("allow")
+            && response.get("interrupt").and_then(Value::as_bool) == Some(true)
+        {
+            frames.extend(self.frame_interrupt());
+        }
+        frames
     }
 }
 
@@ -606,6 +655,11 @@ impl CodexAppServer {
         let raw_id = msg.get("id").cloned().unwrap_or(Value::Null);
         let request_id = req_id_str(&raw_id);
         let params = msg.get("params").cloned().unwrap_or(Value::Null);
+        log::debug!(
+            "[codex_appserver] interactive request: method={}, request_id={}",
+            method,
+            request_id
+        );
 
         let (kind, events) = match method {
             M_CMD_APPROVAL | M_CMD_APPROVAL_LEGACY => (
@@ -618,7 +672,12 @@ impl CodexAppServer {
             ),
             M_PERM_APPROVAL => (
                 PendingKind::Permission,
-                vec![approval_prompt(run_id, &request_id, "Bash", &params)],
+                vec![approval_prompt(
+                    run_id,
+                    &request_id,
+                    "RequestPermissions",
+                    &params,
+                )],
             ),
             M_REQUEST_USER_INPUT => (
                 PendingKind::UserInput,
@@ -636,6 +695,11 @@ impl CodexAppServer {
             PendingServerReq {
                 raw_id,
                 method: method.to_string(),
+                requested_permissions: if method == M_PERM_APPROVAL {
+                    params.get("permissions").cloned()
+                } else {
+                    None
+                },
             },
         );
         out.events = events;
@@ -979,6 +1043,9 @@ fn approval_prompt(run_id: &str, request_id: &str, tool_name: &str, params: &Val
     }
     if let Some(c) = cwd {
         input.insert("cwd".into(), c);
+    }
+    if let Some(permissions) = params.get("permissions") {
+        input.insert("permissions".into(), permissions.clone());
     }
     // Carry the file-change patch through verbatim if present.
     if let Some(changes) = params.get("changes") {
@@ -1868,6 +1935,73 @@ mod tests {
         s2.parse_line("run1", line);
         let resp2 = s2.frame_response(PendingKind::Permission, "0", json!({"behavior":"deny"}));
         assert_eq!(resp2[0]["result"]["decision"], "decline");
+
+        let mut s3 = ready_server();
+        s3.parse_line("run1", line);
+        let resp3 = s3.frame_response(
+            PendingKind::Permission,
+            "0",
+            json!({"behavior":"deny", "interrupt":true}),
+        );
+        assert_eq!(resp3[0]["result"]["decision"], "cancel");
+    }
+
+    #[test]
+    fn permissions_approval_returns_granted_subset_or_empty_profile() {
+        let line = r#"{"id":61,"method":"item/permissions/requestApproval","params":{"threadId":"th-123","turnId":"turn-1","itemId":"call-1","cwd":"/project","reason":"Allow workspace writes","permissions":{"fileSystem":{"write":["/project","/shared"]},"network":{"enabled":true}}}}"#;
+
+        let mut allowed = ready_server();
+        let out = allowed.parse_line("run1", line);
+        let pi = out.interactive.expect("interactive");
+        assert_eq!(pi.kind, PendingKind::Permission);
+        match &out.events[0] {
+            BusEvent::PermissionPrompt {
+                tool_name,
+                tool_input,
+                decision_reason,
+                ..
+            } => {
+                assert_eq!(tool_name, "RequestPermissions");
+                assert_eq!(tool_input["cwd"], "/project");
+                assert_eq!(tool_input["permissions"]["network"]["enabled"], true);
+                assert_eq!(decision_reason, "Allow workspace writes");
+            }
+            event => panic!("expected PermissionPrompt, got {event:?}"),
+        }
+        let response = allowed.frame_response(
+            PendingKind::Permission,
+            &pi.request_id,
+            json!({"behavior":"allow"}),
+        );
+        assert_eq!(response[0]["id"], 61);
+        assert_eq!(
+            response[0]["result"]["permissions"],
+            json!({
+                "fileSystem": {"write": ["/project", "/shared"]},
+                "network": {"enabled": true}
+            })
+        );
+        assert_eq!(response[0]["result"]["scope"], "turn");
+        assert!(response[0]["result"].get("decision").is_none());
+
+        let mut denied = ready_server();
+        denied.parse_line(
+            "run1",
+            r#"{"method":"turn/started","params":{"turn":{"id":"turn-1"}}}"#,
+        );
+        let out = denied.parse_line("run1", line);
+        let request_id = out.interactive.expect("interactive").request_id;
+        let response = denied.frame_response(
+            PendingKind::Permission,
+            &request_id,
+            json!({"behavior":"deny", "interrupt":true}),
+        );
+        assert_eq!(response[0]["result"]["permissions"], json!({}));
+        assert_eq!(response[0]["result"]["scope"], "turn");
+        assert!(response[0]["result"].get("decision").is_none());
+        assert_eq!(response[1]["method"], "turn/interrupt");
+        assert_eq!(response[1]["params"]["threadId"], "th-123");
+        assert_eq!(response[1]["params"]["turnId"], "turn-1");
     }
 
     #[test]
@@ -2655,9 +2789,18 @@ mod tests {
     #[test]
     fn interrupt_after_ready() {
         let mut s = ready_server();
+        assert!(
+            s.frame_interrupt().is_empty(),
+            "ready thread with no active turn must not send an invalid interrupt"
+        );
+        s.parse_line(
+            "r",
+            r#"{"method":"turn/started","params":{"turn":{"id":"turn-123"}}}"#,
+        );
         let msgs = s.frame_interrupt();
         assert_eq!(msgs[0]["method"], "turn/interrupt");
         assert_eq!(msgs[0]["params"]["threadId"], "th-123");
+        assert_eq!(msgs[0]["params"]["turnId"], "turn-123");
     }
 
     // ── Wave-3: data-returning frame methods + response correlation ──────────────────────

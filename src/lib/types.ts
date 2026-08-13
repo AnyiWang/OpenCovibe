@@ -1207,6 +1207,8 @@ export interface BusToolItem {
     | "rejected";
   /** For permission_prompt status: the control_request ID needed to respond. */
   permission_request_id?: string;
+  /** Human-readable reason supplied by the CLI for the pending permission request. */
+  permission_reason?: string;
   duration_ms?: number;
   /** Real-time elapsed time from tool_progress (seconds, float). */
   elapsed_time_seconds?: number;

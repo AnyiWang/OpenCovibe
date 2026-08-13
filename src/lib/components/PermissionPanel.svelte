@@ -1,7 +1,11 @@
 <script lang="ts">
   import type { BusToolItem, PermissionSuggestion } from "$lib/types";
   import { getToolColor } from "$lib/utils/tool-colors";
-  import { getToolDetail, formatSuggestionLabel } from "$lib/utils/tool-rendering";
+  import {
+    getToolDetail,
+    getPermissionProfileDetails,
+    formatSuggestionLabel,
+  } from "$lib/utils/tool-rendering";
   import { isAbsolutePath } from "$lib/utils/format";
   import { t } from "$lib/i18n/index.svelte";
   import { dbg, dbgWarn } from "$lib/utils/debug";
@@ -119,6 +123,10 @@
         {@const item = pendingTools[0]}
         {@const style = getToolColor(item.tool.tool_name)}
         {@const detail = getToolDetail(item.tool.input)}
+        {@const permissionDetails = getPermissionProfileDetails(
+          item.tool.input,
+          t as (key: string, params?: Record<string, string>) => string,
+        )}
         {@const isPath = !!(detail && isAbsolutePath(detail))}
         {@const busy = submittingAll || submittingIds.has(item.requestId)}
         <div class="px-4 py-3">
@@ -146,9 +154,20 @@
             {t("inline_agentWantsToUse", { agent: agentDisplayName })}
             <strong>{item.tool.tool_name}</strong>
           </p>
-          {#if detail}
+          {#if item.tool.permission_reason}
+            <p class="mb-2 whitespace-pre-wrap break-words text-xs text-foreground/80">
+              {t("perm_requestReason", { reason: item.tool.permission_reason })}
+            </p>
+          {/if}
+          {#if permissionDetails.length > 0}
+            <ul class="mb-2 space-y-1 text-xs text-muted-foreground">
+              {#each permissionDetails as permissionDetail}
+                <li class="whitespace-pre-wrap break-all">• {permissionDetail}</li>
+              {/each}
+            </ul>
+          {:else if detail}
             <p
-              class="text-xs text-muted-foreground mb-2 truncate"
+              class="text-xs text-muted-foreground mb-2 whitespace-pre-wrap break-all"
               style:direction={isPath ? "rtl" : undefined}
               style:text-align={isPath ? "left" : undefined}
             >
@@ -212,50 +231,69 @@
             {#each pendingTools as item (item.requestId)}
               {@const style = getToolColor(item.tool.tool_name)}
               {@const detail = getToolDetail(item.tool.input)}
+              {@const permissionDetails = getPermissionProfileDetails(
+                item.tool.input,
+                t as (key: string, params?: Record<string, string>) => string,
+              )}
               {@const isPath = !!(detail && isAbsolutePath(detail))}
               {@const busy = submittingAll || submittingIds.has(item.requestId)}
-              <div
-                class="flex items-center gap-2 rounded-md px-2 py-1.5 hover:bg-muted/30 transition-colors group"
-              >
-                <!-- Tool icon -->
-                <div class="flex h-4 w-4 shrink-0 items-center justify-center rounded {style.bg}">
-                  <svg
-                    class="h-2.5 w-2.5 {style.text}"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="2"
-                    stroke-linecap="round"
-                    stroke-linejoin="round"><path d={style.icon} /></svg
-                  >
-                </div>
-                <!-- Tool name -->
-                <span class="text-xs font-medium text-foreground w-14 shrink-0 truncate">
-                  {item.tool.tool_name}
-                </span>
-                <!-- Detail -->
-                <span
-                  class="text-xs text-muted-foreground flex-1 min-w-0 truncate"
-                  style:direction={isPath ? "rtl" : undefined}
-                  style:text-align={isPath ? "left" : undefined}
-                >
-                  {#if isPath}<bdi>{detail}</bdi>{:else}{detail}{/if}
-                </span>
-                <!-- Per-row buttons -->
-                <div class="flex items-center gap-1 shrink-0">
-                  <button
-                    class="rounded px-2 py-0.5 text-[10px] font-medium bg-emerald-600/80 text-white hover:bg-emerald-500 transition-all disabled:opacity-50"
-                    disabled={busy}
-                    onclick={() =>
-                      respondSingle(item.requestId, "allow", undefined, item.tool.input)}
-                    >{t("common_allow")}</button
-                  >
-                  <button
-                    class="rounded px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground hover:text-red-500 hover:bg-red-500/10 transition-all disabled:opacity-50"
-                    disabled={busy}
-                    onclick={() => respondSingle(item.requestId, "deny")}
-                    title={t("common_deny")}>&times;</button
-                  >
+              <div class="rounded-md px-2 py-1.5 hover:bg-muted/30 transition-colors group">
+                <div class="flex items-start gap-2">
+                  <!-- Tool icon -->
+                  <div class="flex h-4 w-4 shrink-0 items-center justify-center rounded {style.bg}">
+                    <svg
+                      class="h-2.5 w-2.5 {style.text}"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"><path d={style.icon} /></svg
+                    >
+                  </div>
+                  <!-- Tool name -->
+                  <span class="text-xs font-medium text-foreground w-14 shrink-0 truncate">
+                    {item.tool.tool_name}
+                  </span>
+                  <!-- Detail -->
+                  <div class="min-w-0 flex-1 text-xs text-muted-foreground">
+                    {#if item.tool.permission_reason}
+                      <p class="mb-1 whitespace-pre-wrap break-words text-foreground/80">
+                        {t("perm_requestReason", { reason: item.tool.permission_reason })}
+                      </p>
+                    {/if}
+                    {#if permissionDetails.length > 0}
+                      <ul class="space-y-0.5">
+                        {#each permissionDetails as permissionDetail}
+                          <li class="whitespace-pre-wrap break-all">• {permissionDetail}</li>
+                        {/each}
+                      </ul>
+                    {:else}
+                      <span
+                        class="whitespace-pre-wrap break-all"
+                        style:direction={isPath ? "rtl" : undefined}
+                        style:text-align={isPath ? "left" : undefined}
+                      >
+                        {#if isPath}<bdi>{detail}</bdi>{:else}{detail}{/if}
+                      </span>
+                    {/if}
+                  </div>
+                  <!-- Per-row buttons -->
+                  <div class="flex items-center gap-1 shrink-0">
+                    <button
+                      class="rounded px-2 py-0.5 text-[10px] font-medium bg-emerald-600/80 text-white hover:bg-emerald-500 transition-all disabled:opacity-50"
+                      disabled={busy}
+                      onclick={() =>
+                        respondSingle(item.requestId, "allow", undefined, item.tool.input)}
+                      >{t("common_allow")}</button
+                    >
+                    <button
+                      class="rounded px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground hover:text-red-500 hover:bg-red-500/10 transition-all disabled:opacity-50"
+                      disabled={busy}
+                      onclick={() => respondSingle(item.requestId, "deny")}
+                      title={t("common_deny")}>&times;</button
+                    >
+                  </div>
                 </div>
               </div>
               <!-- Suggestions for this tool (indented sub-row) -->
