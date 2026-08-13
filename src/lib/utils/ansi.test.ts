@@ -24,14 +24,27 @@ describe("ansiToHtml", () => {
 
   it("standard SGR color: green", () => {
     const result = ansiToHtml("\x1b[32mgreen\x1b[0m");
-    expect(result).toContain('style="color:#22c55e"');
+    expect(result).toContain('class="ansi-fg-green"');
     expect(result).toContain("green</span>");
   });
 
   it("multiple attributes: bold + red", () => {
     const result = ansiToHtml("\x1b[1;31mbold red\x1b[0m");
-    expect(result).toContain("color:#ef4444");
+    expect(result).toContain('class="ansi-fg-red"');
     expect(result).toContain("font-weight:bold");
+  });
+
+  it("uses theme classes for standard white and bright white", () => {
+    const result = ansiToHtml("\x1b[37mwhite\x1b[97mbright\x1b[0m");
+    expect(result).toContain('class="ansi-fg-white"');
+    expect(result).toContain('class="ansi-fg-bright-white"');
+    expect(result).not.toContain("#d1d5db");
+    expect(result).not.toContain("#f3f4f6");
+  });
+
+  it("combines semantic foreground and background classes", () => {
+    const result = ansiToHtml("\x1b[31;47mwarning\x1b[0m");
+    expect(result).toContain('class="ansi-fg-red ansi-bg-white"');
   });
 
   it("unclosed sequence: auto-closes span", () => {
@@ -50,6 +63,13 @@ describe("ansiToHtml", () => {
     // 196 = bright red in 256-color palette (color cube)
     expect(result).toContain("color:#");
     expect(result).toContain("red</span>");
+  });
+
+  it("maps the first 16 indexed colors to theme classes", () => {
+    const result = ansiToHtml("\x1b[38;5;15mwhite\x1b[48;5;0m on black\x1b[0m");
+    expect(result).toContain('class="ansi-fg-bright-white"');
+    expect(result).toContain('class="ansi-fg-bright-white ansi-bg-black"');
+    expect(result).not.toContain("#ffffff");
   });
 
   it("strips non-SGR CSI sequences from output", () => {

@@ -59,6 +59,19 @@
   import { getTransport } from "$lib/transport";
   import { version as packageVersion } from "../../package.json";
   import {
+    THEME_CONTEXT,
+    applyThemeClasses,
+    getSystemThemeQuery,
+    nextThemeMode,
+    persistColorScheme,
+    persistThemeMode,
+    readStoredColorScheme,
+    readStoredTheme,
+    type ColorScheme,
+    type ThemeController,
+    type ThemeMode,
+  } from "$lib/utils/theme";
+  import {
     t,
     LOCALE_REGISTRY,
     getEntry,
@@ -118,30 +131,45 @@
   let settings = $state<UserSettings | null>(null);
   let sidebarOpen = $state(true);
   let projectCwd = $state("");
-  type ThemeMode = "light" | "dark" | "system";
-  type ColorScheme = "warm" | "neutral";
+
+  function getThemeStorage(): Storage | null {
+    try {
+      return window.localStorage;
+    } catch {
+      return null;
+    }
+  }
 
   function getInitialTheme(): ThemeMode {
     if (typeof window === "undefined") return "dark";
-    const saved = localStorage.getItem("ocv:theme");
-    if (saved === "light" || saved === "dark" || saved === "system") return saved;
-    return "dark";
+    const stored = readStoredTheme(getThemeStorage());
+    if (!stored.storageAvailable) dbgWarn("layout", "theme storage read failed");
+    return stored.mode;
   }
 
   function getInitialScheme(): ColorScheme {
     if (typeof window === "undefined") return "warm";
-    const saved = localStorage.getItem("ocv:colorScheme");
-    return saved === "neutral" ? "neutral" : "warm";
+    const stored = readStoredColorScheme(getThemeStorage());
+    if (!stored.storageAvailable) dbgWarn("layout", "color scheme storage read failed");
+    return stored.scheme;
   }
 
   let themeMode = $state<ThemeMode>(getInitialTheme());
   let colorScheme = $state<ColorScheme>(getInitialScheme());
   let systemDark = $state(
-    typeof window !== "undefined"
-      ? window.matchMedia("(prefers-color-scheme: dark)").matches
-      : true,
+    getSystemThemeQuery(typeof window === "undefined" ? null : window)?.matches ?? true,
   );
   let effectiveDark = $derived(themeMode === "system" ? systemDark : themeMode === "dark");
+  const themeController: ThemeController = {
+    get mode() {
+      return themeMode;
+    },
+    setMode(mode) {
+      themeMode = mode;
+      dbg("layout", "theme selected", { mode });
+    },
+  };
+  setContext(THEME_CONTEXT, themeController);
   let pinnedCwds = $state<string[]>([]);
   let removedCwds = $state<string[]>([]);
 
@@ -1152,9 +1180,7 @@
   setContext("toggleSidebar", toggleSidebar);
 
   function cycleTheme() {
-    const order: ThemeMode[] = ["dark", "light", "system"];
-    const idx = order.indexOf(themeMode);
-    themeMode = order[(idx + 1) % order.length];
+    themeMode = nextThemeMode(themeMode);
     dbg("layout", "theme cycled", { themeMode, effectiveDark });
   }
 
@@ -1165,14 +1191,20 @@
 
   // Persist theme + apply class
   $effect(() => {
-    localStorage.setItem("ocv:theme", themeMode);
-    document.documentElement.classList.toggle("dark", effectiveDark);
+    applyThemeClasses(document.documentElement, themeMode, systemDark);
+    if (!persistThemeMode(getThemeStorage(), themeMode)) {
+      // Theme selection stays usable for this view even if persistence is unavailable.
+      dbgWarn("layout", "theme storage write failed");
+    }
   });
 
   // Persist color scheme + apply class
   $effect(() => {
-    localStorage.setItem("ocv:colorScheme", colorScheme);
     document.documentElement.classList.toggle("scheme-neutral", colorScheme === "neutral");
+    if (!persistColorScheme(getThemeStorage(), colorScheme)) {
+      // Keep the selected scheme in memory when persistence is unavailable.
+      dbgWarn("layout", "color scheme storage write failed");
+    }
   });
 
   // Auto-expand folder containing selected run (chats tab only)
@@ -1229,13 +1261,18 @@
 
   // Listen for system preference changes
   onMount(() => {
-    const mq = window.matchMedia("(prefers-color-scheme: dark)");
+    const mq = getSystemThemeQuery(window);
+    if (!mq) {
+      dbgWarn("layout", "system theme query unavailable");
+      return;
+    }
     function onSystemChange(e: MediaQueryListEvent) {
       systemDark = e.matches;
+      dbg("layout", "system theme changed", { systemDark: e.matches, themeMode });
     }
     mq.addEventListener("change", onSystemChange);
     // Apply initial theme
-    document.documentElement.classList.toggle("dark", effectiveDark);
+    applyThemeClasses(document.documentElement, themeMode, systemDark);
     return () => mq.removeEventListener("change", onSystemChange);
   });
 
@@ -1469,11 +1506,20 @@
           <button
             class="flex h-9 w-9 items-center justify-center rounded-md text-sidebar-foreground hover:bg-sidebar-accent/50 transition-colors duration-150"
             onclick={cycleTheme}
+            aria-label={themeMode === "dark"
+              ? t("layout_themeTitle_dark")
+              : themeMode === "light"
+                ? t("layout_themeTitle_light")
+                : themeMode === "high-contrast"
+                  ? t("layout_themeTitle_highContrast")
+                  : t("layout_themeTitle_system")}
             title={themeMode === "dark"
               ? t("layout_themeTitle_dark")
               : themeMode === "light"
                 ? t("layout_themeTitle_light")
-                : t("layout_themeTitle_system")}
+                : themeMode === "high-contrast"
+                  ? t("layout_themeTitle_highContrast")
+                  : t("layout_themeTitle_system")}
           >
             {#if themeMode === "dark"}
               <!-- Moon icon (dark mode active) -->
@@ -1494,6 +1540,19 @@
                 stroke-width="2"
                 ><circle cx="12" cy="12" r="4" /><path
                   d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"
+                /></svg
+              >
+            {:else if themeMode === "high-contrast"}
+              <!-- Split circle icon (high-contrast mode active) -->
+              <svg
+                class="h-[18px] w-[18px]"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                ><circle cx="12" cy="12" r="9" /><path
+                  d="M12 3a9 9 0 0 1 0 18Z"
+                  fill="currentColor"
                 /></svg
               >
             {:else}

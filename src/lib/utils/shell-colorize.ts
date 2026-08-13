@@ -9,19 +9,20 @@
 import { escapeHtml } from "./ansi";
 import { dbg } from "./debug";
 
-// Color palette (terminal-inspired)
+// Syntax token CSS classes — actual colors live in app.css (.sh-*) so they can
+// switch with the light/dark theme instead of being baked into inline styles.
 const C = {
-  prompt: "#4ade80", // bright green — $ prompt
-  command: "#e5e7eb", // white/bright — command name
-  flag: "#22d3ee", // cyan — --flags, -f
-  string: "#facc15", // yellow — "quoted" / 'quoted'
-  operator: "#c084fc", // magenta — |, &&, ||, ;, >, >>, <, 2>&1
-  assign: "#22d3ee", // cyan — FOO=bar env var assignment
-  arg: "#9ca3af", // default gray — other arguments
+  prompt: "sh-prompt", // $ prompt
+  command: "sh-command", // command name
+  flag: "sh-flag", // --flags, -f
+  string: "sh-string", // "quoted" / 'quoted'
+  operator: "sh-operator", // |, &&, ||, ;, >, >>, <, 2>&1
+  assign: "sh-assign", // FOO=bar env var assignment
+  arg: "sh-arg", // other arguments
 } as const;
 
-function span(color: string, text: string): string {
-  return `<span style="color:${color}">${text}</span>`;
+function span(cls: string, text: string): string {
+  return `<span class="${cls}">${text}</span>`;
 }
 
 // Regex to tokenize shell commands into meaningful pieces
