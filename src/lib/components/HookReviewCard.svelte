@@ -13,18 +13,19 @@
       request_id?: string;
       status?: string;
     };
-    onRespond: (requestId: string, decision: "allow" | "deny") => void | Promise<void>;
+    onRespond: (requestId: string, decision: "allow" | "deny") => Promise<void>;
   } = $props();
 
   let submitting = $state(false);
 
   // Extract display info from hook data
-  const data = hookEvent.data as Record<string, unknown>;
-  const hookName =
+  let data = $derived(hookEvent.data as Record<string, unknown>);
+  let hookName = $derived(
     (data as { hook_name?: string }).hook_name ??
-    (data as { tool_name?: string }).tool_name ??
-    "Unknown Tool";
-  const hookEventType = (data as { hook_event?: string }).hook_event ?? hookEvent.type;
+      (data as { tool_name?: string }).tool_name ??
+      "Unknown Tool",
+  );
+  let hookEventType = $derived((data as { hook_event?: string }).hook_event ?? hookEvent.type);
 
   async function handleRespond(decision: "allow" | "deny") {
     if (!hookEvent.request_id || submitting) return;
@@ -61,5 +62,13 @@
         onclick={() => handleRespond("deny")}>{t("common_deny")}</button
       >
     </div>
+  </div>
+{:else if hookEvent.status === "responding"}
+  <div class="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 my-2 text-xs text-amber-500">
+    {t("interaction_responsePending")}
+  </div>
+{:else if hookEvent.status === "error"}
+  <div class="rounded-lg border border-red-500/30 bg-red-500/5 p-3 my-2 text-xs text-red-500">
+    {t("interaction_responseFailed")}
   </div>
 {/if}

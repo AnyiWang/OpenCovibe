@@ -13,6 +13,7 @@ pub mod files;
 pub mod fs;
 pub mod git;
 pub mod history;
+pub mod history_pages;
 pub mod mcp;
 pub mod onboarding;
 pub mod plugins;

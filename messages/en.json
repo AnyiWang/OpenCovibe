@@ -1820,5 +1820,19 @@
   "scheduled_tasks_cancelTimeout": "Still active — try again",
   "scheduled_tasks_waitForTurn": "Wait for current turn",
   "scheduled_tasks_oneShot": "Once",
-  "scheduled_tasks_expiryNote": "Tasks expire after 7 days (CLI managed)"
+  "scheduled_tasks_expiryNote": "Tasks expire after 7 days (CLI managed)",
+  "interaction_responsePending": "Response sent; delivery confirmation is pending.",
+  "interaction_responseFailed": "Response delivery could not be confirmed. Check the session before continuing.",
+  "historyContent_window": "Showing a bounded window from byte {offset}",
+  "historyContent_preview": "Preview shown · {bytes} bytes total",
+  "historyContent_loading": "Loading…",
+  "historyContent_loaded": "All loaded chunks shown",
+  "historyContent_retry": "Retry chunk",
+  "historyContent_loadNext": "Load next chunk",
+  "historyContent_thinking": "Full thinking",
+  "historyContent_toolInput": "Full tool input",
+  "historyContent_toolOutput": "Full tool output",
+  "historyContent_toolResult": "Full tool result",
+  "historyContent_unavailable": "Full legacy tool details are unavailable",
+  "historySub_loadEarlier": "Load earlier sub-agent history"
 }

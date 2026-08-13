@@ -13,7 +13,7 @@ export interface Transport {
   listen<T>(event: string, handler: (payload: T) => void): Promise<() => void>;
   isDesktop(): boolean;
   /** Subscribe to a run's real-time events (WS only, no-op on desktop) */
-  subscribeRun(runId: string, lastSeq?: number): void;
+  subscribeRun(runId: string, lastSeq?: number, recovery?: "history" | "live"): Promise<void>;
   /** Unsubscribe from a run's events (WS only, no-op on desktop) */
   unsubscribeRun(runId: string): void;
 }

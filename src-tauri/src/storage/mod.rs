@@ -9,6 +9,7 @@ pub mod codex_usage;
 pub mod community_skills;
 pub mod events;
 pub mod favorites;
+pub mod history;
 pub mod mcp_registry;
 pub mod plugins;
 pub mod prompt_index;
@@ -17,7 +18,77 @@ pub mod runs;
 pub mod settings;
 pub mod teams;
 
-use std::path::PathBuf;
+use std::fs::{File, OpenOptions};
+use std::path::{Path, PathBuf};
+
+/// Held for the complete application lifetime so every file under `~/.opencovibe` has one writer.
+/// Process-local mutexes in the event and history modules rely on this external invariant.
+pub struct DataDirLock {
+    _file: File,
+}
+
+impl DataDirLock {
+    pub fn acquire() -> Result<Self, String> {
+        let dir = data_dir();
+        ensure_dir(&dir).map_err(|e| format!("create data directory: {e}"))?;
+        Self::acquire_at(&dir.join(".writer.lock"))
+    }
+
+    fn acquire_at(path: &Path) -> Result<Self, String> {
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd;
+
+            let file = OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .read(true)
+                .write(true)
+                .open(path)
+                .map_err(|e| format!("open data writer lock: {e}"))?;
+            let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+            if result != 0 {
+                return Err(format!(
+                    "another OpenCovibe instance is already using {}",
+                    data_dir().display()
+                ));
+            }
+            Ok(Self { _file: file })
+        }
+
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+
+            // A zero share mode makes the open file itself the lifetime lock. Windows releases it
+            // on crash, so a stale marker can never block the next application start.
+            let file = OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .read(true)
+                .write(true)
+                .share_mode(0)
+                .open(path)
+                .map_err(|_| {
+                    format!(
+                        "another OpenCovibe instance is already using {}",
+                        data_dir().display()
+                    )
+                })?;
+            Ok(Self { _file: file })
+        }
+
+        #[cfg(not(any(unix, windows)))]
+        {
+            let file = OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .open(path)
+                .map_err(|e| format!("acquire data writer lock: {e}"))?;
+            Ok(Self { _file: file })
+        }
+    }
+}
 
 pub fn data_dir() -> PathBuf {
     let home = dirs_next().expect("Could not determine home directory");
@@ -92,4 +163,19 @@ pub fn ensure_dir(path: &std::path::Path) -> std::io::Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod data_dir_lock_tests {
+    use super::DataDirLock;
+
+    #[test]
+    fn data_dir_lock_is_exclusive_and_released_on_drop() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("writer.lock");
+        let first = DataDirLock::acquire_at(&path).unwrap();
+        assert!(DataDirLock::acquire_at(&path).is_err());
+        drop(first);
+        DataDirLock::acquire_at(&path).unwrap();
+    }
 }

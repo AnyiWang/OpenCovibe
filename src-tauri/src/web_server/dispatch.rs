@@ -165,6 +165,95 @@ pub async fn dispatch_command(
             let events = crate::storage::events::list_bus_events(&id, since_seq);
             Ok(Value::Array(events))
         }
+        "get_bus_events_page" => {
+            let id = extract_str(&params, "id")?;
+            let since_seq = extract_u64(&params, "since_seq")?;
+            let offset = params.get("offset").and_then(|value| value.as_u64());
+            crate::storage::runs::get_run(&id).ok_or_else(|| format!("Run {} not found", id))?;
+            let page = crate::storage::events::list_bus_events_page(&id, since_seq, offset)?;
+            serde_json::to_value(page).map_err(|e| e.to_string())
+        }
+        "get_history_summary" => {
+            let run_id = extract_str(&params, "run_id")?;
+            let refresh = params
+                .get("refresh")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            crate::storage::runs::get_run(&run_id)
+                .ok_or_else(|| format!("Run {run_id} not found"))?;
+            let result = tokio::task::spawn_blocking(move || {
+                crate::storage::history::get_summary(&run_id, refresh)
+            })
+            .await
+            .map_err(|e| format!("history build task failed: {e}"))??;
+            serde_json::to_value(result).map_err(|e| e.to_string())
+        }
+        "get_history_page" => {
+            let run_id = extract_str(&params, "run_id")?;
+            let generation_id = params
+                .get("generation_id")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            let before_cursor = params
+                .get("before_cursor")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            crate::storage::runs::get_run(&run_id)
+                .ok_or_else(|| format!("Run {run_id} not found"))?;
+            let result = tokio::task::spawn_blocking(move || {
+                crate::storage::history::get_page(
+                    &run_id,
+                    generation_id.as_deref(),
+                    before_cursor.as_deref(),
+                )
+            })
+            .await
+            .map_err(|e| format!("history page task failed: {e}"))??;
+            serde_json::to_value(result).map_err(|e| e.to_string())
+        }
+        "get_history_content_chunk" => {
+            let run_id = extract_str(&params, "run_id")?;
+            let generation_id = extract_str(&params, "generation_id")?;
+            let content_id = extract_str(&params, "content_id")?;
+            let offset = extract_u64(&params, "offset")?;
+            let max_bytes = extract_u64(&params, "max_bytes")? as usize;
+            crate::storage::runs::get_run(&run_id)
+                .ok_or_else(|| format!("Run {run_id} not found"))?;
+            let result = tokio::task::spawn_blocking(move || {
+                crate::storage::history::get_content_chunk(
+                    &run_id,
+                    &generation_id,
+                    &content_id,
+                    offset,
+                    max_bytes,
+                )
+            })
+            .await
+            .map_err(|e| format!("history content task failed: {e}"))??;
+            serde_json::to_value(result).map_err(|e| e.to_string())
+        }
+        "get_subhistory_page" => {
+            let run_id = extract_str(&params, "run_id")?;
+            let generation_id = extract_str(&params, "generation_id")?;
+            let sub_history_id = extract_str(&params, "sub_history_id")?;
+            let before_cursor = params
+                .get("before_cursor")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            crate::storage::runs::get_run(&run_id)
+                .ok_or_else(|| format!("Run {run_id} not found"))?;
+            let result = tokio::task::spawn_blocking(move || {
+                crate::storage::history::get_subhistory_page(
+                    &run_id,
+                    &generation_id,
+                    &sub_history_id,
+                    before_cursor.as_deref(),
+                )
+            })
+            .await
+            .map_err(|e| format!("subhistory page task failed: {e}"))??;
+            serde_json::to_value(result).map_err(|e| e.to_string())
+        }
 
         // ── Artifacts ──
         "get_run_artifacts" => {

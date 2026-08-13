@@ -1447,6 +1447,32 @@ pub enum BusEvent {
     },
     /// CLI cancelled a pending control_request (e.g. cancelled permission prompt).
     ControlCancelled { run_id: String, request_id: String },
+    /// Durable intent written before an interactive response is sent to the CLI.
+    /// Recovery treats this as non-retryable because a process can die after the wire write.
+    InteractionResponseStarted {
+        run_id: String,
+        request_id: String,
+        interaction_kind: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        resolution: Option<String>,
+    },
+    /// The CLI response write failed after its durable intent was recorded.
+    InteractionResponseFailed {
+        run_id: String,
+        request_id: String,
+        interaction_kind: String,
+        error: String,
+    },
+    /// The app successfully delivered a response for an interactive control request.
+    /// Persisted separately from cancellation so history rebuilds do not restore answered cards.
+    InteractionResolved {
+        run_id: String,
+        request_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        interaction_kind: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        resolution: Option<String>,
+    },
     /// Output from a CLI slash command (e.g. /context, /cost).
     /// Extracted from `<local-command-stdout>` tags in user messages.
     CommandOutput { run_id: String, content: String },

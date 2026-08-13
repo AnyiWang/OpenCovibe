@@ -17,8 +17,8 @@ const DB_NAME = "opencovibe-snapshot";
 const DB_VERSION = 1;
 const STORE_NAME = "snapshots";
 
-/** Bump when reducer logic changes to invalidate all cached snapshots. */
-const SNAPSHOT_VERSION = 2;
+/** Bump because paged history no longer restores full timeline snapshots. */
+const SNAPSHOT_VERSION = 3;
 
 interface SnapshotRecord {
   runId: string; // primary key

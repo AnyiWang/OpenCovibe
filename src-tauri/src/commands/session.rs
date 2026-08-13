@@ -1048,6 +1048,16 @@ pub fn get_bus_events(
     Ok(storage::events::list_bus_events(&id, since_seq))
 }
 
+#[tauri::command]
+pub fn get_bus_events_page(
+    id: String,
+    since_seq: u64,
+    offset: Option<u64>,
+) -> Result<storage::events::BusEventPage, String> {
+    storage::runs::get_run(&id).ok_or_else(|| format!("Run {} not found", id))?;
+    storage::events::list_bus_events_page(&id, since_seq, offset)
+}
+
 pub(crate) async fn fork_session_impl(
     emitter: &Arc<BroadcastEmitter>,
     sessions: &ActorSessionMap,

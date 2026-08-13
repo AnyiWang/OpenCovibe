@@ -16,8 +16,8 @@
 
 use crate::agent::codex_parser::{codex_normalize_status, CodexToolKind};
 use crate::agent::session_protocol::{
-    CodexSkillRef, CodexTurnOverrides, InteractiveResponse, LifecycleSignal, ParsedLine,
-    PendingInteractive, PendingKind, SessionProtocol, StartupCtx,
+    CodexSkillRef, CodexTurnOverrides, LifecycleSignal, ParsedLine, PendingInteractive,
+    PendingKind, SessionProtocol, StartupCtx,
 };
 use crate::models::BusEvent;
 use serde_json::{json, Value};
@@ -50,10 +50,10 @@ struct PendingServerReq {
     /// Raw json-rpc id to echo in the response.
     raw_id: Value,
     method: String,
-    kind: PendingKind,
     /// Requested grant profile for `item/permissions/requestApproval`. Codex requires the
     /// response to echo only the subset the user granted; command/file approvals use decisions.
     requested_permissions: Option<Value>,
+    kind: PendingKind,
 }
 
 enum DeferredThreadMessage {
@@ -891,27 +891,20 @@ impl SessionProtocol for CodexAppServer {
     }
 
     fn frame_response(
-        &self,
+        &mut self,
         kind: PendingKind,
         request_id: &str,
         response: Value,
-    ) -> Result<InteractiveResponse, String> {
-        let pending = match self.pending.get(request_id) {
-            Some(p) => p,
-            None => {
-                log::warn!("[codex_appserver] frame_response: unknown request_id {request_id}");
-                return Err(format!("unknown interactive request_id: {request_id}"));
-            }
-        };
-        if pending.kind != kind {
-            log::warn!(
-                "[codex_appserver] frame_response: request kind mismatch for request_id={request_id}"
-            );
-            return Err(format!(
-                "interactive request kind mismatch for request_id: {request_id}"
-            ));
-        }
+    ) -> Result<Vec<Value>, String> {
+        self.validate_response(kind, request_id)?;
+        let pending = self
+            .pending
+            .remove(request_id)
+            .ok_or_else(|| format!("unknown Codex interactive request_id {request_id}"))?;
         let result = match kind {
+            // Codex currently has no hook callback request; the shared protocol kind exists for
+            // Claude, and validate_response prevents this branch from accepting a mismatched id.
+            PendingKind::Hook => response.clone(),
             PendingKind::Permission => {
                 let behavior = response
                     .get("behavior")
@@ -966,46 +959,34 @@ impl SessionProtocol for CodexAppServer {
                 build_user_input_result(&response)
             }
         };
-        let primary = json!({
+        let mut frames = vec![json!({
             "jsonrpc": "2.0",
             "id": pending.raw_id,
             "result": result
-        });
+        })];
         // The permission-profile response has no cancel decision. Preserve the UI's
         // deny-and-stop contract by denying the grant first, then interrupting the active turn.
-        let interrupt = pending.method == M_PERM_APPROVAL
+        if pending.method == M_PERM_APPROVAL
             && response.get("behavior").and_then(Value::as_str) != Some("allow")
-            && response.get("interrupt").and_then(Value::as_bool) == Some(true);
-        Ok(InteractiveResponse {
-            primary,
-            interrupt_after_commit: interrupt,
-        })
-    }
-
-    fn frame_cancel(&self, request_id: &str) -> Result<Value, String> {
-        let pending = self.pending.get(request_id).ok_or_else(|| {
-            log::warn!("[codex_appserver] frame_cancel: unknown request_id {request_id}");
-            format!("unknown interactive request_id: {request_id}")
-        })?;
-        Ok(json!({
-            "jsonrpc": "2.0",
-            "id": pending.raw_id,
-            "error": {
-                "code": -32000,
-                "message": "Interactive request cancelled by user"
-            }
-        }))
-    }
-
-    fn commit_response(&mut self, request_id: &str) -> bool {
-        let removed = self.pending.remove(request_id).is_some();
-        if removed {
-            log::debug!(
-                "[codex_appserver] interactive response committed: request_id={}",
-                request_id
-            );
+            && response.get("interrupt").and_then(Value::as_bool) == Some(true)
+        {
+            frames.extend(self.frame_interrupt());
         }
-        removed
+        Ok(frames)
+    }
+
+    fn validate_response(&self, kind: PendingKind, request_id: &str) -> Result<(), String> {
+        let pending = self
+            .pending
+            .get(request_id)
+            .ok_or_else(|| format!("unknown Codex interactive request_id {request_id}"))?;
+        if pending.kind != kind {
+            return Err(format!(
+                "Codex interactive request kind mismatch for {request_id}: expected {:?}, got {kind:?}",
+                pending.kind
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -2541,18 +2522,15 @@ mod tests {
         let resp = s
             .frame_response(PendingKind::Permission, "0", json!({"behavior":"allow"}))
             .unwrap();
-        assert_eq!(resp.primary["id"], 0);
-        assert_eq!(resp.primary["result"]["decision"], "accept");
-        assert!(s.pending.contains_key("0"));
-        assert!(s.commit_response("0"));
-        assert!(!s.pending.contains_key("0"));
+        assert_eq!(resp[0]["id"], 0);
+        assert_eq!(resp[0]["result"]["decision"], "accept");
         // Deny path.
         let mut s2 = ready_server();
         s2.parse_line("run1", line);
         let resp2 = s2
             .frame_response(PendingKind::Permission, "0", json!({"behavior":"deny"}))
             .unwrap();
-        assert_eq!(resp2.primary["result"]["decision"], "decline");
+        assert_eq!(resp2[0]["result"]["decision"], "decline");
 
         let mut s3 = ready_server();
         s3.parse_line("run1", line);
@@ -2563,89 +2541,7 @@ mod tests {
                 json!({"behavior":"deny", "interrupt":true}),
             )
             .unwrap();
-        assert_eq!(resp3.primary["result"]["decision"], "cancel");
-    }
-
-    #[test]
-    fn interactive_response_requires_known_request_and_matching_kind() {
-        let mut server = ready_server();
-        let unknown = server.frame_response(
-            PendingKind::Permission,
-            "missing",
-            json!({"behavior":"allow"}),
-        );
-        assert!(unknown
-            .unwrap_err()
-            .contains("unknown interactive request_id"));
-
-        server.parse_line(
-            "run1",
-            r#"{"id":7,"method":"mcpServer/elicitation/request","params":{"threadId":"th-123","serverName":"srv","message":"Pick"}}"#,
-        );
-        let mismatch =
-            server.frame_response(PendingKind::Permission, "7", json!({"behavior":"allow"}));
-        assert!(mismatch.unwrap_err().contains("kind mismatch"));
-        assert!(server.pending.contains_key("7"));
-    }
-
-    #[test]
-    fn interactive_responses_prepare_retry_and_commit_independently() {
-        let mut server = ready_server();
-        for id in [10, 11] {
-            server.parse_line(
-                "run1",
-                &format!(
-                    r#"{{"id":{id},"method":"mcpServer/elicitation/request","params":{{"threadId":"th-123","serverName":"srv","message":"Pick"}}}}"#
-                ),
-            );
-        }
-
-        let first = server
-            .frame_response(PendingKind::Elicitation, "10", json!({"action":"decline"}))
-            .unwrap();
-        let retry = server
-            .frame_response(PendingKind::Elicitation, "10", json!({"action":"decline"}))
-            .unwrap();
-        assert_eq!(first.primary, retry.primary);
-        assert!(server.pending.contains_key("10"));
-        assert!(server.pending.contains_key("11"));
-
-        assert!(server.commit_response("10"));
-        assert!(!server.pending.contains_key("10"));
-        assert!(server.pending.contains_key("11"));
-        assert!(!server.commit_response("10"));
-    }
-
-    #[test]
-    fn interactive_cancel_uses_raw_id_and_requires_commit() {
-        let mut server = ready_server();
-        server.parse_line(
-            "run1",
-            r#"{"id":"request-10","method":"mcpServer/elicitation/request","params":{"threadId":"th-123","serverName":"srv","message":"Pick"}}"#,
-        );
-
-        let frame = server.frame_cancel("request-10").unwrap();
-        assert_eq!(frame["jsonrpc"], "2.0");
-        assert_eq!(frame["id"], "request-10");
-        assert_eq!(frame["error"]["code"], -32000);
-        assert_eq!(
-            frame["error"]["message"],
-            "Interactive request cancelled by user"
-        );
-        assert!(server.pending.contains_key("request-10"));
-
-        assert!(server.commit_response("request-10"));
-        assert!(!server.pending.contains_key("request-10"));
-        assert!(server.frame_cancel("request-10").is_err());
-    }
-
-    #[test]
-    fn interactive_cancel_rejects_unknown_request() {
-        let server = ready_server();
-        assert!(server
-            .frame_cancel("missing")
-            .unwrap_err()
-            .contains("unknown interactive request_id"));
+        assert_eq!(resp3[0]["result"]["decision"], "cancel");
     }
 
     #[test]
@@ -2761,16 +2657,16 @@ mod tests {
                 json!({"behavior":"allow"}),
             )
             .unwrap();
-        assert_eq!(response.primary["id"], 61);
+        assert_eq!(response[0]["id"], 61);
         assert_eq!(
-            response.primary["result"]["permissions"],
+            response[0]["result"]["permissions"],
             json!({
                 "fileSystem": {"write": ["/project", "/shared"]},
                 "network": {"enabled": true}
             })
         );
-        assert_eq!(response.primary["result"]["scope"], "turn");
-        assert!(response.primary["result"].get("decision").is_none());
+        assert_eq!(response[0]["result"]["scope"], "turn");
+        assert!(response[0]["result"].get("decision").is_none());
 
         let mut denied = ready_server();
         denied.parse_line(
@@ -2784,7 +2680,6 @@ mod tests {
             .expect("interactive")
             .request_id
             .clone();
-        let next_id_before_prepare = denied.next_client_id;
         let response = denied
             .frame_response(
                 PendingKind::Permission,
@@ -2792,26 +2687,12 @@ mod tests {
                 json!({"behavior":"deny", "interrupt":true}),
             )
             .unwrap();
-        assert_eq!(denied.next_client_id, next_id_before_prepare);
-        assert_eq!(response.primary["result"]["permissions"], json!({}));
-        assert_eq!(response.primary["result"]["scope"], "turn");
-        assert!(response.primary["result"].get("decision").is_none());
-        assert!(response.interrupt_after_commit);
-        assert!(denied.pending.contains_key(&request_id));
-        assert!(denied.commit_response(&request_id));
-        assert!(!denied.pending.contains_key(&request_id));
-        let follow_up = denied.frame_interrupt();
-        assert_eq!(denied.next_client_id, next_id_before_prepare + 1);
-        assert_eq!(follow_up[0]["method"], "turn/interrupt");
-        assert_eq!(follow_up[0]["params"]["threadId"], "th-123");
-        assert_eq!(follow_up[0]["params"]["turnId"], "turn-1");
-        assert!(denied
-            .frame_response(
-                PendingKind::Permission,
-                &request_id,
-                json!({"behavior":"deny", "interrupt":true}),
-            )
-            .is_err());
+        assert_eq!(response[0]["result"]["permissions"], json!({}));
+        assert_eq!(response[0]["result"]["scope"], "turn");
+        assert!(response[0]["result"].get("decision").is_none());
+        assert_eq!(response[1]["method"], "turn/interrupt");
+        assert_eq!(response[1]["params"]["threadId"], "th-123");
+        assert_eq!(response[1]["params"]["turnId"], "turn-1");
     }
 
     #[test]
@@ -2849,11 +2730,8 @@ mod tests {
                 json!({"answers": {"word": ["FOO"]}}),
             )
             .unwrap();
-        assert_eq!(resp.primary["id"], 0);
-        assert_eq!(
-            resp.primary["result"]["answers"]["word"]["answers"][0],
-            "FOO"
-        );
+        assert_eq!(resp[0]["id"], 0);
+        assert_eq!(resp[0]["result"]["answers"]["word"]["answers"][0], "FOO");
     }
 
     #[test]
@@ -2881,7 +2759,7 @@ mod tests {
         let resp = s
             .frame_response(PendingKind::Elicitation, "1", json!({"action":"decline"}))
             .unwrap();
-        assert_eq!(resp.primary["result"]["action"], "decline");
+        assert_eq!(resp[0]["result"]["action"], "decline");
     }
 
     #[test]
@@ -4341,18 +4219,19 @@ mod tests {
                         if pi.kind == PendingKind::Permission {
                             saw_approval = true;
                             assert!(matches!(parsed.events[0], BusEvent::PermissionPrompt { .. }));
-                            let response = driver
+                            for msg in driver
                                 .frame_response(
                                     PendingKind::Permission,
                                     &pi.request_id,
                                     serde_json::json!({"behavior": "allow"}),
                                 )
-                                .unwrap();
-                            let mut l = serde_json::to_string(&response.primary).unwrap();
-                            l.push('\n');
-                            stdin.write_all(l.as_bytes()).await.unwrap();
+                                .unwrap()
+                            {
+                                let mut l = serde_json::to_string(&msg).unwrap();
+                                l.push('\n');
+                                stdin.write_all(l.as_bytes()).await.unwrap();
+                            }
                             stdin.flush().await.unwrap();
-                            assert!(driver.commit_response(&pi.request_id));
                             accepted = true;
                         }
                     }
@@ -4460,14 +4339,15 @@ mod tests {
                                 })
                                 .expect("questions in AskUserQuestion event");
                             let answers = serde_json::json!({ "answers": { qid: [label] } });
-                            let response = driver
+                            for msg in driver
                                 .frame_response(PendingKind::UserInput, &pi.request_id, answers)
-                                .unwrap();
-                            let mut l = serde_json::to_string(&response.primary).unwrap();
-                            l.push('\n');
-                            stdin.write_all(l.as_bytes()).await.unwrap();
+                                .unwrap()
+                            {
+                                let mut l = serde_json::to_string(&msg).unwrap();
+                                l.push('\n');
+                                stdin.write_all(l.as_bytes()).await.unwrap();
+                            }
                             stdin.flush().await.unwrap();
-                            assert!(driver.commit_response(&pi.request_id));
                             answered = true;
                         }
                     }

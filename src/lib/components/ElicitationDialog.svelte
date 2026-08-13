@@ -20,7 +20,15 @@
 
   // Queue strategy: show the first pending elicitation
   let current = $derived.by(() => {
-    const iter = elicitations.values();
+    const values = [...elicitations.values()];
+    const iter = values
+      .sort((left, right) => {
+        const priority = { pending: 0, responding: 1, error: 2 } as const;
+        return (
+          priority[left.responseStatus ?? "pending"] - priority[right.responseStatus ?? "pending"]
+        );
+      })
+      .values();
     const first = iter.next();
     return first.done ? null : first.value;
   });
@@ -156,6 +164,12 @@
       <p class="mb-3 text-sm text-neutral-300">{current.message}</p>
     {/if}
 
+    {#if current.responseStatus === "responding"}
+      <p class="mb-3 text-xs text-amber-400">{t("interaction_responsePending")}</p>
+    {:else if current.responseStatus === "error"}
+      <p class="mb-3 text-xs text-red-400">{t("interaction_responseFailed")}</p>
+    {/if}
+
     <!-- URL mode -->
     {#if current.url}
       <div class="mb-3">
@@ -232,21 +246,23 @@
     {/if}
 
     <!-- Actions -->
-    <div class="flex items-center justify-end gap-2">
-      <button
-        class="rounded px-3 py-1.5 text-xs text-neutral-400 hover:bg-neutral-700 hover:text-neutral-200 disabled:opacity-50"
-        disabled={submitting}
-        onclick={handleDecline}
-      >
-        {t("elicitation_decline")}
-      </button>
-      <button
-        class="rounded bg-blue-600 px-3 py-1.5 text-xs text-white hover:bg-blue-500 disabled:opacity-50"
-        disabled={submitting || missingRequired.length > 0}
-        onclick={handleAccept}
-      >
-        {submitting ? "..." : t("elicitation_accept")}
-      </button>
-    </div>
+    {#if (current.responseStatus ?? "pending") === "pending"}
+      <div class="flex items-center justify-end gap-2">
+        <button
+          class="rounded px-3 py-1.5 text-xs text-neutral-400 hover:bg-neutral-700 hover:text-neutral-200 disabled:opacity-50"
+          disabled={submitting}
+          onclick={handleDecline}
+        >
+          {t("elicitation_decline")}
+        </button>
+        <button
+          class="rounded bg-blue-600 px-3 py-1.5 text-xs text-white hover:bg-blue-500 disabled:opacity-50"
+          disabled={submitting || missingRequired.length > 0}
+          onclick={handleAccept}
+        >
+          {submitting ? "..." : t("elicitation_accept")}
+        </button>
+      </div>
+    {/if}
   </div>
 {/if}

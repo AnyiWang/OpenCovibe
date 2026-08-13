@@ -36,7 +36,6 @@
   } from "$lib/types";
   import { PLATFORM_PRESETS, findCredential } from "$lib/utils/platform-presets";
   import { isKnownAgent, getAgentFeatures } from "$lib/utils/agent-features";
-  import { IS_WEBKIT } from "$lib/utils/platform";
   import {
     detectBatchGroups,
     detectToolBursts,
@@ -51,6 +50,7 @@
   import XTerminal from "$lib/components/XTerminal.svelte";
   import ChatMessage from "$lib/components/ChatMessage.svelte";
   import InlineToolCard from "$lib/components/InlineToolCard.svelte";
+  import HistoryContentPager from "$lib/components/HistoryContentPager.svelte";
   import BatchProgressBar from "$lib/components/BatchProgressBar.svelte";
   import ToolBurstHeader from "$lib/components/ToolBurstHeader.svelte";
   import SessionStatusBar from "$lib/components/SessionStatusBar.svelte";
@@ -86,7 +86,7 @@
     setStoredRemoteCwd,
   } from "$lib/utils/remote-cwd";
   import { shouldAutoName } from "$lib/utils/auto-name";
-  import { resolvePermissionAfterDelivery } from "$lib/utils/resolve-permission";
+  import { resolvePermissionOptimistic } from "$lib/utils/resolve-permission";
   import { getToolColor } from "$lib/utils/tool-colors";
   import { ansiToHtml, hasAnsiCodes } from "$lib/utils/ansi";
   import { randomSpinnerVerb } from "$lib/utils/spinner-verbs";
@@ -133,6 +133,7 @@
   // ── Layout context ──
   const toggleLayoutSidebar = getContext<() => void>("toggleSidebar");
   const keybindingStore = getContext<KeybindingStore>("keybindings");
+  // Global team store (provided by +layout) — fed to the inline agent minimap alongside `store`.
 
   // ── Store + Middleware ──
   const store = new SessionStore();
@@ -404,40 +405,6 @@
   let verboseRetryCount = 0;
   let verboseRetryTimer: ReturnType<typeof setTimeout> | null = null;
   const VERBOSE_MAX_RETRIES = 3;
-
-  // ── Tool result lazy-load cache (Phase 2) ──
-  let toolResultCache = new Map<string, Record<string, unknown>>();
-  let toolResultInflight = new Map<string, Promise<Record<string, unknown> | null>>();
-  // Clear cache on run switch
-  $effect(() => {
-    const _ = store.run?.id;
-    toolResultCache = new Map();
-    toolResultInflight = new Map();
-  });
-
-  async function fetchToolResult(
-    runId: string,
-    toolUseId: string,
-  ): Promise<Record<string, unknown> | null> {
-    const key = `${runId}:${toolUseId}`;
-    const cached = toolResultCache.get(key);
-    if (cached) return cached;
-    let pending = toolResultInflight.get(key);
-    if (!pending) {
-      pending = api.getToolResult(runId, toolUseId);
-      toolResultInflight.set(key, pending);
-    }
-    try {
-      const result = await pending;
-      // Run-gen check: don't write stale results into a different run's cache
-      if (result && store.run?.id === runId) {
-        toolResultCache.set(key, result);
-      }
-      return result;
-    } finally {
-      toolResultInflight.delete(key);
-    }
-  }
 
   // ── Timeline rendering ──
   // Progressive render: start with the most recent N entries, grow on upward scroll.
@@ -877,8 +844,12 @@
         if (!entry?.isIntersecting) return;
         if (!loadMoreArmed || loadingMore) return;
         const hidden = filteredTimeline.length - renderLimit;
-        if (hidden <= 0) return;
-        dbg("chat", "progressive-load-more", { renderLimit, hidden });
+        if (hidden <= 0 && !store.historyHasMore) return;
+        dbg("chat", "progressive-load-more", {
+          renderLimit,
+          hidden,
+          historyHasMore: store.historyHasMore,
+        });
         void loadMoreEarlier();
       },
       { root: chatAreaRef, rootMargin: "200px 0px 0px 0px", threshold: 0 },
@@ -900,15 +871,38 @@
     if (loadingMore || !loadMoreArmed) return;
     loadingMore = true;
     loadMoreArmed = false; // re-armed by handleChatScroll on next user scroll
+    _suppressLoadMoreRearm = true;
+    const gen = progressiveGen;
     try {
       const anchor = chatAreaRef?.querySelector<HTMLElement>("[data-entry-id]") ?? null;
       const anchorId = anchor?.dataset.entryId ?? null;
-      const beforeTop = anchor?.getBoundingClientRect().top ?? 0;
-      const beforeScroll = chatAreaRef?.scrollTop ?? 0;
+      let beforeTop = anchor?.getBoundingClientRect().top ?? 0;
+      let beforeScroll = chatAreaRef?.scrollTop ?? 0;
 
-      renderLimit = Math.min(renderLimit + RENDER_GROWTH_STEP, filteredTimeline.length);
+      const hidden = filteredTimeline.length - renderLimit;
+      if (hidden > 0) {
+        renderLimit = Math.min(renderLimit + RENDER_GROWTH_STEP, filteredTimeline.length);
+      } else if (store.historyHasMore) {
+        const loaded = await store.loadOlderHistory();
+        if (gen !== progressiveGen) return;
+        if (loaded) {
+          renderLimit = Math.min(renderLimit + RENDER_GROWTH_STEP, filteredTimeline.length);
+        }
+      }
+      // The user can keep scrolling while history IPC is in flight. Refresh the anchor baseline
+      // immediately before Svelte commits the prepend so the correction preserves their latest
+      // position instead of snapping back to where the request started.
+      if (anchorId && chatAreaRef) {
+        const currentAnchor = Array.from(
+          chatAreaRef.querySelectorAll<HTMLElement>("[data-entry-id]"),
+        ).find((element) => element.dataset.entryId === anchorId);
+        if (currentAnchor) {
+          beforeTop = currentAnchor.getBoundingClientRect().top;
+          beforeScroll = chatAreaRef.scrollTop;
+        }
+      }
       await tick();
-      await yieldToMain();
+      if (gen !== progressiveGen) return;
 
       if (anchorId && chatAreaRef) {
         let after: HTMLElement | null = null;
@@ -923,36 +917,25 @@
             ) ?? null;
         }
         if (after) {
+          const rendered = Array.from(chatAreaRef.querySelectorAll<HTMLElement>("[data-entry-id]"));
+          const anchorIndex = rendered.indexOf(after);
+          const forced = anchorIndex > 0 ? rendered.slice(0, anchorIndex) : [];
+          const previousVisibility = forced.map((element) => element.style.contentVisibility);
+          // Force the newly prepended entries through layout before measuring. Otherwise
+          // content-visibility contributes its 300px intrinsic estimate and corrects again as
+          // real content approaches the viewport, which presents as a second scroll jump.
+          for (const element of forced) element.style.contentVisibility = "visible";
           const afterTop = after.getBoundingClientRect().top;
-          // Suppress re-arm so the programmatic scrollTop write doesn't immediately
-          // rearm the observer — the sentinel may still be in view post-prepend.
-          _suppressLoadMoreRearm = true;
           chatAreaRef.scrollTop = beforeScroll + (afterTop - beforeTop);
-          // Clear suppression after the scroll event has dispatched + been handled.
-          // yieldToMain has a 50ms timeout fallback so a backgrounded WebView with
-          // throttled rAF can't strand the suppression flag.
           await yieldToMain();
-          _suppressLoadMoreRearm = false;
+          for (let i = 0; i < forced.length; i++) {
+            forced[i].style.contentVisibility = previousVisibility[i];
+          }
         }
       }
     } finally {
+      _suppressLoadMoreRearm = false;
       loadingMore = false;
-    }
-
-    // IntersectionObserver only refires on state changes. If anchor compensation
-    // produced ~zero delta (collapsed/unmeasured entries above the viewport, or
-    // a stable layout where the prepended content all sits within rootMargin),
-    // the sentinel stays "still intersecting" with no new state to deliver — and
-    // the user-scroll re-arm path (handleChatScroll) never fires either because
-    // a same-value scrollTop write may dispatch no scroll event. Re-observing
-    // forces a fresh callback delivery: if the sentinel exited the viewport,
-    // the callback returns early; if still intersecting, it kicks off another
-    // batch, naturally terminating once `filteredTimeline.length <= renderLimit`
-    // or the sentinel exits.
-    if (_topObserver && topSentinel && filteredTimeline.length > renderLimit) {
-      loadMoreArmed = true;
-      _topObserver.unobserve(topSentinel);
-      _topObserver.observe(topSentinel);
     }
   }
 
@@ -1632,11 +1615,11 @@
     const hasResume = hasResumeParam;
     untrack(() => {
       middleware.subscribeCurrent(id, store);
+      const routeInvalidatedOperation = store.invalidateOperationsForRoute(id);
 
-      // Strongest guard: resume operation in progress — don't interfere.
-      // Check both store guard (set inside resumeSession) and local flag
-      // (set at handleResume entry, before store guard is acquired).
-      if (store.resumeInFlight || resuming) {
+      // The same run stays owned by resume/fork until it completes. A different URL is an
+      // explicit navigation: invalidate the old operation and continue loading the new run.
+      if ((store.resumeInFlight || resuming) && !routeInvalidatedOperation) {
         dbg("effect", "skip loadRun — resume in progress");
         return;
       }
@@ -1815,15 +1798,6 @@
         promptRef?.addFiles([file]);
       },
     );
-    const interactiveFollowUpWarningUnlisten = chatTransport.listen<{
-      run_id: string;
-      request_id: string;
-      error: string;
-    }>("interactive-follow-up-warning", (payload) => {
-      if (payload.run_id !== store.run?.id) return;
-      dbgWarn("chat", "interactive follow-up failed after response delivery", payload);
-      showChatToast(t("toast_permissionInterruptFailed"));
-    });
 
     // Tauri native drag-drop listeners (dragDropEnabled: true in tauri.conf.json)
     const dragEnterUnlisten = chatTransport.listen<{ paths: string[] }>(
@@ -1888,7 +1862,6 @@
       keybindingStore.unregisterCallback("app:exportChatHtml");
       window.removeEventListener("ocv:export-html", onExportHtmlEvent);
       screenshotUnlisten.then((fn) => fn());
-      interactiveFollowUpWarningUnlisten.then((fn) => fn());
       dragEnterUnlisten.then((fn) => fn());
       dragLeaveUnlisten.then((fn) => fn());
       dragDropUnlisten.then((fn) => fn());
@@ -2088,6 +2061,10 @@
     // (loadMoreEarlier's anchor compensation) raise `_suppressLoadMoreRearm` so the
     // anchor-correction scroll doesn't immediately re-arm the observer.
     if (!loadMoreArmed && !_suppressLoadMoreRearm) loadMoreArmed = true;
+    const hasEarlier = filteredTimeline.length > renderLimit || store.historyHasMore;
+    if (loadMoreArmed && !loadingMore && hasEarlier && chatAreaRef.scrollTop <= 200) {
+      void loadMoreEarlier();
+    }
   }
 
   function scrollChatToBottom() {
@@ -2244,7 +2221,12 @@
           slashCmdSeenRunning = false;
         }
 
-        const runId = await store.startSession(text, cwd, attachments);
+        const result = await store.startSession(text, cwd, attachments);
+        if (result.status === "cancelled") {
+          dbg("chat", "new session cancelled by route change");
+          return;
+        }
+        const runId = result.runId;
         goto(`/chat?run=${runId}`, { replaceState: true });
         window.dispatchEvent(new Event("ocv:runs-changed"));
         // Re-detect CLI version on new session (picks up external updates)
@@ -2273,7 +2255,11 @@
         // sidebar afterward so its status badge leaves the stale "stopped" state.
         const wasStoppedCodex =
           store.useStreamSession && !store.sessionAlive && store.run?.agent === "codex";
-        await store.sendMessage(text, attachments, skills);
+        const result = await store.sendMessage(text, attachments, skills);
+        if (result.status === "cancelled") {
+          dbg("chat", "send cancelled by route change");
+          return;
+        }
         if (wasStoppedCodex) window.dispatchEvent(new Event("ocv:runs-changed"));
         requestAnimationFrame(() => promptRef?.focus());
       }
@@ -3521,9 +3507,8 @@
         appendCommandOutput(t("init_noCwd"));
         return;
       }
-      // Remote target: sendMessage resolves cwd via getStoredRemoteCwd(host)
-      // (chat/+page.svelte:1968), not localStorage. The handoff below cannot
-      // bridge those paths. Guard remote until wave 4b unifies cwd resolution.
+      // Remote target uses a different cwd source; keep this command local until the handoff is
+      // unified so the file existence check and the session cannot target different projects.
       if (store.remoteHostName) {
         dbgWarn("chat", "init-project blocked: remote not supported", {
           host: store.remoteHostName,
@@ -3709,13 +3694,18 @@
       if (mode !== "fork") {
         middleware.subscribeCurrent(targetRunId, store);
       }
-      const resultId = await store.resumeSession(
+      const result = await store.resumeSession(
         targetRunId,
         mode,
         initialMessage,
         initialAttachments,
       );
-      if (resultId) {
+      if (result.status === "cancelled") {
+        dbg("chat", "resume operation cancelled", { mode, targetRunId });
+        return;
+      }
+      if (result.status === "success") {
+        const resultId = result.runId;
         middleware.subscribeCurrent(resultId, store);
         if (mode === "fork") {
           // Check if user cancelled during fork_oneshot
@@ -3771,6 +3761,8 @@
   async function handleForkCancel() {
     if (!forkOverlay) return;
     const sourceRunId = forkOverlay.sourceRunId;
+    store.cancelResumeOperation();
+    middleware.subscribeCurrent("", store);
     await stopForkProcess(sourceRunId);
     forkOverlay = null;
     store.error = "";
@@ -4118,32 +4110,31 @@
       interrupt,
     });
     try {
-      const modeOverride =
-        behavior === "allow"
-          ? updatedPermissions?.find((permission) => permission.type === "setMode")?.mode
-          : undefined;
+      // Set pending mode override BEFORE responding (so reducer picks it up)
+      if (behavior === "allow" && updatedPermissions) {
+        const modePerm = updatedPermissions.find((p) => p.type === "setMode");
+        if (modePerm && modePerm.mode) {
+          store.pendingPermissionModeOverride = modePerm.mode;
+          dbg("chat", "set pendingPermissionModeOverride", { mode: modePerm.mode });
+        }
+      }
 
-      await resolvePermissionAfterDelivery(
-        store,
+      await api.respondPermission(
         runId,
         requestId,
         behavior,
-        () =>
-          api.respondPermission(
-            runId,
-            requestId,
-            behavior,
-            updatedPermissions,
-            updatedInput,
-            denyMessage,
-            interrupt,
-          ),
-        modeOverride,
+        updatedPermissions,
+        updatedInput,
+        denyMessage,
+        interrupt,
       );
+      // Optimistic resolve + clear attention flag
+      resolvePermissionOptimistic(store, runId, requestId, behavior);
     } catch (e) {
       dbgWarn("chat", "permission respond failed:", e);
-      // The backend retains pending state when primary delivery fails, so keep the card
-      // actionable for both allow and deny retries.
+      if (!String(e).includes("[interaction:not_started]")) {
+        store.markInteractionResponseFailed(requestId, "permission", e);
+      }
       store.error = String(e);
       throw e; // Let component-side wrapper catch and unlock buttons
     }
@@ -4164,7 +4155,11 @@
       resolveElicitationOptimistic(store, runId, requestId);
     } catch (e) {
       dbgWarn("chat", "elicitation respond failed:", e);
+      if (!String(e).includes("[interaction:not_started]")) {
+        store.markInteractionResponseFailed(requestId, "elicitation", e);
+      }
       store.error = String(e);
+      throw e;
     }
   }
 
@@ -4246,24 +4241,18 @@
 
     try {
       // 1. Set flags BEFORE responding
+      store.pendingPermissionModeOverride = "acceptEdits";
       store.pendingClearContextPlan = "__pending__"; // marker: waiting for tool_end
 
       // 2. Allow ExitPlanMode (with setMode) — satisfies the control_response requirement
-      await resolvePermissionAfterDelivery(
-        store,
+      await api.respondPermission(
         runId,
         requestId,
         "allow",
-        () =>
-          api.respondPermission(
-            runId,
-            requestId,
-            "allow",
-            [{ type: "setMode", mode: "acceptEdits", destination: "session" }],
-            exitPlanEntry.tool.input,
-          ),
-        "acceptEdits",
+        [{ type: "setMode", mode: "acceptEdits", destination: "session" }],
+        exitPlanEntry.tool.input,
       );
+      resolvePermissionOptimistic(store, runId, requestId, "allow");
 
       // 3. Wait for tool_end to deliver plan content (via pendingClearContextPlan)
       //    Poll briefly — tool_end should arrive within a few hundred ms
@@ -4297,7 +4286,12 @@
       const planPrompt = `Implement the following plan:\n\n${planContent}`;
       await goto("/chat", { replaceState: true });
       await tick(); // let runId effect run loadRun("") → store.reset()
-      const newRunId = await store.startSession(planPrompt, cwd, [], "acceptEdits");
+      const result = await store.startSession(planPrompt, cwd, [], "acceptEdits");
+      if (result.status === "cancelled") {
+        dbg("chat", "ExitPlanMode restart cancelled by route change");
+        return;
+      }
+      const newRunId = result.runId;
       await goto(`/chat?run=${newRunId}`, { replaceState: true });
       dbg("chat", "ExitPlanMode: new session started", { newRunId });
     } catch (e) {
@@ -4321,6 +4315,9 @@
       );
     } catch (e) {
       dbgWarn("chat", "hook callback respond failed:", e);
+      if (!String(e).includes("[interaction:not_started]")) {
+        store.markInteractionResponseFailed(requestId, "hook", e);
+      }
       store.error = String(e);
       throw e;
     }
@@ -4771,7 +4768,7 @@
         <!-- API / Codex bus-events mode: chat messages -->
         <div
           class="h-full overflow-y-auto"
-          style="overflow-anchor:auto"
+          style="overflow-anchor:none"
           bind:this={chatAreaRef}
           onscroll={handleChatScroll}
         >
@@ -4938,7 +4935,7 @@
                   </div>
                 </div>
               {/if}
-              {#if filteredTimeline.length - renderLimit > 0}
+              {#if filteredTimeline.length - renderLimit > 0 || store.historyHasMore}
                 <div bind:this={topSentinel} aria-hidden="true" class="h-px w-full"></div>
               {/if}
               {#each visibleTimeline as entry, i (entry.id)}
@@ -5009,6 +5006,9 @@
                           timestamp: entry.ts,
                         }}
                         attachments={entry.attachments}
+                        historyContent={entry.historyContent}
+                        historyRunId={store.run?.id}
+                        historyGenerationId={store.historySummary?.generationId}
                         onRewind={store.caps.supportsSnapshots &&
                         entry.cliUuid &&
                         store.sessionAlive &&
@@ -5030,7 +5030,11 @@
                           timestamp: entry.ts,
                         }}
                         thinkingText={entry.thinkingText}
+                        thinkingHistoryContent={entry.thinkingHistoryContent}
                         agent={store.agent}
+                        historyContent={entry.historyContent}
+                        historyRunId={store.run?.id}
+                        historyGenerationId={store.historySummary?.generationId}
                       />
                     {:else if entry.kind === "tool"}
                       {#if claudeTurnStarts.has(i)}
@@ -5043,7 +5047,7 @@
                               tool={entry.tool}
                               subTimeline={entry.subTimeline}
                               runId={store.run?.id ?? ""}
-                              {fetchToolResult}
+                              historyGenerationId={store.historySummary?.generationId}
                               onAnswer={entry.tool.tool_name === "AskUserQuestion" &&
                               (entry.tool.status === "running" ||
                                 entry.tool.status === "ask_pending")
@@ -5089,6 +5093,13 @@
                                 )}</pre>
                             {:else}
                               <MarkdownContent text={entry.content} />
+                            {/if}
+                            {#if entry.historyContent && store.run && store.historySummary}
+                              <HistoryContentPager
+                                runId={store.run.id}
+                                generationId={store.historySummary.generationId}
+                                content={entry.historyContent}
+                              />
                             {/if}
                           </div>
                         </div>
@@ -5198,7 +5209,7 @@
               {/if}
 
               <!-- Pending hook callbacks (runtime UI — excluded from export) -->
-              {#each store.hookEvents.filter((h) => h.status === "hook_pending") as hookEvent (hookEvent.request_id)}
+              {#each store.hookEvents.filter((h) => h.status === "hook_pending" || h.status === "responding" || h.status === "error") as hookEvent (hookEvent.request_id)}
                 <div class="chat-content-width pl-7" data-export-exclude>
                   <HookReviewCard {hookEvent} onRespond={handleHookCallbackRespond} />
                 </div>
@@ -5633,7 +5644,7 @@
     {/if}
 
     <!-- MCP Elicitation dialog (above input bar) -->
-    {#if store.hasElicitation && store.sessionAlive}
+    {#if store.pendingElicitations.size > 0 && store.sessionAlive}
       <ElicitationDialog
         elicitations={store.pendingElicitations}
         onRespond={handleElicitationRespond}

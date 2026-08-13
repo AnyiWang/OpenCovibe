@@ -26,6 +26,8 @@ export interface RunEventHandler {
 // ── Middleware ──
 
 export class EventMiddleware {
+  private static readonly _FULL_RELOAD_MAX_ATTEMPTS = 3;
+  private static readonly _FULL_RELOAD_RETRY_MS = [100, 250];
   private _unlisteners: (() => void)[] = [];
   private _subscriptions = new Map<string, SessionStore>();
   private _currentRunId: string | null = null;
@@ -37,9 +39,12 @@ export class EventMiddleware {
 
   // Microbatch buffer for bus events
   private _batchBuffer = new Map<string, BusEvent[]>();
+  private _historyLoads = new Map<string, { store: SessionStore; token: number }>();
+  private _nextHistoryLoadToken = 0;
   private _flushScheduled = false;
   private _BATCH_INTERVAL = 16; // ~1 frame
   private _MAX_BUFFER_SIZE = 500; // per-run overflow threshold
+  private _MAX_HISTORY_BUFFER_SIZE = 8192;
   private _lastFlushTime = 0; // track last flush for idle detection
   private _IDLE_GAP_MS = 100; // gap above which the next token starts a fresh burst
 
@@ -48,6 +53,8 @@ export class EventMiddleware {
 
   // Debounce guard for _full_reload
   private _reloadingRuns = new Set<string>();
+  private _reloadAgainRuns = new Set<string>();
+  private _reloadEpoch = 0;
 
   // ── Lifecycle ──
 
@@ -121,17 +128,8 @@ export class EventMiddleware {
         const unlisten = await transport.listen<{ run_id: string }>("_full_reload", (payload) => {
           const runId = payload.run_id;
           dbgWarn("middleware", "_full_reload", { runId });
-          if (this._reloadingRuns.has(runId)) {
-            dbg("middleware", "_full_reload debounced", { runId });
-            return;
-          }
           const store = this._subscriptions.get(runId);
-          if (store) {
-            this._reloadingRuns.add(runId);
-            void store.loadRun(runId).finally(() => {
-              this._reloadingRuns.delete(runId);
-            });
-          }
+          if (store) this._requestFullReload(runId, store);
         });
         ul.push(unlisten);
       } catch (e) {
@@ -155,11 +153,26 @@ export class EventMiddleware {
     this._currentRunId = null;
     this._currentStore = null;
     this._batchBuffer.clear();
+    this._historyLoads.clear();
     this._reloadingRuns.clear();
+    this._reloadAgainRuns.clear();
+    this._reloadEpoch++;
     this._started = false;
   }
 
   // ── Subscriptions ──
+
+  /** The store bound to the active session, or null when none is live. Lets cross-page surfaces
+   *  (e.g. the /agents Active scope) read the running session without a global SessionStore.
+   *  Plain field — NOT reactive; callers that need updates must poll. */
+  get currentStore(): SessionStore | null {
+    return this._currentStore;
+  }
+
+  /** Run id of the active session, or null. */
+  get currentRunId(): string | null {
+    return this._currentRunId;
+  }
 
   /** Subscribe a store for a run_id. Clears previous subscription (single-session mode). */
   subscribeCurrent(runId: string, store: SessionStore): void {
@@ -175,6 +188,7 @@ export class EventMiddleware {
       getTransport().unsubscribeRun(this._currentRunId);
       this._subscriptions.delete(this._currentRunId);
       this._batchBuffer.delete(this._currentRunId);
+      this._historyLoads.delete(this._currentRunId);
     }
     if (runId) {
       this._currentRunId = runId;
@@ -188,6 +202,37 @@ export class EventMiddleware {
     dbg("middleware", "subscribeCurrent", runId || "(cleared)");
   }
 
+  /** Buffer live events while a history page is replacing store state. */
+  beginHistoryLoad(runId: string, store: SessionStore): number {
+    const token = ++this._nextHistoryLoadToken;
+    this._historyLoads.set(runId, { store, token });
+    dbg("middleware", "history load started", { runId, token });
+    return token;
+  }
+
+  /** Atomically release events newer than the persisted catch-up checkpoint. */
+  finishHistoryLoad(runId: string, store: SessionStore, token: number, lastSeq: number): void {
+    const load = this._historyLoads.get(runId);
+    if (!load || load.store !== store || load.token !== token) return;
+    this._historyLoads.delete(runId);
+    const events = (this._batchBuffer.get(runId) ?? []).filter((event) => {
+      const seq = ((event as Record<string, unknown>)._seq as number) ?? 0;
+      return seq === 0 || seq > lastSeq;
+    });
+    this._batchBuffer.delete(runId);
+    if (events.length === 1) store.applyEvent(events[0]);
+    else if (events.length > 1) store.applyEventBatch(events);
+    dbg("middleware", "history load released", { runId, token, lastSeq, events: events.length });
+  }
+
+  cancelHistoryLoad(runId: string, store: SessionStore, token: number): void {
+    const load = this._historyLoads.get(runId);
+    if (!load || load.store !== store || load.token !== token) return;
+    this._historyLoads.delete(runId);
+    this._batchBuffer.delete(runId);
+    dbg("middleware", "history load cancelled", { runId, token });
+  }
+
   /** Multi-session subscribe (for future subagent support). */
   subscribe(runId: string, store: SessionStore): void {
     this._subscriptions.set(runId, store);
@@ -198,6 +243,7 @@ export class EventMiddleware {
     getTransport().unsubscribeRun(runId);
     this._subscriptions.delete(runId);
     this._batchBuffer.delete(runId);
+    this._historyLoads.delete(runId);
     if (this._currentRunId === runId) {
       this._currentRunId = null;
       this._currentStore = null;
@@ -231,8 +277,19 @@ export class EventMiddleware {
     }
     buf.push(ev);
 
+    if (this._historyLoads.has(ev.run_id) && buf.length > this._MAX_HISTORY_BUFFER_SIZE) {
+      const store = this._subscriptions.get(ev.run_id);
+      this._historyLoads.delete(ev.run_id);
+      this._batchBuffer.delete(ev.run_id);
+      if (store) {
+        this._requestFullReload(ev.run_id, store);
+      }
+      dbgWarn("middleware", "history live buffer overflow; reloading", { runId: ev.run_id });
+      return;
+    }
+
     // Overflow protection: flush synchronously if buffer grows too large
-    if (buf.length >= this._MAX_BUFFER_SIZE) {
+    if (!this._historyLoads.has(ev.run_id) && buf.length >= this._MAX_BUFFER_SIZE) {
       dbgWarn(
         "middleware",
         `buffer overflow for ${ev.run_id} (${buf.length} events), flushing synchronously`,
@@ -264,6 +321,9 @@ export class EventMiddleware {
         }
         break;
       case "control_cancelled":
+      case "interaction_response_started":
+      case "interaction_response_failed":
+      case "interaction_resolved":
         clearAttention(ev.run_id, "permission");
         break;
       case "user_message":
@@ -286,6 +346,56 @@ export class EventMiddleware {
         }
         break;
     }
+  }
+
+  private _requestFullReload(runId: string, store: SessionStore): void {
+    if (this._reloadingRuns.has(runId)) {
+      this._reloadAgainRuns.add(runId);
+      dbg("middleware", "full reload queued", { runId });
+      return;
+    }
+    this._reloadingRuns.add(runId);
+    const epoch = this._reloadEpoch;
+    void this._performFullReload(runId, store, epoch).finally(() => {
+      this._reloadingRuns.delete(runId);
+      if (epoch !== this._reloadEpoch) return;
+      if (!this._reloadAgainRuns.delete(runId)) return;
+      const current = this._subscriptions.get(runId);
+      if (current) this._requestFullReload(runId, current);
+    });
+  }
+
+  private async _performFullReload(
+    runId: string,
+    store: SessionStore,
+    epoch: number,
+  ): Promise<void> {
+    for (let attempt = 1; attempt <= EventMiddleware._FULL_RELOAD_MAX_ATTEMPTS; attempt++) {
+      if (epoch !== this._reloadEpoch || this._subscriptions.get(runId) !== store) return;
+      try {
+        const loaded = await store.loadRun(runId);
+        if (loaded) {
+          dbg("middleware", "full reload complete", { runId, attempt });
+          return;
+        }
+        dbgWarn("middleware", "full reload did not complete", { runId, attempt });
+      } catch (error) {
+        dbgWarn("middleware", "full reload failed", { runId, attempt, error });
+      }
+
+      if (attempt < EventMiddleware._FULL_RELOAD_MAX_ATTEMPTS) {
+        await new Promise<void>((resolve) =>
+          setTimeout(resolve, EventMiddleware._FULL_RELOAD_RETRY_MS[attempt - 1]),
+        );
+      }
+    }
+
+    if (epoch !== this._reloadEpoch || this._subscriptions.get(runId) !== store) return;
+    this._reloadAgainRuns.delete(runId);
+    // The server retains full_reload_pending until subscribe/unsubscribe. Exhaustion must clear
+    // that state without accepting more live events against an incomplete local timeline.
+    getTransport().unsubscribeRun(runId);
+    dbgWarn("middleware", "full reload exhausted", { runId });
   }
 
   private _handleHookEvent(event: HookEvent): void {
@@ -327,8 +437,12 @@ export class EventMiddleware {
     this._flushScheduled = false;
     this._lastFlushTime = performance.now();
     for (const [runId, events] of this._batchBuffer) {
+      if (this._historyLoads.has(runId)) continue;
       const store = this._subscriptions.get(runId);
-      if (!store) continue;
+      if (!store) {
+        this._batchBuffer.delete(runId);
+        continue;
+      }
       try {
         if (events.length === 1) {
           store.applyEvent(events[0]);
@@ -338,8 +452,8 @@ export class EventMiddleware {
       } catch (e) {
         dbgWarn("middleware", `flush error for run ${runId}:`, e);
       }
+      this._batchBuffer.delete(runId);
     }
-    this._batchBuffer.clear();
   }
 }
 
