@@ -57,6 +57,7 @@
   import { TeamStore } from "$lib/stores/team-store.svelte";
   import { KeybindingStore } from "$lib/stores/keybindings.svelte";
   import { getTransport } from "$lib/transport";
+  import { version as packageVersion } from "../../package.json";
   import {
     t,
     LOCALE_REGISTRY,
@@ -81,6 +82,25 @@
   let showAbout = $state(false);
   let showCliBrowser = $state(false);
   let permissionsModalOpen = $state(false);
+  let appVersion = $state(packageVersion);
+
+  async function loadAppVersion() {
+    if (!getTransport().isDesktop()) {
+      dbg("layout", "app version loaded", { source: "package", version: appVersion });
+      return;
+    }
+
+    try {
+      const { getVersion } = await import("@tauri-apps/api/app");
+      appVersion = await getVersion();
+      dbg("layout", "app version loaded", { source: "tauri", version: appVersion });
+    } catch (error) {
+      dbgWarn("layout", "failed to load Tauri app version", {
+        error,
+        fallbackVersion: packageVersion,
+      });
+    }
+  }
 
   // Team store (shared via context with /teams page)
   const teamStore = new TeamStore();
@@ -590,6 +610,7 @@
     loadSettings();
     loadSidebarFavorites();
     loadAgentSettingsCache();
+    void loadAppVersion();
 
     // Load saved CWD and pinned folders from localStorage
     const saved = localStorage.getItem("ocv:project-cwd");
@@ -1401,7 +1422,7 @@
             <button
               class="text-xs text-muted-foreground hover:text-muted-foreground transition-colors cursor-pointer"
               onclick={() => (showAbout = true)}
-              title="About OpenCovibe">v0.1</button
+              title="About OpenCovibe">v{appVersion}</button
             >
           </div>
           <div class="relative mx-auto mb-0.5">
