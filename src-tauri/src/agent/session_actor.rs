@@ -352,10 +352,10 @@ struct SessionActor {
     ralph_needs_dispatch: bool,
 
     // ── Observability: pending interactive request tracking ──
-    /// Tracks the most recent interactive control request awaiting user response.
+    /// Tracks interactive control requests awaiting user responses by request id.
     /// Set when emitting PermissionPrompt / HookCallback(PreToolUse) / ElicitationPrompt.
     /// Cleared when the response is received. Retained during quarantine for diagnostics.
-    pending_interactive_request: Option<PendingInteractiveRequest>,
+    pending_interactive_requests: HashMap<String, PendingInteractiveRequest>,
 }
 
 // ── Spawn entry point ──
@@ -436,7 +436,7 @@ pub fn spawn_actor(
         user_hard_timeout,
         ralph_loop: None,
         ralph_needs_dispatch: false,
-        pending_interactive_request: None,
+        pending_interactive_requests: HashMap::new(),
     };
 
     let join_handle = tokio::spawn(async move {
@@ -1179,6 +1179,34 @@ impl SessionActor {
 
     /// Independent timeout clock — checks soft/hard deadlines and quarantine. (HC #4)
     async fn on_tick_timeout(&mut self) {
+        let expired_codex_requests = self
+            .codex
+            .as_mut()
+            .map(CodexAppServer::expire_deferred)
+            .unwrap_or_default();
+        for frame in &expired_codex_requests {
+            if let Err(error) = self
+                .write_json_line(frame, "expired codex interactive request")
+                .await
+            {
+                log::error!(
+                    "[codex] expired request response failed: run_id={}, error={}",
+                    self.run_id,
+                    error
+                );
+            }
+        }
+        let oldest_pending = self
+            .pending_interactive_requests
+            .values()
+            .min_by_key(|request| request.received_at)
+            .map(|request| {
+                (
+                    request.subtype.clone(),
+                    request.detail.clone(),
+                    request.received_at.elapsed().as_secs(),
+                )
+            });
         // Check quarantine deadline first
         if self.quarantine_until_result {
             if let Some(deadline) = self.quarantine_deadline {
@@ -1188,7 +1216,7 @@ impl SessionActor {
                         "[turn] quarantine hard-timeout: run_id={}, from_internal={}, pending_request={:?}",
                         self.run_id,
                         self.quarantine_from_internal,
-                        self.pending_interactive_request.as_ref().map(|r| (&r.subtype, &r.detail, r.received_at.elapsed().as_secs()))
+                        oldest_pending.as_ref()
                     );
                     self.protocol.set_pending_slash_command(None);
                     if let Some(ref mut child) = self.child {
@@ -1196,11 +1224,10 @@ impl SessionActor {
                     }
                     let error_msg = if self.quarantine_from_internal {
                         "Auto-context hard timeout — process killed".to_string()
-                    } else if let Some(ref req) = self.pending_interactive_request {
-                        let wait_secs = req.received_at.elapsed().as_secs();
+                    } else if let Some((subtype, detail, wait_secs)) = oldest_pending.as_ref() {
                         format!(
                             "Session timeout — waited {}s for {} response ({}). Process killed.",
-                            wait_secs, req.subtype, req.detail
+                            wait_secs, subtype, detail
                         )
                     } else {
                         "Session timeout — no output from CLI for 30 minutes. Process killed."
@@ -1285,7 +1312,7 @@ impl SessionActor {
                 "[turn] user hard timeout: entering quarantine for run_id={} (turn_seq={}), pending_request={:?}",
                 self.run_id,
                 turn.turn_seq,
-                self.pending_interactive_request.as_ref().map(|r| (&r.subtype, &r.detail, r.received_at.elapsed().as_secs()))
+                oldest_pending.as_ref()
             );
             self.protocol.set_pending_slash_command(None);
             self.active_turn = None;
@@ -1793,16 +1820,25 @@ impl SessionActor {
 
     /// Clear pending interactive request if it matches the given request_id.
     fn clear_pending_interactive_request(&mut self, request_id: &str) {
-        if let Some(ref req) = self.pending_interactive_request {
-            if req.request_id == request_id {
-                log::debug!(
-                    "[actor] clearing pending_interactive_request: subtype={}, detail={}, waited={}s",
-                    req.subtype,
-                    req.detail,
-                    req.received_at.elapsed().as_secs()
-                );
-                self.pending_interactive_request = None;
-            }
+        Self::clear_pending_interactive_request_map(
+            &mut self.pending_interactive_requests,
+            request_id,
+        );
+    }
+
+    fn clear_pending_interactive_request_map(
+        pending: &mut HashMap<String, PendingInteractiveRequest>,
+        request_id: &str,
+    ) {
+        if let Some(req) = pending.remove(request_id) {
+            log::debug!(
+                "[actor] clearing pending_interactive_request: request_id={}, subtype={}, detail={}, waited={}s, remaining={}",
+                req.request_id,
+                req.subtype,
+                req.detail,
+                req.received_at.elapsed().as_secs(),
+                pending.len()
+            );
         }
     }
 
@@ -1895,6 +1931,18 @@ impl SessionActor {
 
         let parsed = self.codex.as_mut().unwrap().parse_line(&self.run_id, text);
 
+        // Parser-generated requests (currently spawned-thread identity reads) must be written
+        // before processing later notifications that can depend on their metadata.
+        for frame in &parsed.outbound {
+            if let Err(error) = self.write_json_line(frame, "codex protocol request").await {
+                log::error!(
+                    "[codex] protocol request failed: run_id={}, error={}",
+                    self.run_id,
+                    error
+                );
+            }
+        }
+
         // Route a data-returning request reply (thread/fork, thread/rollback, thread/goal/get)
         // back to the waiting control caller — mirrors the Claude control_response path.
         if let Some((rid, resp)) = parsed.control_response {
@@ -1947,18 +1995,21 @@ impl SessionActor {
         }
 
         // Track a pending interactive request (observability + desktop notification).
-        if let Some(pi) = parsed.interactive {
+        for pi in parsed.interactive {
             let subtype = match pi.kind {
                 PendingKind::Permission => "can_use_tool",
                 PendingKind::Elicitation => "elicitation",
                 PendingKind::UserInput => "request_user_input",
             };
-            self.pending_interactive_request = Some(PendingInteractiveRequest {
-                request_id: pi.request_id,
-                subtype: subtype.to_string(),
-                detail: String::new(),
-                received_at: Instant::now(),
-            });
+            self.pending_interactive_requests.insert(
+                pi.request_id.clone(),
+                PendingInteractiveRequest {
+                    request_id: pi.request_id,
+                    subtype: subtype.to_string(),
+                    detail: String::new(),
+                    received_at: Instant::now(),
+                },
+            );
             notify_if_background(self.emitter.app(), "Codex", "needs your input");
         }
 
@@ -2455,12 +2506,15 @@ impl SessionActor {
                 }
             }
             if hook_event == "PreToolUse" {
-                self.pending_interactive_request = Some(PendingInteractiveRequest {
-                    request_id: request_id.clone(),
-                    subtype: "hook_callback".to_string(),
-                    detail: format!("PreToolUse:{}", hook_label),
-                    received_at: Instant::now(),
-                });
+                self.pending_interactive_requests.insert(
+                    request_id.clone(),
+                    PendingInteractiveRequest {
+                        request_id: request_id.clone(),
+                        subtype: "hook_callback".to_string(),
+                        detail: format!("PreToolUse:{}", hook_label),
+                        received_at: Instant::now(),
+                    },
+                );
                 notify_if_background(
                     self.emitter.app(),
                     "Hook Review Required",
@@ -2533,12 +2587,15 @@ impl SessionActor {
                 url,
                 requested_schema,
             });
-            self.pending_interactive_request = Some(PendingInteractiveRequest {
-                request_id: request_id.clone(),
-                subtype: "elicitation".to_string(),
-                detail: mcp_server_name.clone(),
-                received_at: Instant::now(),
-            });
+            self.pending_interactive_requests.insert(
+                request_id.clone(),
+                PendingInteractiveRequest {
+                    request_id: request_id.clone(),
+                    subtype: "elicitation".to_string(),
+                    detail: mcp_server_name.clone(),
+                    received_at: Instant::now(),
+                },
+            );
             notify_if_background(
                 self.emitter.app(),
                 "MCP Input Required",
@@ -2601,12 +2658,15 @@ impl SessionActor {
                 parent_tool_use_id,
                 suggestions,
             });
-            self.pending_interactive_request = Some(PendingInteractiveRequest {
-                request_id,
-                subtype: "can_use_tool".to_string(),
-                detail: tool_label.clone(),
-                received_at: Instant::now(),
-            });
+            self.pending_interactive_requests.insert(
+                request_id.clone(),
+                PendingInteractiveRequest {
+                    request_id,
+                    subtype: "can_use_tool".to_string(),
+                    detail: tool_label.clone(),
+                    received_at: Instant::now(),
+                },
+            );
             notify_if_background(
                 self.emitter.app(),
                 "Permission Required",
@@ -3215,9 +3275,11 @@ pub fn build_user_payload(
 
 #[cfg(test)]
 mod tests {
-    use super::build_control_response;
+    use super::{build_control_response, PendingInteractiveRequest, SessionActor};
     use crate::models::{max_attachment_size, ALLOWED_DOC_TYPES, ALLOWED_IMAGE_TYPES};
     use serde_json::json;
+    use std::collections::HashMap;
+    use std::time::{Duration, Instant};
 
     /// Helper: build a multimodal content array the same way handle_send_message does,
     /// including size validation (base64 len * 3/4 vs max_attachment_size).
@@ -3291,6 +3353,36 @@ mod tests {
         assert_eq!(p["response"]["error"], "nope");
         // Error responses carry no nested `response` body.
         assert!(p["response"].get("response").is_none());
+    }
+
+    #[test]
+    fn pending_interactive_requests_clear_independently() {
+        let now = Instant::now();
+        let mut pending = HashMap::from([
+            (
+                "first".to_string(),
+                PendingInteractiveRequest {
+                    request_id: "first".to_string(),
+                    subtype: "can_use_tool".to_string(),
+                    detail: "Bash".to_string(),
+                    received_at: now - Duration::from_secs(2),
+                },
+            ),
+            (
+                "second".to_string(),
+                PendingInteractiveRequest {
+                    request_id: "second".to_string(),
+                    subtype: "request_user_input".to_string(),
+                    detail: String::new(),
+                    received_at: now,
+                },
+            ),
+        ]);
+
+        SessionActor::clear_pending_interactive_request_map(&mut pending, "second");
+
+        assert!(pending.contains_key("first"));
+        assert!(!pending.contains_key("second"));
     }
 
     #[test]

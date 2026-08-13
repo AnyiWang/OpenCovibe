@@ -19,6 +19,7 @@ import type {
   SessionMode,
   TodoItem,
   PanelTask,
+  CodexAgentIdentity,
 } from "$lib/types";
 import { dbg, dbgWarn } from "$lib/utils/debug";
 import { yieldToMain } from "$lib/utils/yield";
@@ -163,6 +164,10 @@ interface ReduceCtx {
    *  creation; only committed in _commitReduceCtx. Keeps async replay
    *  stale-safe (mid-batch abort doesn't pollute live store). */
   scheduledTasks: ScheduledTask[];
+  /** Spawned Codex identities resolved during replay; committed atomically with the timeline. */
+  codexAgentInfo: Record<string, CodexAgentIdentity>;
+  codexAgentInfoVersion: number;
+  codexAgentInfoDirty: boolean;
 }
 
 // ── Helpers ──
@@ -343,6 +348,9 @@ export class SessionStore {
   /** Codex Wave-4: latest cumulative turn diff (`turn/diff/updated`). Live-only,
    *  not replayed — cleared at the start of each turn (run_state→running) and on reset. */
   turnDiff = $state<string>("");
+  /** Spawned Codex thread identities resolved by the backend via `thread/read`. */
+  codexAgentInfo = $state<Record<string, CodexAgentIdentity>>({});
+  private _codexAgentInfoVersion = 0;
 
   // ── CLI verbose fields (from session_init / usage_update) ──
   cliVersion = $state<string>("");
@@ -1304,6 +1312,9 @@ export class SessionStore {
       toolTlIndex: batchTlIndex,
       toolHeIndex: batchHeIndex,
       scheduledTasks: [...this.scheduledTasks],
+      codexAgentInfo: { ...this.codexAgentInfo },
+      codexAgentInfoVersion: this._codexAgentInfoVersion,
+      codexAgentInfoDirty: false,
     };
   }
 
@@ -1353,6 +1364,15 @@ export class SessionStore {
     this._toolTlIndex = ctx.toolTlIndex;
     this._toolHeIndex = ctx.toolHeIndex;
     this.scheduledTasks = ctx.scheduledTasks;
+    if (ctx.codexAgentInfoDirty) {
+      // A live identity may arrive while async replay yields. Preserve that newer value while
+      // still publishing identities that exist only in the replay batch.
+      this.codexAgentInfo =
+        this._codexAgentInfoVersion === ctx.codexAgentInfoVersion
+          ? ctx.codexAgentInfo
+          : { ...ctx.codexAgentInfo, ...this.codexAgentInfo };
+      this._codexAgentInfoVersion++;
+    }
     if (!replayOnly) {
       this._setPhase(ctx.phase);
       this.error = ctx.error;
@@ -1536,6 +1556,8 @@ export class SessionStore {
     this.sessionCommands = [];
     this.mcpServers = [];
     this.turnDiff = "";
+    this.codexAgentInfo = {};
+    this._codexAgentInfoVersion++;
     this.cliVersion = "";
     // NOTE: permissionMode intentionally NOT cleared — user-level preference, same as platformId.
     // However, if persist had failed, reset the flag so next session_init can re-sync.
@@ -1669,6 +1691,7 @@ export class SessionStore {
       apiKeySource: this.apiKeySource,
       sessionCommands: this.sessionCommands,
       mcpServers: this.mcpServers,
+      codexAgentInfo: this.codexAgentInfo,
       sessionTools: this.sessionTools,
       availableAgents: this.availableAgents,
       availableSkills: this.availableSkills,
@@ -1751,6 +1774,8 @@ export class SessionStore {
       this.apiKeySource = (obj.apiKeySource as string) ?? "";
       this.sessionCommands = (obj.sessionCommands ?? []) as CliCommand[];
       this.mcpServers = dedupeMcpServersByName((obj.mcpServers ?? []) as McpServerInfo[]);
+      this.codexAgentInfo = (obj.codexAgentInfo as typeof this.codexAgentInfo | undefined) ?? {};
+      this._codexAgentInfoVersion++;
       this.sessionTools = (obj.sessionTools ?? []) as string[];
       this.availableAgents = (obj.availableAgents ?? []) as string[];
       this.availableSkills = (obj.availableSkills ?? []) as string[];
@@ -4415,6 +4440,30 @@ export class SessionStore {
         // Cleared at the next turn start (run_state→running) and on reset.
         dbg("store", "codex_turn_diff", { len: ev.diff.length });
         this.turnDiff = ev.diff;
+        break;
+      }
+
+      case "codex_agent_info": {
+        dbg("store", "codex_agent_info", {
+          threadId: ev.thread_id,
+          nickname: ev.nickname,
+          role: ev.role,
+        });
+        const next = {
+          ...(ctx ? ctx.codexAgentInfo : this.codexAgentInfo),
+          [ev.thread_id]: {
+            nickname: ev.nickname,
+            role: ev.role,
+            parentThreadId: ev.parent_thread_id,
+          },
+        };
+        if (ctx) {
+          ctx.codexAgentInfo = next;
+          ctx.codexAgentInfoDirty = true;
+        } else {
+          this.codexAgentInfo = next;
+          this._codexAgentInfoVersion++;
+        }
         break;
       }
 

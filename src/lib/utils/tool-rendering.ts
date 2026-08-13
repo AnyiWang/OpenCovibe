@@ -43,6 +43,17 @@ export function extractOutputText(output: unknown): string {
   }
 }
 
+/** Resolve the sole receiver for a Codex collab card; multi-agent operations stay generic. */
+export function singleCodexReceiverThreadId(
+  input: Record<string, unknown> | undefined,
+  result: Record<string, unknown> | undefined,
+): string | null {
+  const ids = result?.receiverThreadIds ?? input?.receiverThreadIds;
+  return Array.isArray(ids) && ids.length === 1 && typeof ids[0] === "string" && ids[0]
+    ? ids[0]
+    : null;
+}
+
 /** Extract image content blocks (base64) from tool output, if any. */
 export function extractImageBlocks(
   output: unknown,

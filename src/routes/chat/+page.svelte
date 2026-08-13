@@ -5046,6 +5046,7 @@
                               latestPlanTool={entry.kind === "tool" &&
                                 entry.tool.tool_use_id === latestPlanToolId}
                               showPermissionInPanel={showPermissionPanel}
+                              codexAgentInfo={store.codexAgentInfo}
                               {agentDisplayName}
                               onPreviewFile={openPreviewForPath}
                             />

@@ -1095,6 +1095,14 @@ export type BusEvent =
       data: Record<string, unknown>;
     }
   | { type: "control_cancelled"; run_id: string; request_id: string }
+  | {
+      type: "codex_agent_info";
+      run_id: string;
+      thread_id: string;
+      nickname?: string;
+      role?: string;
+      parent_thread_id?: string;
+    }
   | { type: "command_output"; run_id: string; content: string }
   | {
       type: "elicitation_prompt";
@@ -1189,6 +1197,12 @@ export interface ElicitationSchema {
   properties?: Record<string, ElicitationFieldSchema>;
   required?: string[];
   [key: string]: unknown;
+}
+
+export interface CodexAgentIdentity {
+  nickname?: string;
+  role?: string;
+  parentThreadId?: string;
 }
 
 export interface BusToolItem {
