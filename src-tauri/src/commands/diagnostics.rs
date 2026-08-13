@@ -1620,7 +1620,8 @@ mod tests {
             let result = test_api_inner("test-key", &url, "ANTHROPIC_API_KEY", "test-model").await;
             assert!(result.success);
             assert!(!result.partial);
-            assert!(result.latency_ms > 0);
+            // A loopback response can complete within the millisecond clock resolution.
+            assert!(result.latency_ms < 5_000);
             assert_eq!(result.reply, Some("Hello!".to_string()));
             assert!(result.error.is_none());
         });

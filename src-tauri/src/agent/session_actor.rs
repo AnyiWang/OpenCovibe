@@ -3276,7 +3276,7 @@ pub fn build_user_payload(
 #[cfg(test)]
 mod tests {
     use super::{build_control_response, PendingInteractiveRequest, SessionActor};
-    use crate::models::{max_attachment_size, ALLOWED_DOC_TYPES, ALLOWED_IMAGE_TYPES};
+    use crate::models::{max_attachment_size, BusEvent, ALLOWED_DOC_TYPES, ALLOWED_IMAGE_TYPES};
     use serde_json::json;
     use std::collections::HashMap;
     use std::time::{Duration, Instant};

@@ -654,6 +654,7 @@ mod tests {
     fn make_user_settings() -> UserSettings {
         UserSettings {
             default_agent: "claude".to_string(),
+            claude_path: None,
             default_model: None,
             allowed_tools: vec![],
             working_directory: None,
