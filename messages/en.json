@@ -1526,6 +1526,7 @@
   "toast_permissionPersistFailed": "Mode active for this session only — save failed",
   "toast_permissionChangeFailed": "Permission mode change failed — save error",
   "toast_permissionModeNextTurn": "{mode} — takes effect next message",
+  "toast_permissionInterruptFailed": "Request denied, but stopping the turn failed — use Stop to retry",
   "toast_rewindSuccess": "Changes reverted",
   "error_rewindNoCheckpoint": "No file checkpoint found to rewind to",
   "error_rewindFailed": "Failed to rewind files",

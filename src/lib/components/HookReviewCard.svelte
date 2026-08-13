@@ -13,7 +13,7 @@
       request_id?: string;
       status?: string;
     };
-    onRespond: (requestId: string, decision: "allow" | "deny") => void;
+    onRespond: (requestId: string, decision: "allow" | "deny") => void | Promise<void>;
   } = $props();
 
   let submitting = $state(false);
@@ -26,11 +26,15 @@
     "Unknown Tool";
   const hookEventType = (data as { hook_event?: string }).hook_event ?? hookEvent.type;
 
-  function handleRespond(decision: "allow" | "deny") {
+  async function handleRespond(decision: "allow" | "deny") {
     if (!hookEvent.request_id || submitting) return;
     submitting = true;
     dbg("hook-review", "respond", { requestId: hookEvent.request_id, decision });
-    onRespond(hookEvent.request_id, decision);
+    try {
+      await onRespond(hookEvent.request_id, decision);
+    } catch {
+      submitting = false;
+    }
   }
 </script>
 

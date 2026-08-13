@@ -1526,6 +1526,7 @@
   "toast_permissionPersistFailed": "模式仅当前会话生效 — 保存失败",
   "toast_permissionChangeFailed": "权限模式切换失败 — 保存错误",
   "toast_permissionModeNextTurn": "{mode} — 下条消息生效",
+  "toast_permissionInterruptFailed": "请求已拒绝，但停止当前任务失败 — 请点击停止重试",
   "toast_rewindSuccess": "文件已回退",
   "error_rewindNoCheckpoint": "没有可回退的文件检查点",
   "error_rewindFailed": "文件回退失败",

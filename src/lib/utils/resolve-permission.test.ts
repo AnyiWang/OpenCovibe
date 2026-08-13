@@ -11,13 +11,14 @@ vi.mock("$lib/utils/debug", () => ({
   dbgWarn: vi.fn(),
 }));
 
-import { resolvePermissionOptimistic } from "./resolve-permission";
+import { resolvePermissionAfterDelivery, resolvePermissionOptimistic } from "./resolve-permission";
 import { markAttention, hasAttention, _resetForTest } from "$lib/stores/attention-store.svelte";
 
 function mockStore() {
   return {
     resolvePermissionAllow: vi.fn(),
     resolvePermissionDeny: vi.fn(),
+    pendingPermissionModeOverride: null as string | null,
   };
 }
 
@@ -50,15 +51,71 @@ describe("resolvePermissionOptimistic", () => {
     expect(hasAttention("run-1")).toBe(false);
   });
 
-  it("deny catch branch — same behavior as success", () => {
-    // In +page.svelte catch block, deny also calls the helper
+  it("delivery failure retains deny card and attention for retry", async () => {
     const store = mockStore();
     markAttention("run-1", "permission");
 
-    resolvePermissionOptimistic(store, "run-1", "req-1", "deny");
+    await expect(
+      resolvePermissionAfterDelivery(store, "run-1", "req-1", "deny", () =>
+        Promise.reject(new Error("stdin closed")),
+      ),
+    ).rejects.toThrow("stdin closed");
+
+    expect(store.resolvePermissionDeny).not.toHaveBeenCalled();
+    expect(hasAttention("run-1")).toBe(true);
+  });
+
+  it("delivery success resolves deny card and attention", async () => {
+    const store = mockStore();
+    markAttention("run-1", "permission");
+
+    await resolvePermissionAfterDelivery(store, "run-1", "req-1", "deny", () => Promise.resolve());
 
     expect(store.resolvePermissionDeny).toHaveBeenCalledWith("req-1");
     expect(hasAttention("run-1")).toBe(false);
+  });
+
+  it("failed mode-changing allow rolls back before a deny retry", async () => {
+    const store = mockStore();
+    store.pendingPermissionModeOverride = "default";
+
+    await expect(
+      resolvePermissionAfterDelivery(
+        store,
+        "run-1",
+        "exitplan-req",
+        "allow",
+        () => Promise.reject(new Error("stdin closed")),
+        "acceptEdits",
+      ),
+    ).rejects.toThrow("stdin closed");
+    expect(store.pendingPermissionModeOverride).toBe("default");
+
+    await resolvePermissionAfterDelivery(store, "run-1", "exitplan-req", "deny", () =>
+      Promise.resolve(),
+    );
+    expect(store.pendingPermissionModeOverride).toBe("default");
+  });
+
+  it("failed delivery does not roll back a newer mode override", async () => {
+    const store = mockStore();
+    let rejectDelivery!: (error: Error) => void;
+    const delivery = new Promise<void>((_, reject) => {
+      rejectDelivery = reject;
+    });
+    const response = resolvePermissionAfterDelivery(
+      store,
+      "run-1",
+      "exitplan-req",
+      "allow",
+      () => delivery,
+      "acceptEdits",
+    );
+    store.pendingPermissionModeOverride = "bypassPermissions";
+    rejectDelivery(new Error("stdin closed"));
+
+    await expect(response).rejects.toThrow("stdin closed");
+    expect(store.pendingPermissionModeOverride).toBe("bypassPermissions");
   });
 
   // handleExitPlanClearContext equivalent

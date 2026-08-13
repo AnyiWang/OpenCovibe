@@ -21,6 +21,7 @@ vi.mock("$lib/api", () => ({
   stopRun: vi.fn(),
   sendSessionControl: vi.fn(),
   steerSession: vi.fn(),
+  respondUserInput: vi.fn(),
   syncCliSession: vi.fn().mockResolvedValue({ newEvents: 0 }),
   renameRun: vi.fn().mockResolvedValue(undefined),
 }));
@@ -408,6 +409,60 @@ describe("SessionStore reducer", () => {
       const users = store.timeline.filter((e) => e.kind === "user");
       expect(users).toHaveLength(2); // "Create a file" + "app.js"
       expect(users[1].content).toBe("app.js");
+    });
+
+    it("keeps Codex question pending when response delivery fails", async () => {
+      const codexStore = new SessionStore();
+      codexStore.run = makeRun("run-codex-ask", { agent: "codex" });
+      codexStore.phase = "running";
+      codexStore.timeline = [
+        {
+          kind: "tool",
+          id: "ask-codex",
+          anchorId: "ask-codex",
+          ts: new Date().toISOString(),
+          tool: {
+            tool_use_id: "ask-codex",
+            tool_name: "AskUserQuestion",
+            input: { questions: [{ id: "q1", question: "Pick", options: [] }] },
+            status: "ask_pending",
+          },
+        } as TimelineEntry,
+      ];
+      vi.mocked(api.respondUserInput).mockRejectedValueOnce(new Error("stdin closed"));
+
+      await expect(codexStore.answerToolQuestion("ask-codex", "A")).rejects.toThrow("stdin closed");
+
+      const entry = codexStore.timeline[0] as Extract<TimelineEntry, { kind: "tool" }>;
+      expect(entry.tool.status).toBe("ask_pending");
+      expect(entry.tool.output).toBeUndefined();
+    });
+
+    it("resolves Codex question only after response delivery succeeds", async () => {
+      const codexStore = new SessionStore();
+      codexStore.run = makeRun("run-codex-ask", { agent: "codex" });
+      codexStore.phase = "running";
+      codexStore.timeline = [
+        {
+          kind: "tool",
+          id: "ask-codex",
+          anchorId: "ask-codex",
+          ts: new Date().toISOString(),
+          tool: {
+            tool_use_id: "ask-codex",
+            tool_name: "AskUserQuestion",
+            input: { questions: [{ id: "q1", question: "Pick", options: [] }] },
+            status: "ask_pending",
+          },
+        } as TimelineEntry,
+      ];
+      vi.mocked(api.respondUserInput).mockResolvedValueOnce(undefined);
+
+      await codexStore.answerToolQuestion("ask-codex", "A");
+
+      const entry = codexStore.timeline[0] as Extract<TimelineEntry, { kind: "tool" }>;
+      expect(entry.tool.status).toBe("success");
+      expect(entry.tool.output).toEqual({ answer: "A" });
     });
   });
 

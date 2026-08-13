@@ -151,6 +151,13 @@ fn build_control_response(request_id: &str, outcome: Result<Value, String>) -> V
     serde_json::json!({ "type": "control_response", "response": inner })
 }
 
+fn build_control_cancel_request(request_id: &str) -> Value {
+    serde_json::json!({
+        "type": "control_cancel_request",
+        "request_id": request_id,
+    })
+}
+
 // ── Ralph Loop types ──
 
 #[derive(Debug, Clone, PartialEq)]
@@ -515,25 +522,21 @@ impl SessionActor {
                             let _ = reply.send(r);
                         }
                         Some(ActorCommand::CancelControlRequest { request_id, reply }) => {
-                            self.clear_pending_interactive_request(&request_id);
                             let r = self.handle_cancel_control_request(&request_id).await;
                             let _ = reply.send(r);
                         }
                         Some(ActorCommand::RespondHookCallback { request_id, response, reply }) => {
                             log::debug!("[actor] RespondHookCallback: run_id={}, req_id={}", self.run_id, request_id);
-                            self.clear_pending_interactive_request(&request_id);
-                            let result = self.write_control_response(&request_id, response).await;
+                            let result = self.respond_hook_callback(&request_id, response).await;
                             let _ = reply.send(result);
                         }
                         Some(ActorCommand::RespondElicitation { request_id, response, reply }) => {
                             log::debug!("[actor] RespondElicitation: run_id={}, req_id={}", self.run_id, request_id);
-                            self.clear_pending_interactive_request(&request_id);
                             let result = self.write_interactive_response(PendingKind::Elicitation, &request_id, response).await;
                             let _ = reply.send(result);
                         }
                         Some(ActorCommand::RespondUserInput { request_id, response, reply }) => {
                             log::debug!("[actor] RespondUserInput: run_id={}, req_id={}", self.run_id, request_id);
-                            self.clear_pending_interactive_request(&request_id);
                             let result = self.write_interactive_response(PendingKind::UserInput, &request_id, response).await;
                             let _ = reply.send(result);
                         }
@@ -1794,7 +1797,6 @@ impl SessionActor {
             self.run_id,
             request_id,
         );
-        self.clear_pending_interactive_request(request_id);
         self.write_interactive_response(PendingKind::Permission, request_id, response)
             .await
     }
@@ -1807,23 +1809,140 @@ impl SessionActor {
         request_id: &str,
         response: Value,
     ) -> Result<(), String> {
-        let Some(codex) = self.codex.as_mut() else {
-            return self.write_control_response(request_id, response).await;
+        self.ensure_pending_interactive_request(request_id)?;
+        if self.codex.is_none() {
+            let delivery = self.write_control_response(request_id, response).await;
+            return Self::commit_actor_pending_after_delivery(
+                &mut self.pending_interactive_requests,
+                request_id,
+                delivery,
+            );
+        }
+
+        // Preparation keeps protocol state intact. This borrow must end before awaiting stdin.
+        let prepared = self
+            .codex
+            .as_mut()
+            .expect("codex checked above")
+            .frame_response(kind, request_id, response)?;
+        let delivery = self
+            .write_json_line(&prepared.primary, "codex interactive response")
+            .await;
+
+        // The primary JSON-RPC response resolves the request. Commit it before independent
+        // follow-up actions so an interrupt failure cannot make a delivered response retryable.
+        Self::commit_codex_pending_after_delivery(
+            self.codex.as_mut().expect("codex checked above"),
+            &mut self.pending_interactive_requests,
+            request_id,
+            delivery,
+        )?;
+        let follow_up = if prepared.interrupt_after_commit {
+            self.codex
+                .as_mut()
+                .expect("codex checked above")
+                .frame_interrupt()
+        } else {
+            Vec::new()
         };
-        let lines = codex.frame_response(kind, request_id, response);
-        for line in &lines {
-            self.write_json_line(line, "codex interactive response")
-                .await?;
+        log::debug!(
+            "[actor] interactive response committed: run_id={}, req_id={}, follow_up={}",
+            self.run_id,
+            request_id,
+            follow_up.len()
+        );
+        for frame in &follow_up {
+            let delivery = self
+                .write_json_line(frame, "codex interactive response follow-up")
+                .await;
+            if let Some(error) = Self::committed_follow_up_warning(delivery) {
+                log::error!(
+                    "[actor] interactive follow-up failed after response commit: run_id={}, req_id={}, error={}",
+                    self.run_id,
+                    request_id,
+                    error
+                );
+                self.emitter.emit_realtime(
+                    "interactive-follow-up-warning",
+                    &serde_json::json!({
+                        "run_id": self.run_id,
+                        "request_id": request_id,
+                        "error": error,
+                    }),
+                    Some(&self.run_id),
+                );
+                break;
+            }
         }
         Ok(())
     }
 
-    /// Clear pending interactive request if it matches the given request_id.
-    fn clear_pending_interactive_request(&mut self, request_id: &str) {
-        Self::clear_pending_interactive_request_map(
+    fn committed_follow_up_warning(delivery: Result<(), String>) -> Option<String> {
+        // The primary response is already committed, so return a separate warning instead of
+        // making the frontend offer a response retry that Codex must reject.
+        delivery.err()
+    }
+
+    async fn respond_hook_callback(
+        &mut self,
+        request_id: &str,
+        response: Value,
+    ) -> Result<(), String> {
+        self.ensure_pending_interactive_request(request_id)?;
+        let delivery = self.write_control_response(request_id, response).await;
+        Self::commit_actor_pending_after_delivery(
             &mut self.pending_interactive_requests,
             request_id,
-        );
+            delivery,
+        )
+    }
+
+    fn ensure_pending_interactive_request(&self, request_id: &str) -> Result<(), String> {
+        if self.pending_interactive_requests.contains_key(request_id) {
+            Ok(())
+        } else {
+            Err(format!("unknown interactive request_id: {request_id}"))
+        }
+    }
+
+    fn commit_actor_pending_after_delivery(
+        pending: &mut HashMap<String, PendingInteractiveRequest>,
+        request_id: &str,
+        delivery: Result<(), String>,
+    ) -> Result<(), String> {
+        if let Err(error) = delivery {
+            log::error!(
+                "[actor] interactive response delivery failed; pending retained: request_id={}, error={}",
+                request_id,
+                error
+            );
+            return Err(error);
+        }
+        Self::clear_pending_interactive_request_map(pending, request_id);
+        Ok(())
+    }
+
+    fn commit_codex_pending_after_delivery(
+        codex: &mut CodexAppServer,
+        pending: &mut HashMap<String, PendingInteractiveRequest>,
+        request_id: &str,
+        delivery: Result<(), String>,
+    ) -> Result<(), String> {
+        if let Err(error) = delivery {
+            log::error!(
+                "[actor] codex interactive response delivery failed; pending retained: request_id={}, error={}",
+                request_id,
+                error
+            );
+            return Err(error);
+        }
+        if !codex.commit_response(request_id) {
+            return Err(format!(
+                "interactive request disappeared before commit: {request_id}"
+            ));
+        }
+        Self::clear_pending_interactive_request_map(pending, request_id);
+        Ok(())
     }
 
     fn clear_pending_interactive_request_map(
@@ -1842,22 +1961,50 @@ impl SessionActor {
         }
     }
 
-    /// Send a control_cancel_request to CLI stdin (top-level message type).
+    /// Cancel an interactive request using the active transport's wire protocol.
     /// Used only for explicit user-initiated cancellation (ActorCommand::CancelControlRequest,
     /// e.g. the user dismisses a permission prompt). NOT for auto-declining unsupported
     /// requests — those use write_control_response_error (the CLI waits for a response).
     async fn handle_cancel_control_request(&mut self, request_id: &str) -> Result<(), String> {
-        let payload = serde_json::json!({
-            "type": "control_cancel_request",
-            "request_id": request_id,
-        });
+        self.ensure_pending_interactive_request(request_id)?;
+        if self.codex.is_some() {
+            // Codex has no transport-level cancel notification for server requests. A JSON-RPC
+            // error resolves every interactive method without inventing a method-specific value.
+            let payload = self
+                .codex
+                .as_ref()
+                .expect("codex checked above")
+                .frame_cancel(request_id)?;
+            log::debug!(
+                "[actor] cancel_codex_interactive: run_id={}, req_id={}",
+                self.run_id,
+                request_id,
+            );
+            let delivery = self
+                .write_json_line(&payload, "cancel codex interactive request")
+                .await;
+            return Self::commit_codex_pending_after_delivery(
+                self.codex.as_mut().expect("codex checked above"),
+                &mut self.pending_interactive_requests,
+                request_id,
+                delivery,
+            );
+        }
+
+        let payload = build_control_cancel_request(request_id);
         log::debug!(
             "[actor] cancel_control_request: run_id={}, req_id={}",
             self.run_id,
             request_id,
         );
-        self.write_json_line(&payload, "cancel control request")
-            .await
+        let delivery = self
+            .write_json_line(&payload, "cancel control request")
+            .await;
+        Self::commit_actor_pending_after_delivery(
+            &mut self.pending_interactive_requests,
+            request_id,
+            delivery,
+        )
     }
 
     /// Low-level helper: serialize JSON payload, write to stdin, flush.
@@ -1872,13 +2019,10 @@ impl SessionActor {
             .write_all(line.as_bytes())
             .await
             .map_err(|e| format!("{} write failed: {}", context, e))?;
-        if let Err(e) = stdin.flush().await {
-            log::warn!(
-                "[actor] stdin flush failed for run_id={}: {}",
-                self.run_id,
-                e
-            );
-        }
+        stdin
+            .flush()
+            .await
+            .map_err(|e| format!("{} flush failed: {}", context, e))?;
         Ok(())
     }
 
@@ -3275,7 +3419,12 @@ pub fn build_user_payload(
 
 #[cfg(test)]
 mod tests {
-    use super::{build_control_response, PendingInteractiveRequest, SessionActor};
+    use super::{
+        build_control_cancel_request, build_control_response, PendingInteractiveRequest,
+        SessionActor,
+    };
+    use crate::agent::codex_appserver::CodexAppServer;
+    use crate::agent::session_protocol::{PendingKind, SessionProtocol};
     use crate::models::{max_attachment_size, BusEvent, ALLOWED_DOC_TYPES, ALLOWED_IMAGE_TYPES};
     use serde_json::json;
     use std::collections::HashMap;
@@ -3356,6 +3505,14 @@ mod tests {
     }
 
     #[test]
+    fn claude_control_cancel_request_shape() {
+        let payload = build_control_cancel_request("r3");
+        assert_eq!(payload["type"], "control_cancel_request");
+        assert_eq!(payload["request_id"], "r3");
+        assert_eq!(payload.as_object().map(serde_json::Map::len), Some(2));
+    }
+
+    #[test]
     fn pending_interactive_requests_clear_independently() {
         let now = Instant::now();
         let mut pending = HashMap::from([
@@ -3383,6 +3540,151 @@ mod tests {
 
         assert!(pending.contains_key("first"));
         assert!(!pending.contains_key("second"));
+    }
+
+    #[test]
+    fn failed_codex_delivery_retains_both_pending_layers_for_retry() {
+        let mut codex = CodexAppServer::new();
+        codex.parse_line("run1", r#"{"id":2,"result":{"thread":{"id":"th-123"}}}"#);
+        codex.parse_line(
+            "run1",
+            r#"{"id":21,"method":"mcpServer/elicitation/request","params":{"threadId":"th-123","serverName":"srv","message":"Pick"}}"#,
+        );
+        let mut pending = HashMap::from([(
+            "21".to_string(),
+            PendingInteractiveRequest {
+                request_id: "21".to_string(),
+                subtype: "elicitation".to_string(),
+                detail: "srv".to_string(),
+                received_at: Instant::now(),
+            },
+        )]);
+
+        let result = SessionActor::commit_codex_pending_after_delivery(
+            &mut codex,
+            &mut pending,
+            "21",
+            Err("stdin closed".to_string()),
+        );
+        assert_eq!(result.unwrap_err(), "stdin closed");
+        assert!(pending.contains_key("21"));
+        assert!(codex
+            .frame_response(PendingKind::Elicitation, "21", json!({"action":"decline"}),)
+            .is_ok());
+    }
+
+    #[test]
+    fn successful_codex_delivery_commits_both_pending_layers() {
+        let mut codex = CodexAppServer::new();
+        codex.parse_line("run1", r#"{"id":2,"result":{"thread":{"id":"th-123"}}}"#);
+        codex.parse_line(
+            "run1",
+            r#"{"id":22,"method":"mcpServer/elicitation/request","params":{"threadId":"th-123","serverName":"srv","message":"Pick"}}"#,
+        );
+        let mut pending = HashMap::from([(
+            "22".to_string(),
+            PendingInteractiveRequest {
+                request_id: "22".to_string(),
+                subtype: "elicitation".to_string(),
+                detail: "srv".to_string(),
+                received_at: Instant::now(),
+            },
+        )]);
+
+        SessionActor::commit_codex_pending_after_delivery(&mut codex, &mut pending, "22", Ok(()))
+            .unwrap();
+        assert!(!pending.contains_key("22"));
+        assert!(codex
+            .frame_response(PendingKind::Elicitation, "22", json!({"action":"decline"}),)
+            .is_err());
+    }
+
+    #[test]
+    fn failed_codex_cancel_delivery_retains_both_pending_layers_for_retry() {
+        let mut codex = CodexAppServer::new();
+        codex.parse_line("run1", r#"{"id":2,"result":{"thread":{"id":"th-123"}}}"#);
+        codex.parse_line(
+            "run1",
+            r#"{"id":23,"method":"mcpServer/elicitation/request","params":{"threadId":"th-123","serverName":"srv","message":"Pick"}}"#,
+        );
+        let mut pending = HashMap::from([(
+            "23".to_string(),
+            PendingInteractiveRequest {
+                request_id: "23".to_string(),
+                subtype: "elicitation".to_string(),
+                detail: "srv".to_string(),
+                received_at: Instant::now(),
+            },
+        )]);
+
+        assert!(codex.frame_cancel("23").is_ok());
+        let result = SessionActor::commit_codex_pending_after_delivery(
+            &mut codex,
+            &mut pending,
+            "23",
+            Err("stdin closed".to_string()),
+        );
+        assert_eq!(result.unwrap_err(), "stdin closed");
+        assert!(pending.contains_key("23"));
+        assert!(codex.frame_cancel("23").is_ok());
+    }
+
+    #[test]
+    fn successful_codex_cancel_delivery_commits_both_pending_layers() {
+        let mut codex = CodexAppServer::new();
+        codex.parse_line("run1", r#"{"id":2,"result":{"thread":{"id":"th-123"}}}"#);
+        codex.parse_line(
+            "run1",
+            r#"{"id":24,"method":"mcpServer/elicitation/request","params":{"threadId":"th-123","serverName":"srv","message":"Pick"}}"#,
+        );
+        let mut pending = HashMap::from([(
+            "24".to_string(),
+            PendingInteractiveRequest {
+                request_id: "24".to_string(),
+                subtype: "elicitation".to_string(),
+                detail: "srv".to_string(),
+                received_at: Instant::now(),
+            },
+        )]);
+
+        SessionActor::commit_codex_pending_after_delivery(&mut codex, &mut pending, "24", Ok(()))
+            .unwrap();
+        assert!(!pending.contains_key("24"));
+        assert!(codex.frame_cancel("24").is_err());
+    }
+
+    #[test]
+    fn committed_response_does_not_make_failed_follow_up_retryable() {
+        assert_eq!(
+            SessionActor::committed_follow_up_warning(Err("stdin closed".to_string())),
+            Some("stdin closed".to_string())
+        );
+        assert_eq!(SessionActor::committed_follow_up_warning(Ok(())), None);
+    }
+
+    #[test]
+    fn failed_claude_delivery_retains_actor_pending_for_retry() {
+        let mut pending = HashMap::from([(
+            "claude-1".to_string(),
+            PendingInteractiveRequest {
+                request_id: "claude-1".to_string(),
+                subtype: "can_use_tool".to_string(),
+                detail: "Bash".to_string(),
+                received_at: Instant::now(),
+            },
+        )]);
+
+        let result = SessionActor::commit_actor_pending_after_delivery(
+            &mut pending,
+            "claude-1",
+            Err("stdin closed".to_string()),
+        );
+        assert_eq!(result.unwrap_err(), "stdin closed");
+        assert!(pending.contains_key("claude-1"));
+
+        SessionActor::commit_actor_pending_after_delivery(&mut pending, "claude-1", Ok(()))
+            .unwrap();
+        assert!(!pending.contains_key("claude-1"));
     }
 
     #[test]

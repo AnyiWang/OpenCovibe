@@ -57,7 +57,7 @@
     runId?: string;
     /** Callback to fetch full tool result from backend (with caching). */
     fetchToolResult?: (runId: string, toolUseId: string) => Promise<Record<string, unknown> | null>;
-    onAnswer?: (answer: string) => void;
+    onAnswer?: (answer: string) => void | Promise<void>;
     onApprove?: (toolName: string) => void;
     /** Inline permission response (--permission-prompt-tool stdio). */
     onPermissionRespond?: (
@@ -528,7 +528,7 @@
     if (submitting) return;
     submitting = true;
     try {
-      onAnswer?.(answer);
+      await onAnswer?.(answer);
     } catch {
       submitting = false;
     }
@@ -567,7 +567,7 @@
   // Multi-question submit for the ask_pending (onAnswer) path — used by Codex app-server
   // (and Claude pipe mode) where the answer goes back via onAnswer, not a permission response.
   // Encodes all answers keyed by both question id (for Codex respond_user_input) and text.
-  function submitAllAskAnswers() {
+  async function submitAllAskAnswers() {
     if (submitting || !onAnswer || !allQuestionsAnswered) return;
     submitting = true;
     const byId: Record<string, string> = {};
@@ -577,7 +577,11 @@
       byText[q.question] = ans;
       if (q.id) byId[q.id] = ans;
     }
-    onAnswer(JSON.stringify({ __askMulti: true, byId, byText }));
+    try {
+      await onAnswer(JSON.stringify({ __askMulti: true, byId, byText }));
+    } catch {
+      submitting = false;
+    }
   }
 
   // Multi-question: submit all answers at once
