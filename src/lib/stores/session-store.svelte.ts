@@ -2825,9 +2825,6 @@ export class SessionStore {
           .map(([q, a]) => `${q}: ${a}`)
           .join("\n")
       : answer;
-    // Pass the per-question answers so the resolved card highlights each choice.
-    this.resolveAskQuestion(toolUseId, display, multi ? multi.byText : undefined);
-
     if (this.run.agent === "codex") {
       try {
         const answers: Record<string, string[]> = {};
@@ -2838,6 +2835,8 @@ export class SessionStore {
           answers[questions[0]?.id ?? "0"] = [answer];
         }
         await api.respondUserInput(this.run.id, toolUseId, answers);
+        // Keep the pending card actionable until the backend confirms stdin delivery.
+        this.resolveAskQuestion(toolUseId, display, multi ? multi.byText : undefined);
       } catch (e) {
         dbgWarn("store", "codex respondUserInput failed:", e);
         this.error = String(e);
@@ -2851,8 +2850,10 @@ export class SessionStore {
       // The session should be alive (idle phase) after the CLI auto-failed AskUserQuestion.
       if (this.sessionAlive) {
         await api.sendSessionMessage(this.run.id, display);
+        this.resolveAskQuestion(toolUseId, display, multi ? multi.byText : undefined);
       } else {
         dbgWarn("store", "session not alive for tool answer, skipping send");
+        throw new Error("session not alive for tool answer");
       }
     } catch (e) {
       dbgWarn("store", "tool answer failed:", e);

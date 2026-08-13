@@ -86,7 +86,7 @@
     setStoredRemoteCwd,
   } from "$lib/utils/remote-cwd";
   import { shouldAutoName } from "$lib/utils/auto-name";
-  import { resolvePermissionOptimistic } from "$lib/utils/resolve-permission";
+  import { resolvePermissionAfterDelivery } from "$lib/utils/resolve-permission";
   import { getToolColor } from "$lib/utils/tool-colors";
   import { ansiToHtml, hasAnsiCodes } from "$lib/utils/ansi";
   import { randomSpinnerVerb } from "$lib/utils/spinner-verbs";
@@ -1815,6 +1815,15 @@
         promptRef?.addFiles([file]);
       },
     );
+    const interactiveFollowUpWarningUnlisten = chatTransport.listen<{
+      run_id: string;
+      request_id: string;
+      error: string;
+    }>("interactive-follow-up-warning", (payload) => {
+      if (payload.run_id !== store.run?.id) return;
+      dbgWarn("chat", "interactive follow-up failed after response delivery", payload);
+      showChatToast(t("toast_permissionInterruptFailed"));
+    });
 
     // Tauri native drag-drop listeners (dragDropEnabled: true in tauri.conf.json)
     const dragEnterUnlisten = chatTransport.listen<{ paths: string[] }>(
@@ -1879,6 +1888,7 @@
       keybindingStore.unregisterCallback("app:exportChatHtml");
       window.removeEventListener("ocv:export-html", onExportHtmlEvent);
       screenshotUnlisten.then((fn) => fn());
+      interactiveFollowUpWarningUnlisten.then((fn) => fn());
       dragEnterUnlisten.then((fn) => fn());
       dragLeaveUnlisten.then((fn) => fn());
       dragDropUnlisten.then((fn) => fn());
@@ -4108,34 +4118,32 @@
       interrupt,
     });
     try {
-      // Set pending mode override BEFORE responding (so reducer picks it up)
-      if (behavior === "allow" && updatedPermissions) {
-        const modePerm = updatedPermissions.find((p) => p.type === "setMode");
-        if (modePerm && modePerm.mode) {
-          store.pendingPermissionModeOverride = modePerm.mode;
-          dbg("chat", "set pendingPermissionModeOverride", { mode: modePerm.mode });
-        }
-      }
+      const modeOverride =
+        behavior === "allow"
+          ? updatedPermissions?.find((permission) => permission.type === "setMode")?.mode
+          : undefined;
 
-      await api.respondPermission(
+      await resolvePermissionAfterDelivery(
+        store,
         runId,
         requestId,
         behavior,
-        updatedPermissions,
-        updatedInput,
-        denyMessage,
-        interrupt,
+        () =>
+          api.respondPermission(
+            runId,
+            requestId,
+            behavior,
+            updatedPermissions,
+            updatedInput,
+            denyMessage,
+            interrupt,
+          ),
+        modeOverride,
       );
-      // Optimistic resolve + clear attention flag
-      resolvePermissionOptimistic(store, runId, requestId, behavior);
     } catch (e) {
       dbgWarn("chat", "permission respond failed:", e);
-      // If the CLI rejected the response (e.g. session already idle after interrupt),
-      // still resolve the card locally so buttons are removed.
-      if (behavior === "deny") {
-        resolvePermissionOptimistic(store, runId, requestId, "deny");
-      }
-      // allow failure: don't change status — submitting timeout auto-resets (§5)
+      // The backend retains pending state when primary delivery fails, so keep the card
+      // actionable for both allow and deny retries.
       store.error = String(e);
       throw e; // Let component-side wrapper catch and unlock buttons
     }
@@ -4238,18 +4246,24 @@
 
     try {
       // 1. Set flags BEFORE responding
-      store.pendingPermissionModeOverride = "acceptEdits";
       store.pendingClearContextPlan = "__pending__"; // marker: waiting for tool_end
 
       // 2. Allow ExitPlanMode (with setMode) — satisfies the control_response requirement
-      await api.respondPermission(
+      await resolvePermissionAfterDelivery(
+        store,
         runId,
         requestId,
         "allow",
-        [{ type: "setMode", mode: "acceptEdits", destination: "session" }],
-        exitPlanEntry.tool.input,
+        () =>
+          api.respondPermission(
+            runId,
+            requestId,
+            "allow",
+            [{ type: "setMode", mode: "acceptEdits", destination: "session" }],
+            exitPlanEntry.tool.input,
+          ),
+        "acceptEdits",
       );
-      resolvePermissionOptimistic(store, runId, requestId, "allow");
 
       // 3. Wait for tool_end to deliver plan content (via pendingClearContextPlan)
       //    Poll briefly — tool_end should arrive within a few hundred ms
@@ -4308,6 +4322,7 @@
     } catch (e) {
       dbgWarn("chat", "hook callback respond failed:", e);
       store.error = String(e);
+      throw e;
     }
   }
 </script>

@@ -80,6 +80,14 @@ pub struct PendingInteractive {
     pub kind: PendingKind,
 }
 
+/// A prepared response to a server-initiated interactive request. The primary response resolves
+/// the pending request; an optional interrupt is generated only after that response is committed.
+#[derive(Debug)]
+pub struct InteractiveResponse {
+    pub primary: Value,
+    pub interrupt_after_commit: bool,
+}
+
 /// Turn-boundary signal extracted from a wire line, mapped by the actor to `RunState` and
 /// used to release quarantine / advance the turn queue.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -116,7 +124,7 @@ pub struct ParsedLine {
 /// four seams: spawn (startup), user message (frame_user_turn), each stdout line
 /// (parse_line), and each interactive response (frame_response) / stop (frame_interrupt).
 ///
-/// Each `frame_*` returns the JSON value(s) to write as newline-delimited lines to stdin.
+/// Each `frame_*` prepares JSON values to write as newline-delimited lines to stdin.
 pub trait SessionProtocol: Send {
     /// Messages to send immediately after spawn, before the first user turn
     /// (e.g. Codex `initialize` + `thread/start`|`thread/resume`).
@@ -145,12 +153,19 @@ pub trait SessionProtocol: Send {
     /// Parse one stdout line into events + lifecycle/interactive/thread-id signals.
     fn parse_line(&mut self, run_id: &str, line: &str) -> ParsedLine;
 
-    /// Frame the user's response to a pending interactive request (Codex: a JSON-RPC
-    /// response on the stored request id). Empty = nothing to send (e.g. unknown id).
+    /// Prepare the user's response to a pending interactive request without consuming it.
+    /// The actor commits the request only after the primary frame is written and flushed.
     fn frame_response(
-        &mut self,
+        &self,
         kind: PendingKind,
         request_id: &str,
         response: Value,
-    ) -> Vec<Value>;
+    ) -> Result<InteractiveResponse, String>;
+
+    /// Prepare cancellation of a pending interactive request without consuming it.
+    /// The actor commits the request only after the cancellation frame is written and flushed.
+    fn frame_cancel(&self, request_id: &str) -> Result<Value, String>;
+
+    /// Consume a response prepared by [`SessionProtocol::frame_response`] after delivery.
+    fn commit_response(&mut self, request_id: &str) -> bool;
 }
