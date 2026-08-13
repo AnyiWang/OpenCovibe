@@ -130,6 +130,14 @@
   },
   { "type": "control_cancelled", "run_id": "run-1", "request_id": "req-elicit-1" },
   {
+    "type": "codex_agent_info",
+    "run_id": "run-1",
+    "thread_id": "child-1",
+    "nickname": "Dewey",
+    "role": "explorer",
+    "parent_thread_id": "root"
+  },
+  {
     "type": "message_complete",
     "run_id": "run-1",
     "message_id": "msg-1",

@@ -36,6 +36,7 @@ pub const REPLAY_TYPES: &[&str] = &[
     "elicitation_prompt",
     "rate_limit_event",
     "codex_hook_run",
+    "codex_agent_info",
 ];
 
 /// Check if a BusEvent's serde tag is in REPLAY_TYPES.

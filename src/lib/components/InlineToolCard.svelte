@@ -1,5 +1,10 @@
 <script lang="ts">
-  import type { BusToolItem, TimelineEntry, PermissionSuggestion } from "$lib/types";
+  import type {
+    BusToolItem,
+    TimelineEntry,
+    PermissionSuggestion,
+    CodexAgentIdentity,
+  } from "$lib/types";
   import type { TaskNotificationItem } from "$lib/stores/session-store.svelte";
   import { getToolColor } from "$lib/utils/tool-colors";
   import {
@@ -21,6 +26,7 @@
     getPermissionProfileDetails,
     isToolTerminal,
     formatSuggestionLabel as _fmtSuggestion,
+    singleCodexReceiverThreadId,
   } from "$lib/utils/tool-rendering";
   import MarkdownContent from "$lib/components/MarkdownContent.svelte";
   import ToolDetailView from "$lib/components/ToolDetailView.svelte";
@@ -41,6 +47,7 @@
     planContent,
     latestPlanTool,
     showPermissionInPanel,
+    codexAgentInfo,
     agentDisplayName,
     onPreviewFile,
   }: {
@@ -71,6 +78,8 @@
     latestPlanTool?: boolean;
     /** Whether generic tool permissions are handled by the floating PermissionPanel. */
     showPermissionInPanel?: boolean;
+    /** Spawned Codex thread identity keyed by thread id. */
+    codexAgentInfo?: Record<string, CodexAgentIdentity>;
     /** Display name for the agent (e.g. "Claude" or "Codex"). */
     agentDisplayName?: string;
     /** Click on Edit/Write/Read tool card's file path → open preview in right panel. */
@@ -243,6 +252,15 @@
     if (res?.codexCollab && typeof res.operation === "string") return res.operation;
     return null;
   });
+  let codexAgentThreadId = $derived.by<string | null>(() => {
+    if (!codexCollabOp) return null;
+    const inp = tool.input as Record<string, unknown> | undefined;
+    const res = tool.tool_use_result as Record<string, unknown> | undefined;
+    return singleCodexReceiverThreadId(inp, res);
+  });
+  let codexIdentity = $derived(
+    codexAgentThreadId ? codexAgentInfo?.[codexAgentThreadId] : undefined,
+  );
 
   // Status display
   let statusKind = $derived(
@@ -1646,7 +1664,12 @@
       <div class="flex-1 min-w-0 flex items-center gap-1.5">
         {#if codexCollabOp}
           <!-- Codex collab subagent: "Sub-agent · {operation}" -->
-          <span class="text-xs font-medium text-foreground">{t("inline_subagent")}</span>
+          <span class="text-xs font-medium text-foreground"
+            >{codexIdentity?.nickname ?? t("inline_subagent")}</span
+          >
+          {#if codexIdentity?.role}
+            <span class="text-[10px] text-cyan-500/80">{codexIdentity.role}</span>
+          {/if}
           <span class="text-xs text-muted-foreground">· {codexCollabOp}</span>
           {#if subToolCount > 0}
             <span class="text-[10px] px-1 py-0.5 rounded bg-muted text-muted-foreground">
@@ -1823,7 +1846,7 @@
             </button>
           {/if}
         {:else}
-          <ToolDetailView tool={enrichedTool} {isInputStreaming} {onPreviewFile} />
+          <ToolDetailView tool={enrichedTool} {isInputStreaming} {onPreviewFile} {codexAgentInfo} />
         {/if}
       </div>
     {/if}
@@ -1879,6 +1902,7 @@
             {onPermissionRespond}
             {taskNotifications}
             {showPermissionInPanel}
+            {codexAgentInfo}
             {agentDisplayName}
             {onPreviewFile}
           />

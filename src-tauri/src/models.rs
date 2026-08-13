@@ -1406,6 +1406,17 @@ pub enum BusEvent {
         turn_id: String,
         diff: String,
     },
+    /// Identity metadata resolved for a spawned Codex thread through `thread/read`.
+    CodexAgentInfo {
+        run_id: String,
+        thread_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        nickname: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        role: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        parent_thread_id: Option<String>,
+    },
     /// Tool use summary — top-level event type "tool_use_summary".
     ToolUseSummary {
         run_id: String,

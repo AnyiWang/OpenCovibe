@@ -95,8 +95,9 @@ pub struct ParsedLine {
     /// BusEvents to persist + emit (message deltas, tool start/end, usage, and any
     /// interactive prompt events).
     pub events: Vec<BusEvent>,
-    /// Set when this line is a server→client interactive request awaiting a user response.
-    pub interactive: Option<PendingInteractive>,
+    /// Server→client interactive requests awaiting user responses. A parent notification can
+    /// register a child thread and replay more than one request that arrived before registration.
+    pub interactive: Vec<PendingInteractive>,
     /// Set when this line marks a turn boundary.
     pub lifecycle: Option<LifecycleSignal>,
     /// Set when this line carries the (resume) conversation id to persist.
@@ -106,6 +107,9 @@ pub struct ParsedLine {
     /// where `request_id` is the frontend control request id and `value` is the JSON-RPC
     /// `result` (or `error`). The actor routes it to the matching `control_waiter`.
     pub control_response: Option<(String, Value)>,
+    /// JSON-RPC frames the protocol must send immediately without waiting for frontend input.
+    /// Codex uses this for autonomous metadata reads such as spawned-thread identity lookup.
+    pub outbound: Vec<Value>,
 }
 
 /// Localizes all wire-format differences between agent transports. The actor calls these at

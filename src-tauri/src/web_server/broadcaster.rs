@@ -204,6 +204,7 @@ fn event_type_name(event: &BusEvent) -> &'static str {
         BusEvent::CodexHookRun { .. } => "codex_hook_run",
         BusEvent::CodexMcpStatus { .. } => "codex_mcp_status",
         BusEvent::CodexTurnDiff { .. } => "codex_turn_diff",
+        BusEvent::CodexAgentInfo { .. } => "codex_agent_info",
         BusEvent::Raw { .. } => "raw",
     }
 }

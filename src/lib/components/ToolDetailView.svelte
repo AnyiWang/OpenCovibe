@@ -3,7 +3,7 @@
   import { dbg } from "$lib/utils/debug";
   import { ansiToHtml, hasAnsiCodes, escapeHtml, stripAnsi } from "$lib/utils/ansi";
   import { colorizeCommand } from "$lib/utils/shell-colorize";
-  import type { BusToolItem, TodoItem } from "$lib/types";
+  import type { BusToolItem, TodoItem, CodexAgentIdentity } from "$lib/types";
   import {
     extractOutputText,
     getLanguageFromPath,
@@ -35,10 +35,12 @@
     tool,
     isInputStreaming = false,
     onPreviewFile,
+    codexAgentInfo,
   }: {
     tool: BusToolItem;
     isInputStreaming?: boolean;
     onPreviewFile?: (path: string) => void;
+    codexAgentInfo?: Record<string, CodexAgentIdentity>;
   } = $props();
 
   // ── Helpers ──
@@ -426,6 +428,9 @@
     status?: string | null; // CollabAgentToolCallStatus
     receiverThreadIds?: string[];
     agents?: CodexCollabAgent[];
+  }
+  function codexAgentLabel(agent: CodexCollabAgent): string {
+    return codexAgentInfo?.[agent.thread_id]?.nickname ?? agent.thread_id.slice(0, 8);
   }
   // The marker may ride on input (ToolStart) or on the result payload (ToolEnd); prefer the
   // result (richer/final) and fall back to input for the in-flight render.
@@ -1167,8 +1172,13 @@
         {#each codexCollab.agents as agent}
           <div class="flex items-center gap-2 text-xs">
             <span class="font-mono text-[10px] text-muted-foreground/70"
-              >{agent.thread_id.slice(0, 8)}</span
+              >{codexAgentLabel(agent)}</span
             >
+            {#if codexAgentInfo?.[agent.thread_id]?.role}
+              <span class="text-[10px] text-cyan-500/70"
+                >{codexAgentInfo[agent.thread_id].role}</span
+              >
+            {/if}
             <span
               class="px-1.5 py-0.5 rounded text-[10px] font-medium {codexCollabBadgeClass(
                 agent.status,

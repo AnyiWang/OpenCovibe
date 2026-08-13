@@ -91,6 +91,9 @@ pub fn validate_bus_event(ev: &BusEvent) -> Option<ValidationWarn> {
         // State-class (Codex thread goal): never drop — the GoalPanel needs every update,
         // including the null-goal "cleared" signal.
         BusEvent::GoalUpdate { .. } => None,
+        // Info-class event: partial identity is valid because older Codex versions may omit
+        // nickname, role, or parent linkage from `thread/read`.
+        BusEvent::CodexAgentInfo { .. } => None,
         // Everything else: pass through
         _ => None,
     }

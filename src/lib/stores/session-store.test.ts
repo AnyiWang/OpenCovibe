@@ -1750,6 +1750,121 @@ describe("SessionStore reducer", () => {
       expect(agents[0].thread_id).toBe("t2");
       expect(agents[0].status).toBe("completed");
     });
+
+    it("stores resolved Codex agent identities", () => {
+      store.run = makeRun("run-collab");
+      store.applyEvent({
+        type: "codex_agent_info",
+        run_id: "run-collab",
+        thread_id: "child-1",
+        nickname: "Dewey",
+        role: "explorer",
+        parent_thread_id: "root",
+      });
+
+      expect(store.codexAgentInfo["child-1"]).toEqual({
+        nickname: "Dewey",
+        role: "explorer",
+        parentThreadId: "root",
+      });
+      expect(store.unknownEventCount).toBe(0);
+    });
+
+    it("commits Codex agent identities through batch reduction", () => {
+      store.run = makeRun("run-collab");
+      store.applyEventBatch([
+        {
+          type: "codex_agent_info",
+          run_id: "run-collab",
+          thread_id: "child-batch",
+          nickname: "Huey",
+          role: "worker",
+          parent_thread_id: "root",
+        },
+      ]);
+
+      expect(store.codexAgentInfo["child-batch"]).toEqual({
+        nickname: "Huey",
+        role: "worker",
+        parentThreadId: "root",
+      });
+    });
+
+    it("does not publish Codex identities from a stale async batch", async () => {
+      store.run = makeRun("run-collab");
+      store.codexAgentInfo = {
+        existing: { nickname: "Live", role: "worker", parentThreadId: "root" },
+      };
+      const events: BusEvent[] = Array.from({ length: 501 }, (_, index) =>
+        index === 0
+          ? {
+              type: "codex_agent_info",
+              run_id: "run-collab",
+              thread_id: "stale-child",
+              nickname: "Stale",
+            }
+          : {
+              type: "message_delta",
+              run_id: "run-collab",
+              text: "x",
+            },
+      );
+      let staleChecks = 0;
+
+      const result = await store.applyEventBatchAsync(events, {
+        isStale: () => ++staleChecks >= 3,
+      });
+
+      expect(result).toBeNull();
+      expect(store.codexAgentInfo).toEqual({
+        existing: { nickname: "Live", role: "worker", parentThreadId: "root" },
+      });
+    });
+
+    it("preserves a live Codex identity that arrives while async replay yields", async () => {
+      store.run = makeRun("run-collab");
+      const events: BusEvent[] = Array.from({ length: 501 }, (_, index) =>
+        index === 0
+          ? {
+              type: "codex_agent_info",
+              run_id: "run-collab",
+              thread_id: "child-1",
+              nickname: "Historical",
+            }
+          : { type: "message_delta", run_id: "run-collab", text: "x" },
+      );
+
+      const replay = store.applyEventBatchAsync(events);
+      store.applyEvent({
+        type: "codex_agent_info",
+        run_id: "run-collab",
+        thread_id: "child-1",
+        nickname: "Live",
+      });
+      await replay;
+
+      expect(store.codexAgentInfo["child-1"]?.nickname).toBe("Live");
+    });
+
+    it("snapshot round-trip preserves resolved Codex identities", () => {
+      store.run = makeRun("run-collab");
+      store.applyEvent({
+        type: "codex_agent_info",
+        run_id: "run-collab",
+        thread_id: "child-1",
+        nickname: "Dewey",
+        parent_thread_id: "root",
+      });
+
+      const body = (store as unknown as { _buildSnapshot(): string })._buildSnapshot();
+      const fresh = new SessionStore();
+      const restored = (
+        fresh as unknown as { _tryApplySnapshot(body: string): boolean }
+      )._tryApplySnapshot(body);
+
+      expect(restored).toBe(true);
+      expect(fresh.codexAgentInfo["child-1"]?.nickname).toBe("Dewey");
+    });
   });
 
   // ── Subagent streaming deltas ──

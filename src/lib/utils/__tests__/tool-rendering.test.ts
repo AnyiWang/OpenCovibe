@@ -19,6 +19,7 @@ import {
   getPermissionProfileDetails,
   isSubagentTool,
   friendlyToolName,
+  singleCodexReceiverThreadId,
 } from "../tool-rendering";
 
 // ── extractOutputText ──
@@ -54,6 +55,35 @@ describe("extractOutputText", () => {
   it("falls back to JSON.stringify for unknown objects", () => {
     const output = { foo: 42 };
     expect(extractOutputText(output)).toBe('{"foo":42}');
+  });
+});
+
+describe("singleCodexReceiverThreadId", () => {
+  it("returns the sole receiver from the final result", () => {
+    expect(
+      singleCodexReceiverThreadId(
+        { receiverThreadIds: ["initial"] },
+        { receiverThreadIds: ["child-1"] },
+      ),
+    ).toBe("child-1");
+  });
+
+  it("falls back to input when no result is available", () => {
+    expect(singleCodexReceiverThreadId({ receiverThreadIds: ["child-1"] }, undefined)).toBe(
+      "child-1",
+    );
+  });
+
+  it("does not attribute a multi-agent operation to its first receiver", () => {
+    expect(
+      singleCodexReceiverThreadId({ receiverThreadIds: ["child-1", "child-2"] }, undefined),
+    ).toBeNull();
+  });
+
+  it("rejects empty and malformed receiver lists", () => {
+    expect(singleCodexReceiverThreadId({ receiverThreadIds: [] }, undefined)).toBeNull();
+    expect(singleCodexReceiverThreadId({ receiverThreadIds: [""] }, undefined)).toBeNull();
+    expect(singleCodexReceiverThreadId({ receiverThreadIds: "child-1" }, undefined)).toBeNull();
   });
 });
 
