@@ -1,6 +1,7 @@
 <script lang="ts">
   import { renderMarkdown } from "$lib/utils/markdown";
   import { readFileBase64 } from "$lib/api";
+  import { imageViewer } from "$lib/stores/image-viewer.svelte";
   import { dbg, dbgWarn } from "$lib/utils/debug";
   import { onDestroy } from "svelte";
 
@@ -143,6 +144,31 @@
       };
       btn.addEventListener("click", handler);
       cleanups.push(() => btn.removeEventListener("click", handler));
+    });
+
+    return () => {
+      cleanups.forEach((fn) => fn());
+    };
+  });
+
+  // Click any rendered image to open it in the shared lightbox. Delegated per-<img> (mirrors
+  // the code-copy wiring above). Reads currentSrc at click time so basePath-resolved data URLs
+  // (set asynchronously in the effect below) are picked up.
+  $effect(() => {
+    if (!container || !html) return;
+
+    const imgs = container.querySelectorAll<HTMLImageElement>("img");
+    const cleanups: Array<() => void> = [];
+
+    imgs.forEach((img) => {
+      img.style.cursor = "zoom-in";
+      const handler = () => {
+        const src = img.currentSrc || img.getAttribute("src") || "";
+        if (!src) return;
+        imageViewer.openOne({ src, name: img.getAttribute("alt") || undefined });
+      };
+      img.addEventListener("click", handler);
+      cleanups.push(() => img.removeEventListener("click", handler));
     });
 
     return () => {
