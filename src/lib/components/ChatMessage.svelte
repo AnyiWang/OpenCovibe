@@ -3,6 +3,7 @@
   import { fmtTime, fmtDateTime } from "$lib/i18n/format";
   import MarkdownContent from "./MarkdownContent.svelte";
   import FileAttachment from "./FileAttachment.svelte";
+  import { imageViewer } from "$lib/stores/image-viewer.svelte";
   import { IMAGE_TYPES } from "$lib/utils/file-types";
   import type { ChatMessage, Attachment, HistoryContent } from "$lib/types";
   import HistoryContentPager from "./HistoryContentPager.svelte";
@@ -190,14 +191,31 @@
     <div class="pl-7 text-sm text-foreground leading-relaxed">
       {#if isUser}
         {#if attachments && attachments.length > 0}
+          {@const imageAtts = attachments.filter((a) => isImage(a) && a.contentBase64)}
           <div class="flex flex-wrap gap-2 mb-2">
             {#each attachments as att}
               {#if isImage(att) && att.contentBase64}
-                <img
-                  src="data:{att.type};base64,{att.contentBase64}"
-                  alt={att.name}
-                  class="max-h-48 max-w-xs rounded-md border border-border object-contain"
-                />
+                <!-- Click to open in the shared lightbox; a message's images page together. -->
+                <button
+                  type="button"
+                  onclick={() =>
+                    imageViewer.openMany(
+                      imageAtts.map((a) => ({
+                        src: `data:${a.type};base64,${a.contentBase64}`,
+                        name: a.name,
+                        type: a.type,
+                      })),
+                      imageAtts.indexOf(att),
+                    )}
+                  title={att.name}
+                  class="block cursor-zoom-in overflow-hidden rounded-md border border-border transition-colors hover:border-primary/60 focus:outline-none focus:ring-2 focus:ring-primary/50"
+                >
+                  <img
+                    src="data:{att.type};base64,{att.contentBase64}"
+                    alt={att.name}
+                    class="max-h-48 max-w-xs object-contain"
+                  />
+                </button>
               {:else}
                 <FileAttachment name={att.name} size={att.size} mimeType={att.type} />
               {/if}

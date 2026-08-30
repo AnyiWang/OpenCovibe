@@ -62,6 +62,7 @@
   } from "$lib/utils/file-types";
   import { convertFile } from "$lib/utils/file-convert";
   import { uuid } from "$lib/utils/uuid";
+  import { imageViewer } from "$lib/stores/image-viewer.svelte";
   import type { ClipboardFileInfo } from "$lib/api";
   import type { PromptInputSnapshot } from "$lib/types";
   import {
@@ -2066,13 +2067,52 @@
         </span>
       {/each}
       {#each pendingAttachments as att (att.id)}
-        <FileAttachment
-          name={att.name}
-          size={att.size}
-          mimeType={att.type}
-          isPathRef={!!att.filePath && !att.contentBase64}
-          onremove={() => removeAttachment(att.id)}
-        />
+        {#if att.type.startsWith("image/") && att.contentBase64}
+          <!-- Image attachment: clickable thumbnail (opens the lightbox) with a hover remove ✕. -->
+          <div class="group relative">
+            <button
+              type="button"
+              onclick={() =>
+                imageViewer.openOne({
+                  src: `data:${att.type};base64,${att.contentBase64}`,
+                  name: att.name,
+                  type: att.type,
+                })}
+              class="block h-14 w-14 overflow-hidden rounded-md border border-border transition-colors hover:border-primary/60 focus:outline-none focus:ring-2 focus:ring-primary/50"
+              title={att.name}
+            >
+              <img
+                src={`data:${att.type};base64,${att.contentBase64}`}
+                alt={att.name}
+                class="h-full w-full object-cover"
+              />
+            </button>
+            <button
+              type="button"
+              onclick={() => removeAttachment(att.id)}
+              class="absolute -right-1.5 -top-1.5 rounded-full border border-border bg-background p-0.5 text-muted-foreground opacity-0 shadow-sm transition-opacity hover:text-foreground group-hover:opacity-100"
+              aria-label={t("common_removeAttachment")}
+            >
+              <svg
+                class="h-3 w-3"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <path d="M18 6 6 18M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+        {:else}
+          <FileAttachment
+            name={att.name}
+            size={att.size}
+            mimeType={att.type}
+            isPathRef={!!att.filePath && !att.contentBase64}
+            onremove={() => removeAttachment(att.id)}
+          />
+        {/if}
       {/each}
       {#each pendingPathRefs as ref (ref.id)}
         <FileAttachment
