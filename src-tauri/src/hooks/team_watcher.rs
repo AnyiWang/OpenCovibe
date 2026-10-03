@@ -1,19 +1,19 @@
+use crate::desktop_emit::DesktopEmit;
 use crate::storage::teams;
 use notify::{Config, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
-use tauri::{AppHandle, Emitter};
 use tokio_util::sync::CancellationToken;
 
 /// Tracks last-seen modification timestamps for dedup.
 type TimestampMap = Arc<Mutex<HashMap<PathBuf, SystemTime>>>;
 
 /// Start watching ~/.claude/teams/ and ~/.claude/tasks/ for changes.
-/// Emits `team-update` and `task-update` Tauri events.
+/// Emits `team-update` and `task-update` events (dropped in headless mode).
 /// Respects the CancellationToken for graceful shutdown.
-pub fn start_team_watcher(app: AppHandle, cancel: CancellationToken) {
+pub fn start_team_watcher(desktop: DesktopEmit, cancel: CancellationToken) {
     let timestamps: TimestampMap = Arc::new(Mutex::new(HashMap::new()));
 
     std::thread::spawn(move || {
@@ -60,7 +60,13 @@ pub fn start_team_watcher(app: AppHandle, cancel: CancellationToken) {
                         _ => continue,
                     }
                     for path in &event.paths {
-                        process_team_file_change(&app, path, &teams_dir, &tasks_dir, &timestamps);
+                        process_team_file_change(
+                            &desktop,
+                            path,
+                            &teams_dir,
+                            &tasks_dir,
+                            &timestamps,
+                        );
                     }
                 }
                 Ok(Err(e)) => log::warn!("[team_watcher] watch error: {}", e),
@@ -76,7 +82,7 @@ pub fn start_team_watcher(app: AppHandle, cancel: CancellationToken) {
 
 /// Process a single file change event, determine team_name and change type, emit event.
 fn process_team_file_change(
-    app: &AppHandle,
+    desktop: &DesktopEmit,
     path: &Path,
     teams_dir: &Path,
     tasks_dir: &Path,
@@ -130,7 +136,7 @@ fn process_team_file_change(
             team_name,
             change
         );
-        let _ = app.emit(
+        desktop.emit(
             "team-update",
             serde_json::json!({
                 "team_name": team_name,
@@ -162,7 +168,7 @@ fn process_team_file_change(
             team_name,
             task_id
         );
-        let _ = app.emit(
+        desktop.emit(
             "task-update",
             serde_json::json!({
                 "team_name": team_name,

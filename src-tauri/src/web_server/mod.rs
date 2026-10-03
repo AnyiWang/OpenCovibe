@@ -6,24 +6,48 @@ pub mod state;
 pub mod ws;
 
 use crate::storage;
-use crate::{
-    EffectiveWebBind, EffectiveWebPort, WebServerCancel, WebServerGeneration, WebServerHandle,
-    WebServerLock, WebServerWarning,
-};
-use broadcaster::{BroadcastEmitter, EventBroadcaster};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use state::AppState;
+use state::{AppState, CoreState};
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use storage::events::EventWriter;
-use tauri::Manager;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 /// Allowed bind addresses (whitelist).
 const ALLOWED_BINDS: &[&str] = &["127.0.0.1", "0.0.0.0", "::1", "::"];
+
+/// How the initial server start should resolve its configuration.
+///
+/// Desktop mode defers to `settings.json` (including `web_server_enabled: false`);
+/// headless mode treats the CLI flag as the user's explicit intent, so settings
+/// cannot veto the start and CLI port/bind override the stored ones.
+#[derive(Debug, Clone, Default)]
+pub struct StartOptions {
+    /// Ignore `web_server_enabled` in settings and start regardless.
+    pub force: bool,
+    /// Override `web_server_port` from settings.
+    pub port: Option<u16>,
+    /// Override `web_server_bind` from settings.
+    pub bind: Option<String>,
+}
+
+impl StartOptions {
+    /// Desktop launch behavior — settings are authoritative.
+    pub fn from_settings() -> Self {
+        Self::default()
+    }
+
+    /// `--headless` launch behavior — CLI flags win.
+    pub fn forced(port: Option<u16>, bind: Option<String>) -> Self {
+        Self {
+            force: true,
+            port,
+            bind,
+        }
+    }
+}
 
 /// Config passed from frontend to restart_with_config.
 #[derive(Debug, Deserialize)]
@@ -68,21 +92,21 @@ pub fn build_status(
     status
 }
 
-/// Initial start at app launch. Reads config from settings.
+/// Initial start at app launch. Reads config from settings, unless `opts` overrides it.
 /// Returns Ok(true) if started, Ok(false) if disabled, Err on failure.
-pub async fn start_server(app: &tauri::AppHandle) -> Result<bool, String> {
-    let lock = app.state::<WebServerLock>().inner().clone();
-    let _guard = lock.lock().await;
+pub async fn start_server(core: &CoreState, opts: StartOptions) -> Result<bool, String> {
+    let _guard = core.ws_lock.lock().await;
 
     let settings = storage::settings::get_user_settings();
-    if !settings.web_server_enabled.unwrap_or(false) {
+    if !opts.force && !settings.web_server_enabled.unwrap_or(false) {
         log::debug!("[web_server] disabled in settings, not starting");
         return Ok(false);
     }
 
-    let port = settings.web_server_port.unwrap_or(9476);
-    let bind = settings
-        .web_server_bind
+    let port = opts.port.or(settings.web_server_port).unwrap_or(9476);
+    let bind = opts
+        .bind
+        .or(settings.web_server_bind)
         .unwrap_or_else(|| "127.0.0.1".into());
 
     // Guard against hand-edited settings.json
@@ -140,12 +164,12 @@ pub async fn start_server(app: &tauri::AppHandle) -> Result<bool, String> {
     let effective = merge_effective_origins(&manual_origins, &tunnel_origin);
 
     if warnings.is_empty() {
-        *app.state::<WebServerWarning>().0.write().await = None;
+        *core.warning.0.write().await = None;
     } else {
-        *app.state::<WebServerWarning>().0.write().await = Some(warnings.join("\n"));
+        *core.warning.0.write().await = Some(warnings.join("\n"));
     }
 
-    spawn_server(app, port, &bind, effective).await?;
+    spawn_server(core, port, &bind, effective).await?;
     Ok(true)
 }
 
@@ -154,15 +178,14 @@ pub async fn start_server(app: &tauri::AppHandle) -> Result<bool, String> {
 /// On start failure: settings unchanged, server stopped, returns Err.
 /// On start success + save failure: server running, started=true, config_saved=false.
 pub async fn restart_with_config(
-    app: &tauri::AppHandle,
+    core: &CoreState,
     config: WebServerConfig,
 ) -> Result<RestartResult, String> {
-    let lock = app.state::<WebServerLock>().inner().clone();
-    let _guard = lock.lock().await;
+    let _guard = core.ws_lock.lock().await;
 
     // Disable path: stop server, partial disable (only write enabled=false).
     if !config.enabled {
-        stop_server_inner(app).await;
+        stop_server_inner(core).await;
         // Disable is security-sensitive: if save fails, next startup re-enables.
         storage::settings::save_web_server_partial_disable()?;
         return Ok(RestartResult {
@@ -194,11 +217,11 @@ pub async fn restart_with_config(
     let effective = merge_effective_origins(&normalized_origins, &tunnel_origin);
 
     // Validation passed → clear startup warning, stop old server
-    *app.state::<WebServerWarning>().0.write().await = None;
-    stop_server_inner(app).await;
+    *core.warning.0.write().await = None;
+    stop_server_inner(core).await;
 
     // Start new server — bind happens here, errors propagate to caller
-    match spawn_server(app, config.port, &config.bind, effective).await {
+    match spawn_server(core, config.port, &config.bind, effective).await {
         Ok(_actual_port) => {
             // Success → save config; manual origins + tunnel stored separately
             let saved = match storage::settings::save_web_server_config(
@@ -233,17 +256,16 @@ pub async fn restart_with_config(
 
 /// Internal: cancel serve task + await JoinHandle + reset effective state.
 /// Caller MUST hold WebServerLock.
-async fn stop_server_inner(app: &tauri::AppHandle) {
+async fn stop_server_inner(core: &CoreState) {
     // 1. Cancel the serve task
-    let ws_cancel = app.state::<WebServerCancel>().inner().clone();
     {
-        let mut guard = ws_cancel.lock().await;
+        let mut guard = core.ws_cancel.lock().await;
         guard.cancel();
         *guard = CancellationToken::new();
     }
 
     // 2. Await JoinHandle to ensure listener is dropped (port released)
-    let ws_handle = app.state::<WebServerHandle>().inner().clone();
+    let ws_handle = core.ws_handle.clone();
     {
         let mut handle_guard = ws_handle.lock().await;
         if let Some(mut handle) = handle_guard.take() {
@@ -276,83 +298,62 @@ async fn stop_server_inner(app: &tauri::AppHandle) {
     }
 
     // 3. Reset effective state
-    app.state::<EffectiveWebPort>().store(0, Ordering::Relaxed);
-    *app.state::<EffectiveWebBind>().0.write().await = String::new();
-    *app.state::<WebServerWarning>().0.write().await = None;
+    core.effective_port.store(0, Ordering::Relaxed);
+    *core.effective_bind.0.write().await = String::new();
+    *core.warning.0.write().await = None;
     log::debug!("[web_server] stopped");
 }
 
 /// Internal: build AppState, bind port, spawn serve task, store JoinHandle.
 /// Returns actual bound port.
 async fn spawn_server(
-    app: &tauri::AppHandle,
+    core: &CoreState,
     port: u16,
     bind: &str,
     allowed_origins: Option<Vec<String>>,
 ) -> Result<u16, String> {
-    let live_token = app.state::<crate::SharedLiveToken>().inner().clone();
+    let live_token = core.token.clone();
     let token = live_token.read().await.clone();
     if token.is_empty() {
         return Err("no web server token".into());
     }
 
-    let effective_port = app.state::<EffectiveWebPort>().inner().clone();
+    let effective_port = core.effective_port.clone();
 
     // Bind BEFORE spawning — errors propagate to caller
     let listener = bind_with_fallback(bind, port).await?;
     let actual_port = listener.local_addr().map(|a| a.port()).unwrap_or(port);
     effective_port.store(actual_port, Ordering::Relaxed);
-    *app.state::<EffectiveWebBind>().0.write().await = bind.to_string();
+    *core.effective_bind.0.write().await = bind.to_string();
     log::info!("[web_server] bound to {}:{}", bind, actual_port);
 
     // Increment generation — stale tasks check this before cleanup.
-    let generation = app.state::<WebServerGeneration>().inner().0.clone();
+    let generation = core.generation.0.clone();
     let my_gen = generation.load(Ordering::SeqCst) + 1;
     generation.store(my_gen, Ordering::SeqCst);
 
-    let broadcaster = app
-        .try_state::<EventBroadcaster>()
-        .map(|s| s.inner().clone())
-        .unwrap_or_default();
-    let emitter = app.state::<Arc<BroadcastEmitter>>().inner().clone();
-    let writer = app.state::<Arc<EventWriter>>().inner().clone();
-    let token_version = app.state::<crate::SharedTokenVersion>().inner().clone();
-    let ws_shutdown = app.state::<crate::WsShutdownSender>().inner().clone();
-
     let app_state = AppState {
-        process_map: app
-            .state::<crate::agent::stream::ProcessMap>()
-            .inner()
-            .clone(),
-        sessions: app
-            .state::<crate::agent::adapter::ActorSessionMap>()
-            .inner()
-            .clone(),
-        spawn_locks: app
-            .state::<crate::agent::spawn_locks::SpawnLocks>()
-            .inner()
-            .clone(),
-        writer,
-        cancel_token: app.state::<CancellationToken>().inner().clone(),
-        cli_info_cache: app
-            .state::<crate::agent::control::CliInfoCache>()
-            .inner()
-            .clone(),
-        emitter,
-        broadcaster,
+        process_map: core.process_map.clone(),
+        sessions: core.sessions.clone(),
+        spawn_locks: core.spawn_locks.clone(),
+        writer: core.writer.clone(),
+        cancel_token: core.cancel_token.clone(),
+        cli_info_cache: core.cli_info_cache.clone(),
+        emitter: core.emitter.clone(),
+        broadcaster: core.broadcaster.clone(),
         token: live_token,
-        token_version,
+        token_version: core.token_version.clone(),
         http_sessions: Arc::new(Mutex::new(HashMap::new())),
         effective_port: effective_port.clone(),
         bind_addr: Arc::new(bind.to_string()),
         allowed_origins,
-        ws_shutdown,
+        ws_shutdown: core.ws_shutdown.clone(),
     };
 
     // Set up cancel tokens
-    let ws_cancel = app.state::<WebServerCancel>().inner().clone();
+    let ws_cancel = core.ws_cancel.clone();
     let ws_cancel_token = ws_cancel.lock().await.clone();
-    let app_cancel = app.state::<CancellationToken>().inner().clone();
+    let app_cancel = core.cancel_token.clone();
     let effective_port_cleanup = effective_port.clone();
     let generation_cleanup = generation.clone();
 
@@ -393,8 +394,7 @@ async fn spawn_server(
     });
 
     // Store JoinHandle for later await during stop
-    let ws_handle = app.state::<WebServerHandle>().inner().clone();
-    *ws_handle.lock().await = Some(join_handle);
+    *core.ws_handle.lock().await = Some(join_handle);
 
     log::info!("[web_server] serving on http://{}:{}", bind, actual_port);
     Ok(actual_port)

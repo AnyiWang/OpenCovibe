@@ -1,15 +1,24 @@
 //! Desktop notification helper — sends macOS notifications when the window is
 //! hidden or unfocused (e.g. minimized to tray). Rate-limited to avoid spam.
 
+use crate::desktop_emit::DesktopEmit;
 use std::sync::atomic::{AtomicU64, Ordering};
-use tauri::Manager;
 
 static LAST_NOTIFY_MS: AtomicU64 = AtomicU64::new(0);
 const NOTIFY_COOLDOWN_MS: u64 = 5000;
 
 /// Send a macOS notification if the main window is hidden or unfocused.
 /// Rate-limited to at most 1 notification per 5 seconds.
-pub fn notify_if_background(app: &tauri::AppHandle, title: &str, body: &str) {
+///
+/// No-op in headless mode — there is no window to be "in the background" of,
+/// and browser clients get their own in-page notifications.
+pub fn notify_if_background(desktop: &DesktopEmit, title: &str, body: &str) {
+    use tauri::Manager;
+
+    let Some(app) = desktop.app() else {
+        return; // headless — no desktop notifications
+    };
+
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()

@@ -140,7 +140,9 @@ pub async fn restart_web_server(
         config.bind,
         config.tunnel_url.is_some(),
     );
-    crate::web_server::restart_with_config(&app, config).await
+    // Desktop IPC path — adopt the handles already registered with the running app.
+    let core = crate::web_server::state::CoreState::from_app(&app);
+    crate::web_server::restart_with_config(&core, config).await
 }
 
 #[cfg(test)]

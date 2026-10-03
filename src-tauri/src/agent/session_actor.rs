@@ -968,7 +968,7 @@ impl SessionActor {
             turn_index,
         });
         self.active_extractor = Some(Box::new(ContextExtractor {
-            app: self.emitter.app().clone(),
+            app: self.emitter.desktop().clone(),
             run_id: self.run_id.clone(),
             for_turn_index: turn_index,
             captured: false,
@@ -2218,7 +2218,7 @@ impl SessionActor {
                     received_at: Instant::now(),
                 },
             );
-            notify_if_background(self.emitter.app(), "Codex", "needs your input");
+            notify_if_background(self.emitter.desktop(), "Codex", "needs your input");
         }
 
         // Turn lifecycle → RunState + advance the shared turn queue.
@@ -2725,7 +2725,7 @@ impl SessionActor {
                     },
                 );
                 notify_if_background(
-                    self.emitter.app(),
+                    self.emitter.desktop(),
                     "Hook Review Required",
                     &format!(
                         "{} — PreToolUse: {}",
@@ -2807,7 +2807,7 @@ impl SessionActor {
                 },
             );
             notify_if_background(
-                self.emitter.app(),
+                self.emitter.desktop(),
                 "MCP Input Required",
                 &format!(
                     "{}: {} needs input",
@@ -2879,7 +2879,7 @@ impl SessionActor {
                 },
             );
             notify_if_background(
-                self.emitter.app(),
+                self.emitter.desktop(),
                 "Permission Required",
                 &format!(
                     "{} wants to use: {}",

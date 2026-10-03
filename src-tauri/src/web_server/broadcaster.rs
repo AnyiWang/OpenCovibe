@@ -3,9 +3,9 @@ use serde_json::Value;
 use std::sync::Arc;
 use tokio::sync::broadcast;
 
+use crate::desktop_emit::DesktopEmit;
 use crate::models::BusEvent;
 use crate::storage::events::EventWriter;
-use tauri::Emitter;
 
 /// Message envelope for broadcast channels.
 #[derive(Debug, Clone)]
@@ -68,16 +68,12 @@ impl EventBroadcaster {
 /// Handles: persist (A-class) + Tauri emit + broadcast to WS clients.
 pub struct BroadcastEmitter {
     writer: Arc<EventWriter>,
-    app: tauri::AppHandle,
+    app: DesktopEmit,
     broadcaster: EventBroadcaster,
 }
 
 impl BroadcastEmitter {
-    pub fn new(
-        writer: Arc<EventWriter>,
-        app: tauri::AppHandle,
-        broadcaster: EventBroadcaster,
-    ) -> Self {
+    pub fn new(writer: Arc<EventWriter>, app: DesktopEmit, broadcaster: EventBroadcaster) -> Self {
         log::debug!("[emitter] BroadcastEmitter created");
         Self {
             writer,
@@ -93,7 +89,7 @@ impl BroadcastEmitter {
             log::warn!("[emitter] persist failed for run_id={}: {}", run_id, error);
             // Non-critical telemetry keeps the existing realtime degradation behavior. Callers
             // whose correctness depends on persistence use `persist_and_emit_durable` directly.
-            let _ = self.app.emit("bus-event", event);
+            self.app.emit("bus-event", event);
         }
     }
 
@@ -114,7 +110,7 @@ impl BroadcastEmitter {
             // that WebSocket clients receive. This closes load/catch-up dedup on desktop.
             object.insert("_seq".to_string(), Value::Number(seq.into()));
         }
-        let _ = self.app.emit("bus-event", &payload);
+        self.app.emit("bus-event", &payload);
         self.broadcaster.send_a(BroadcastMsg {
             event_name: "bus-event".to_string(),
             payload,
@@ -137,7 +133,7 @@ impl BroadcastEmitter {
             event_name,
             run_id
         );
-        let _ = self.app.emit(event_name, payload);
+        self.app.emit(event_name, payload);
         let value = match serde_json::to_value(payload) {
             Ok(v) => v,
             Err(e) => {
@@ -163,8 +159,13 @@ impl BroadcastEmitter {
         &self.broadcaster
     }
 
-    /// Get a reference to the AppHandle
-    pub fn app(&self) -> &tauri::AppHandle {
+    /// Desktop emission target — `None` app handle means headless (no webview).
+    pub fn app(&self) -> Option<&tauri::AppHandle> {
+        self.app.app()
+    }
+
+    /// The emission facade itself, for callers that want to emit or branch on desktop mode.
+    pub fn desktop(&self) -> &DesktopEmit {
         &self.app
     }
 }

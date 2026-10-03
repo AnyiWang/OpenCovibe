@@ -5,9 +5,9 @@
 //! pluggable extraction during internal turns, and pure gate functions
 //! for auto-context dedup.
 
+use crate::desktop_emit::DesktopEmit;
 use crate::models::BusEvent;
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, Emitter};
 use tokio::sync::oneshot;
 
 use super::session_actor::AttachmentData;
@@ -81,7 +81,7 @@ pub trait InternalExtractor: Send {
 
 /// Extracts context data from /context command output during internal turns.
 pub struct ContextExtractor {
-    pub app: AppHandle,
+    pub app: DesktopEmit,
     pub run_id: String,
     pub for_turn_index: u32,
     pub captured: bool,
@@ -122,7 +122,7 @@ impl InternalExtractor for ContextExtractor {
 
 impl ContextExtractor {
     fn emit_context_snapshot(&self, content: &str) {
-        let _ = self.app.emit(
+        self.app.emit(
             "context-snapshot",
             serde_json::json!({
                 "runId": self.run_id,
