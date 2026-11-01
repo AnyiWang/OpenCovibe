@@ -603,6 +603,7 @@ pub(crate) fn preset_name(pid: &str) -> String {
         "ccswitch" => "CC Switch",
         "ccr" => "Claude Code Router",
         "zenmux" => "ZenMux",
+        "runcrate" => "Runcrate",
         "custom" => "Custom",
         _ => return pid.to_string(),
     }
@@ -815,6 +816,7 @@ mod tests {
         assert_eq!(preset_name("zhipu-intl"), "Zhipu (智谱 Intl)");
         assert_eq!(preset_name("minimax-cn"), "MiniMax (China)");
         assert_eq!(preset_name("zenmux"), "ZenMux");
+        assert_eq!(preset_name("runcrate"), "Runcrate");
         // Existing mappings
         assert_eq!(preset_name("anthropic"), "Anthropic");
         assert_eq!(preset_name("ollama"), "Ollama");

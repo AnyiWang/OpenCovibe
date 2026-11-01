@@ -28,6 +28,25 @@ describe("Bedrock platform preset", () => {
   });
 });
 
+describe("Runcrate platform preset", () => {
+  it("mirrors the backend defaults and pins a Runcrate model for every tier", () => {
+    const preset = PLATFORM_PRESETS.find((candidate) => candidate.id === "runcrate");
+
+    expect(preset).toMatchObject({
+      base_url: "https://api.runcrate.ai",
+      auth_env_var: "ANTHROPIC_AUTH_TOKEN",
+      category: "proxy",
+      models: ["deepseek-ai/DeepSeek-V4.1-Flash"],
+      extra_env: { CLAUDE_CODE_MAX_CONTEXT_TOKENS: "1048576" },
+    });
+    expect(expandModelsToTiers(preset?.models)).toEqual([
+      "deepseek-ai/DeepSeek-V4.1-Flash",
+      "deepseek-ai/DeepSeek-V4.1-Flash",
+      "deepseek-ai/DeepSeek-V4.1-Flash",
+    ]);
+  });
+});
+
 describe("provider runtime helpers", () => {
   it("uses the Sonnet tier as the default for three-model providers", () => {
     expect(defaultPlatformModel(["opus", "sonnet", "haiku"])).toBe("sonnet");

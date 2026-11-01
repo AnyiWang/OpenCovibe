@@ -316,6 +316,18 @@ fn known_provider_defaults(pid: &str) -> Option<ProviderDefaults> {
             key_optional: false,
             auth_env_var: None,
         }),
+        "runcrate" => Some(ProviderDefaults {
+            // Messages API at the root (SDK appends /v1/messages). Model ids are org/name and
+            // Claude's own model names are rejected, so a default model is required.
+            base_url: Some("https://api.runcrate.ai"),
+            models: Some(vec!["deepseek-ai/DeepSeek-V4.1-Flash".to_string()]),
+            extra_env: Some(HashMap::from([(
+                "CLAUDE_CODE_MAX_CONTEXT_TOKENS".to_string(),
+                "1048576".to_string(),
+            )])),
+            key_optional: false,
+            auth_env_var: None,
+        }),
         "ccswitch" => Some(ProviderDefaults {
             base_url: Some("http://127.0.0.1:15721"),
             models: None,
@@ -1011,6 +1023,26 @@ mod tests {
             Some("1")
         );
         assert_eq!(env.get("AWS_REGION").map(String::as_str), Some("us-east-1"));
+    }
+
+    #[test]
+    fn provider_info_runcrate_matches_frontend_defaults() {
+        let info = get_provider_info("runcrate").expect("runcrate should have provider info");
+
+        assert!(!info.key_optional);
+        assert_eq!(info.base_url.as_deref(), Some("https://api.runcrate.ai"));
+        assert_eq!(
+            info.models.as_deref(),
+            Some(["deepseek-ai/DeepSeek-V4.1-Flash".to_string()].as_slice())
+        );
+        let env = info
+            .extra_env
+            .expect("runcrate should have default environment");
+        assert_eq!(
+            env.get("CLAUDE_CODE_MAX_CONTEXT_TOKENS")
+                .map(String::as_str),
+            Some("1048576")
+        );
     }
 
     #[test]

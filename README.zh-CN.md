@@ -160,13 +160,13 @@ npm run tauri dev
 | ------------ | ------------------------------------------------------------------------------------------------------------------------------------ |
 | 官方         | Claude Code / Anthropic                                                                                                              |
 | 模型服务商   | DeepSeek、Kimi、智谱、百炼、豆包、MiniMax、小米 MiMo、腾讯混元、硅基流动、阶跃星辰、LongCat、讯飞星辰、腾讯 Coding Plan              |
-| API 网关     | Vercel AI Gateway、OpenRouter、AiHubMix、Requesty、Fireworks AI、DeepInfra、Novita AI、ZenMux                                        |
+| API 网关     | Vercel AI Gateway、OpenRouter、AiHubMix、Requesty、Fireworks AI、DeepInfra、Novita AI、ZenMux、Runcrate                              |
 | 本地与路由器 | Ollama、[CC Switch](https://github.com/farion1231/cc-switch)、[Claude Code Router](https://github.com/musistudio/claude-code-router) |
 | 自定义       | 任意 Anthropic 兼容端点                                                                                                              |
 
 ### Codex（OpenAI Responses API）
 
-Codex 可以使用原生 ChatGPT/API Key 登录，也可以配置支持 Responses API 的 Vercel AI Gateway、AiHubMix、Requesty、Fireworks AI、ZenMux、Ollama 或自定义端点。仅提供 Chat Completions 的平台需要 Responses 转换代理，无法直接使用。
+Codex 可以使用原生 ChatGPT/API Key 登录，也可以配置支持 Responses API 的 Vercel AI Gateway、AiHubMix、Requesty、Fireworks AI、ZenMux、Runcrate、Ollama 或自定义端点。仅提供 Chat Completions 的平台需要 Responses 转换代理，无法直接使用。
 
 ## 架构
 
