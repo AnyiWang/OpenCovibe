@@ -21,6 +21,16 @@ describe("Codex provider presets", () => {
     });
   });
 
+  it("configures Runcrate's documented Codex endpoint", () => {
+    const preset = CODEX_PROVIDER_PRESETS.find((candidate) => candidate.id === "runcrate");
+
+    expect(preset).toMatchObject({
+      base_url: "https://api.runcrate.ai/v1",
+      env_key: "RUNCRATE_API_KEY",
+      model: "zai-org/GLM-5.3",
+    });
+  });
+
   it("leaves Portkey's user-scoped model slug unset", () => {
     const preset = CODEX_PROVIDER_PRESETS.find((candidate) => candidate.id === "portkey");
 

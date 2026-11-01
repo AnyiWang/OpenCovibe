@@ -318,6 +318,18 @@ export const PLATFORM_PRESETS: PlatformPreset[] = [
     extra_env: { API_TIMEOUT_MS: "30000000" },
     docs_url: "https://zenmux.ai/docs/best-practices/claude-code.html",
   },
+  {
+    id: "runcrate",
+    name: "Runcrate",
+    base_url: "https://api.runcrate.ai",
+    auth_env_var: "ANTHROPIC_AUTH_TOKEN",
+    description: "Open-weight model inference",
+    key_placeholder: "rc_live_xxxxx",
+    category: "proxy",
+    models: ["deepseek-ai/DeepSeek-V4.1-Flash"],
+    extra_env: { CLAUDE_CODE_MAX_CONTEXT_TOKENS: "1048576" },
+    docs_url: "https://runcrate.ai/docs/models/anthropic-messages",
+  },
 
   // ── Local Proxy ──
   {

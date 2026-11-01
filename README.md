@@ -160,13 +160,13 @@ Provider compatibility differs by agent. The presets shown in **Settings** are t
 | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Official          | Claude Code / Anthropic                                                                                                                           |
 | Model providers   | DeepSeek, Kimi, Zhipu, Bailian, DouBao, MiniMax, Xiaomi MiMo, Tencent Hunyuan, SiliconFlow, StepFun, LongCat, iFlytek Astron, Tencent Coding Plan |
-| API gateways      | Vercel AI Gateway, OpenRouter, AiHubMix, Requesty, Fireworks AI, DeepInfra, Novita AI, ZenMux                                                     |
+| API gateways      | Vercel AI Gateway, OpenRouter, AiHubMix, Requesty, Fireworks AI, DeepInfra, Novita AI, ZenMux, Runcrate                                           |
 | Local and routers | Ollama, [CC Switch](https://github.com/farion1231/cc-switch), [Claude Code Router](https://github.com/musistudio/claude-code-router)              |
 | Custom            | Any Anthropic-compatible endpoint                                                                                                                 |
 
 ### Codex (OpenAI Responses API)
 
-Codex can use its native ChatGPT/API-key login or a configured Responses-compatible provider: Vercel AI Gateway, AiHubMix, Requesty, Fireworks AI, ZenMux, Ollama, or a custom endpoint. Providers that only expose Chat Completions require a Responses translation proxy and do not work directly.
+Codex can use its native ChatGPT/API-key login or a configured Responses-compatible provider: Vercel AI Gateway, AiHubMix, Requesty, Fireworks AI, ZenMux, Runcrate, Ollama, or a custom endpoint. Providers that only expose Chat Completions require a Responses translation proxy and do not work directly.
 
 ## Architecture
 

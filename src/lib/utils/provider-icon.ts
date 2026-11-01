@@ -32,6 +32,7 @@ const BRAND: Record<string, IconSpec> = {
   openrouter: { label: "OR", color: "#6366F1" },
   aihubmix: { label: "AH", color: "#10B981" },
   zenmux: { label: "ZM", color: "#8B5CF6" },
+  runcrate: { label: "Rc", color: "#1E2A78" },
   vercel: { label: "▲", color: "#3F3F46" },
   requesty: { label: "Rq", color: "#0EA5E9" },
   fireworks: { label: "Fw", color: "#FF6B35" },

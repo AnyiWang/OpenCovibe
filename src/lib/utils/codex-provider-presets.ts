@@ -130,6 +130,16 @@ export const CODEX_PROVIDER_PRESETS: CodexProviderPreset[] = [
     docs_url: "https://docs.zenmux.ai/guide/quickstart.html",
   },
   {
+    id: "runcrate",
+    name: "Runcrate",
+    description: "Open-weight models (Responses)",
+    base_url: "https://api.runcrate.ai/v1",
+    env_key: "RUNCRATE_API_KEY",
+    model: "zai-org/GLM-5.3",
+    key_placeholder: "rc_live_…",
+    docs_url: "https://runcrate.ai/docs/models/responses",
+  },
+  {
     id: "ollama",
     name: "Ollama",
     description: "Local models (no key)",
