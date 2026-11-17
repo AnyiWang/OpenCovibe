@@ -318,6 +318,17 @@ export const PLATFORM_PRESETS: PlatformPreset[] = [
     extra_env: { API_TIMEOUT_MS: "30000000" },
     docs_url: "https://zenmux.ai/docs/best-practices/claude-code.html",
   },
+  {
+    id: "teapotrouter",
+    name: "TeapotRouter",
+    base_url: "https://api.teapotrouter.com",
+    auth_env_var: "ANTHROPIC_AUTH_TOKEN",
+    description: "Multi-model API gateway",
+    key_placeholder: "your-teapotrouter-key",
+    category: "proxy",
+    models: ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-4-5"],
+    docs_url: "https://teapotrouter.com",
+  },
 
   // ── Local Proxy ──
   {
